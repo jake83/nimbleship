@@ -1,0 +1,56 @@
+name: AI adversarial review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  reviewer:
+    name: Reviewer
+    if: '!github.event.pull_request.draft'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review this pull request as a thorough, constructive senior engineer.
+            Check: correctness, test quality (do the tests pin behaviour, not
+            implementation?), adherence to the conventions in CLAUDE.md and the
+            ADRs under docs/adr/, security, and maintainability. Comment inline
+            where possible. End with a short verdict paragraph.
+          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+
+  refuter:
+    name: Refuter
+    if: '!github.event.pull_request.draft'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are an adversarial reviewer. Your only goal is to REFUTE this
+            pull request: find a concrete input, sequence, or environment where
+            it breaks, a regression it introduces, an edge case its tests miss,
+            or a claim in its description that the diff does not deliver. Do not
+            praise anything. If after genuine effort you cannot break it, say
+            exactly what you attacked and why each attack failed. Post your
+            findings as a PR comment titled "Refutation attempt".
+          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
