@@ -23,12 +23,15 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Review this pull request as a thorough, constructive senior engineer.
-            Check: correctness, test quality (do the tests pin behaviour, not
-            implementation?), adherence to the conventions in CLAUDE.md and the
-            ADRs under docs/adr/, security, and maintainability. Comment inline
-            where possible. Then post an overall summary ending with a short
-            verdict paragraph as a PR comment via gh.
-          claude_args: '--allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+            Use `gh pr diff` and `gh pr view` to see the change; read CLAUDE.md,
+            CONTEXT.md, and the ADRs under docs/adr/ to check the change against
+            this repo's conventions and architecture decisions. Assess:
+            correctness, test quality (do the tests pin behaviour, not
+            implementation?), convention/ADR adherence, security, and
+            maintainability. You MUST finish by posting your whole review as one
+            PR comment titled "Code review" via `gh pr comment`, referencing
+            files and line numbers inline, ending with a short verdict paragraph.
+          claude_args: '--allowed-tools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
 
   refuter:
     name: Refuter
@@ -54,4 +57,4 @@ jobs:
             praise anything. If after genuine effort you cannot break it, say
             exactly what you attacked and why each attack failed. Post your
             findings as a PR comment titled "Refutation attempt".
-          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          claude_args: '--allowed-tools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
