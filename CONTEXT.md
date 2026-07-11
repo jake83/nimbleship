@@ -27,6 +27,19 @@ websites are also mapped to Warehouses so delivery options can be configured
 per site. Carries collection days and holidays.
 _Avoid_: assuming one warehouse, treating it as only a physical location
 
+**Parcel Barcode**:
+The scannable identity of one parcel, formed as the order number, a dash, and
+the 1-based parcel sequence in label-print order (e.g. `95000254580-2`),
+rendered as Code 128. Carried over from the 3PL glossary; named by ADR 0002
+as a legacy contract obligation.
+_Avoid_: parcel code, label barcode, 0-based sequences
+
+**Parcels String**:
+The comma-joined `{order number}-parcel-{n}:{barcode}` value returned to the
+WMS in the paperwork response, used by every carrier that reports barcodes.
+Carried over from the 3PL glossary.
+_Avoid_: barcode list
+
 **Delivery Cost**:
 What a carrier charges the company to deliver a consignment. Used to pick the
 cheapest suitable carrier during allocation.
