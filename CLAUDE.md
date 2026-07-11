@@ -40,6 +40,31 @@ business logic).
 All of the above must pass before a PR; CI enforces them plus two AI review
 jobs (reviewer + refuter).
 
+## The development loop
+
+Every change follows this loop; step 1 applies only to PRs that establish
+patterns or restructure things - roughly the first PR of a phase:
+
+1. (fat PRs only) Local code review before pushing; act on design-level
+   findings while they are cheap.
+2. Push and open the PR. CI plus the reviewer and refuter jobs run.
+3. Triage every AI finding per "Handling review feedback" below; push fixes,
+   post rebuttals. The pipeline re-runs on each push until settled.
+4. When the loop is settled, post a wrap-up comment ("AI loop complete:
+   N findings, M fixed, K rebutted"), then:
+   - **Trivial PR** (ALL of: under ~50 changed lines; no domain logic,
+     schema, API contract, workflow, or dependency changes; no CONTEXT.md or
+     ADR changes): apply the `trivial` label; the agent may merge on green.
+   - **Everything else**: apply `needs-human-review` and request review from
+     the repo owner. An agent NEVER merges a non-trivial PR - this is law,
+     not enforced by GitHub, so it must never be broken. When in doubt, a PR
+     is not trivial.
+5. Route every HUMAN review finding into exactly one artifact, so the same
+   finding never needs a human twice: coding convention -> CLAUDE.md; domain
+   language -> CONTEXT.md; architectural decision -> new or amended ADR; a
+   bug class the AI reviewers should have caught -> the reviewer/refuter
+   prompts in .github/workflows/claude-review.yml.
+
 ## Handling review feedback
 
 Treat every review comment (AI or human) as a claim to verify, not an
@@ -47,5 +72,4 @@ instruction to apply: check it against the code, CONTEXT.md, the ADRs, and
 the old system where relevant (use the receiving-code-review skill if
 available). Fix what verifies as real; rebut what does not, with evidence,
 as a PR comment. The refuter is deliberately aggressive - an unexamined
-"fix" for an overclaimed refutation is itself a bug. Local pre-push review
-is reserved for large or architecturally risky changes, not routine PRs.
+"fix" for an overclaimed refutation is itself a bug.
