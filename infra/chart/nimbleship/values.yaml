@@ -1,0 +1,21 @@
+api:
+  image: nimbleship-api:dev
+  replicas: 1
+
+web:
+  image: nimbleship-web:dev
+  replicas: 1
+
+postgres:
+  image: postgres:17-alpine
+  database: nimbleship
+  user: nimbleship
+  # Local development only. Real deployments override this via
+  # --set or an external secret; it never ships to a shared environment.
+  password: nimbleship-local
+  storage: 1Gi
+
+ingress:
+  enabled: true
+  className: traefik
+  host: nimbleship.localhost
