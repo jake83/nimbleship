@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from nimbleship.carriers.dropout import LabelRequest, render_labels
@@ -26,7 +27,9 @@ class ParcelIn(BaseModel):
 
 
 class ConsignmentIn(BaseModel):
-    order_number: str = Field(min_length=1, max_length=64, pattern=r"^[\w-]+$")
+    # ASCII only: order numbers become Code 128 barcodes, whose encoder
+    # rejects anything outside Latin-1 (refuter finding, PR #6).
+    order_number: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     recipient_name: str
     address_lines: list[str]
     postcode: str
@@ -67,14 +70,18 @@ def _label_url(consignment: Consignment) -> str | None:
     return f"/api/consignments/{consignment.order_number}/label.pdf"
 
 
+def _order_exists(session: Session, order_number: str) -> bool:
+    row = session.execute(
+        select(Consignment.id).where(Consignment.order_number == order_number)
+    ).scalar_one_or_none()
+    return row is not None
+
+
 @router.post("", status_code=201)
 def create_consignment(
     payload: ConsignmentIn, session: SessionDep, store: LabelStoreDep
 ) -> ConsignmentOut:
-    exists = session.execute(
-        select(Consignment.id).where(Consignment.order_number == payload.order_number)
-    ).scalar_one_or_none()
-    if exists is not None:
+    if _order_exists(session, payload.order_number):
         raise HTTPException(409, "a consignment already exists for this order")
 
     rulebook = active_rulebook(session)
@@ -150,7 +157,14 @@ def create_consignment(
             )
         )
 
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as error:
+        # Losing a duplicate race: the unique constraint is the last line of
+        # defence behind the _order_exists pre-check (refuter finding, PR #6).
+        raise HTTPException(
+            409, "a consignment already exists for this order"
+        ) from error
     return ConsignmentOut(
         order_number=consignment.order_number,
         status=consignment.status,

@@ -14,7 +14,10 @@ from nimbleship.main import create_app
 
 
 @pytest.fixture
-def app(tmp_path: Path) -> Iterator[FastAPI]:
+def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
+    # The lifespan prune reads settings directly (it runs outside request
+    # dependency injection), so point it at the test directory too.
+    monkeypatch.setenv("NIMBLESHIP_LABELS_DIR", str(tmp_path / "labels"))
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},

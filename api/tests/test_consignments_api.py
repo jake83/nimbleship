@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 CONSIGNMENT = {
@@ -96,3 +97,29 @@ def test_duplicate_order_number_conflicts(client: TestClient) -> None:
 def test_unknown_consignment_is_not_found(client: TestClient) -> None:
     assert client.get("/api/consignments/nope").status_code == 404
     assert client.get("/api/consignments/nope/label.pdf").status_code == 404
+
+
+def test_non_latin_order_numbers_are_rejected_with_422(client: TestClient) -> None:
+    unicode_order = {**CONSIGNMENT, "order_number": "订单1"}
+
+    response = client.post("/api/consignments", json=unicode_order)
+
+    assert response.status_code == 422
+
+
+def test_losing_a_duplicate_race_still_returns_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import nimbleship.routers.consignments as consignments_module
+
+    client.post("/api/consignments", json=CONSIGNMENT)
+    # Simulate the race: the existence pre-check misses the row that another
+    # request has already committed, so the unique constraint is the last line
+    # of defence.
+    monkeypatch.setattr(
+        consignments_module, "_order_exists", lambda session, order_number: False
+    )
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 409
