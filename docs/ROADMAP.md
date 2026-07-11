@@ -18,11 +18,12 @@ so plans reflect reality rather than guesses made months earlier.
    (ADR 0004).
 5. Carrier integrations are declarative specs run by one engine, with
    developer-written plugins as the bounded escape hatch (ADR 0005).
-6. Stack: FastAPI + SQLAlchemy + uv, React + TypeScript + Vite, monorepo
-   (/api, /web, /infra), K3s deployment (k3d locally). TDD (red/green/
-   refactor) throughout. AI built directly on the Anthropic SDK, porting the
-   3pl-ai-assistant orchestrator patterns. AI is additive: the dispatch path
-   never depends on AI availability.
+6. Stack: FastAPI + SQLAlchemy + uv, React + TypeScript + Vite with
+   shadcn/ui on Tailwind (ADR 0006), monorepo (/api, /web, /infra), K3s
+   deployment (k3d locally). TDD (red/green/refactor) throughout. AI built
+   directly on the Anthropic SDK, porting the 3pl-ai-assistant orchestrator
+   patterns. AI is additive: the dispatch path never depends on AI
+   availability.
 
 ## Phase 0 - Foundations
 
@@ -34,6 +35,14 @@ in minutes.
 - CI from the first commit: lint, typecheck, tests on every PR; container
   builds. A red suite blocks a merge (the old system learned this the hard
   way).
+- AI adversarial review on every PR: two independent Claude review jobs via
+  claude-code-action (one standard reviewer, one prompted purely to refute
+  the change), authenticated with a Claude Max OAuth token
+  (claude setup-token -> CLAUDE_CODE_OAUTH_TOKEN secret) - no API billing.
+  Branch protection requires green tests + lint + typecheck + review before
+  merge. A second model (e.g. OpenAI Codex GitHub integration) can be added
+  later for cross-model diversity if same-model blind spots show up. The
+  end state to demo: no human in the deploy path except approval.
 - Local K3s via k3d: web + worker + Postgres running from one command.
 - Living docs: CONTEXT.md and ADRs continue to grow per decision.
 
