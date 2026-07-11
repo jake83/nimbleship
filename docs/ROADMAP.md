@@ -64,22 +64,29 @@ Goal: the thinnest honest vertical slice, no AI.
 - Deployed on local k3d; demo: POST a consignment, get a label PDF back, see
   the timeline.
 
-## [G] Session A - Allocation and delivery options, unified
+## [G] Session A - Allocation and delivery options, unified (HELD 2026-07-11)
 
-The big domain design session, held before Phase 2. Scope: merge the four
-places that currently encode "how can this ship" (allocation rules, delivery
-options, delivery charges, delivery costs) into one coherent model.
-Known inputs going in:
+Held on 2026-07-11; outcomes are ADRs 0007 and 0008 plus CONTEXT.md terms
+(Delivery Proposition, Constraint, Order Origin, Customs Identity). Summary:
 
-- Cheapest Delivery Cost picks the winner among suitable carriers; a static
-  order is only the final tie-break; missing cost data is flagged loudly.
-- Service Groups are mostly "delivery proposition" (next day, pre-10,
-  economy) and need a clean re-model; their country side is murky and must be
-  unpicked.
-- Shipping areas / postcode surcharges stay as needs; the mechanism is
-  redesigned.
-- Magento's delivery-options call and the WMS allocation call must draw from
-  the same model (the Metapack property the old system lost).
+- One eligibility rulebook consulted at checkout and dispatch; checkout
+  projects to propositions priced by Delivery Charges, dispatch picks
+  cheapest by Delivery Cost within the bought proposition (ADR 0007).
+- Rulebook structure: service declarations + flat named block-constraints +
+  fixed selection policy; carrier dynamic checks become capability checks on
+  carrier definitions (ADR 0008).
+- Order origin ({platform, website, marketplace}) is an explicit fact;
+  legacy signals (ID prefix/length, email domain, custom fields, service
+  group codes) are translated at the edge via per-caller config.
+- Customs Identity generalises IOSS: every international order resolves to
+  a deemed supplier (own registrations for direct sales, the marketplace's
+  for marketplace orders).
+- Checkout unknown facts handled optimistically with divergence logging;
+  legacy sentinel zeros translate to absent facts.
+- Deferred to Phase 2 detail: charge/cost rule shapes (port the existing
+  band structures initially), shipping-area mechanism redesign, the
+  haulier_postcode_surcharge table (apparently dead - confirm and drop),
+  and the 40-row service-group mapping table.
 
 ## Phase 2 - Allocation, unified
 
