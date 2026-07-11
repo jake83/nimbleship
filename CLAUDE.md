@@ -52,13 +52,24 @@ patterns or restructure things - roughly the first PR of a phase:
    post rebuttals. The pipeline re-runs on each push until settled.
 4. When the loop is settled, post a wrap-up comment ("AI loop complete:
    N findings, M fixed, K rebutted"), then:
-   - **Trivial PR** (ALL of: under ~50 changed lines; no domain logic,
-     schema, API contract, workflow, or dependency changes; no CONTEXT.md or
-     ADR changes): apply the `trivial` label; the agent may merge on green.
-   - **Everything else**: apply `needs-human-review` and request review from
-     the repo owner. An agent NEVER merges a non-trivial PR - this is law,
-     not enforced by GitHub, so it must never be broken. When in doubt, a PR
-     is not trivial.
+   - **Trivial PR** - judged by change TYPE, not size. Every change in the
+     PR must be behaviour-preserving and of one of these kinds: a pure
+     rename, a comment/docstring/typo fix, a cosmetic frontend tweak (copy,
+     spacing, styling, markup rearrangement with no logic change), or an
+     equivalent no-behaviour-change edit. Nothing touching domain logic,
+     schema, API contracts, workflows, dependencies, CONTEXT.md, or ADRs is
+     ever trivial, however small. Size backstop: past ~25 changed lines even
+     type-trivial changes get human eyes. Apply the `trivial` label; the
+     agent may merge on green.
+   - **Everything else**: apply `needs-human-review` and assign the repo
+     owner (GitHub cannot request a review from the PR author, so the flag
+     is label + assignee). An agent NEVER merges a non-trivial PR - this is
+     law, not enforced by GitHub, so it must never be broken. When in doubt,
+     a PR is not trivial.
+   The trivial definition starts deliberately tight and is loosened only
+   with evidence: when human review of a class of PRs has stopped finding
+   anything for a sustained stretch, widen the definition here and record
+   why in the same commit.
 5. Route every HUMAN review finding into exactly one artifact, so the same
    finding never needs a human twice: coding convention -> CLAUDE.md; domain
    language -> CONTEXT.md; architectural decision -> new or amended ADR; a
