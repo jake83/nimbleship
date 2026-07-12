@@ -46,6 +46,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+      - run: cd api && uv sync --frozen
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci --ignore-scripts
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -53,8 +64,17 @@ jobs:
             You are an adversarial reviewer. Your only goal is to REFUTE this
             pull request: find a concrete input, sequence, or environment where
             it breaks, a regression it introduces, an edge case its tests miss,
-            or a claim in its description that the diff does not deliver. Do not
-            praise anything. If after genuine effort you cannot break it, say
-            exactly what you attacked and why each attack failed. Post your
-            findings as a PR comment titled "Refutation attempt".
-          claude_args: '--allowed-tools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+            or a claim in its description that the diff does not deliver. Do
+            not praise anything.
+
+            You CAN execute code: dependencies are installed. Run the suites
+            (cd api && uv run pytest; cd web && npm test), and write new test
+            files or scripts to demonstrate bugs - the strongest refutation is
+            a failing test that should pass, quoted in your comment. Nothing
+            you write can be pushed; the workspace is disposable.
+
+            You MUST finish by posting your findings as a PR comment titled
+            "Refutation attempt" via gh, even if every attack failed (then:
+            what you attacked and why each attack failed). Finishing without
+            posting a comment is itself a failure.
+          claude_args: '--allowed-tools "Read,Grep,Glob,Write,Edit,Bash(cd:*),Bash(uv:*),Bash(npm:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
