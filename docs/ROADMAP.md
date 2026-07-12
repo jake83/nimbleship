@@ -199,6 +199,13 @@ Goal: from hobby deploy to workplace replacement.
 - Way-later items parked here deliberately: Teams access to the assistant,
   additional sales platforms, moving carriers off Voila (explicitly out of
   scope for NimbleShip itself).
+- Parked possibility, kept visible on purpose: productising NimbleShip for
+  other companies. The market (Metapack, nShift, Sorted) is real and the
+  differentiators (AI carrier onboarding, decision explainability) are not
+  company-specific; ADR 0001's instance-per-customer model preserves the
+  path without a rewrite for the mid-market segment this would sell to.
+  The gap is the unglamorous 60% (auth, billing, compliance breadth,
+  support). Not a commitment - a door, deliberately left open.
 
 ## Working method
 
