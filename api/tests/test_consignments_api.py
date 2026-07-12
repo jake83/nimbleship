@@ -110,6 +110,83 @@ def test_non_latin_order_numbers_are_rejected_with_422(client: TestClient) -> No
     assert response.status_code == 422
 
 
+PROPOSITION_DRAFT = {
+    "author": "jake",
+    "services": [
+        {
+            "code": "DROPOUT-STD",
+            "carrier": "dropout",
+            "name": "Drop Out Standard",
+            "weight_min_kg": "0",
+            "weight_max_kg": "30",
+            "countries": ["GB"],
+            "cost": "4.50",
+            "tie_break_order": 1,
+            "propositions": ["economy"],
+        },
+        {
+            "code": "DROPOUT-XL",
+            "carrier": "dropout",
+            "name": "Drop Out Extra Large",
+            "weight_min_kg": "0",
+            "weight_max_kg": "999",
+            "countries": ["GB", "IE", "FR"],
+            "cost": "12.00",
+            "tie_break_order": 2,
+            "propositions": ["next-day"],
+        },
+    ],
+}
+
+
+def _publish_proposition_rulebook(client: TestClient) -> None:
+    version = client.post("/api/rulebook/drafts", json=PROPOSITION_DRAFT).json()[
+        "version"
+    ]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+
+def test_bought_proposition_filters_dispatch_to_fulfilling_services(
+    client: TestClient,
+) -> None:
+    _publish_proposition_rulebook(client)
+    next_day = {**CONSIGNMENT, "proposition": "next-day"}
+
+    response = client.post("/api/consignments", json=next_day)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "allocated"
+    # DROPOUT-STD is cheaper but only fulfils economy; the promise wins.
+    assert body["service"] == "DROPOUT-XL"
+
+
+def test_consignment_without_a_proposition_keeps_the_widest_offer(
+    client: TestClient,
+) -> None:
+    _publish_proposition_rulebook(client)
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.json()["service"] == "DROPOUT-STD"
+
+
+def test_dry_run_replays_the_bought_proposition(client: TestClient) -> None:
+    # Allocated under the demo rulebook, where no service is restricted.
+    client.post("/api/consignments", json={**CONSIGNMENT, "proposition": "next-day"})
+    draft_version = client.post("/api/rulebook/drafts", json=PROPOSITION_DRAFT).json()[
+        "version"
+    ]
+
+    response = client.post(f"/api/rulebook/versions/{draft_version}/dry-run", json={})
+
+    [result] = response.json()["results"]
+    # The replay must honour the promise the customer bought: under the
+    # draft only DROPOUT-XL fulfils next-day.
+    assert result["draft_service"] == "DROPOUT-XL"
+    assert result["changed"] is True
+
+
 WAREHOUSE = {
     "code": "MAIN",
     "name": "Main Warehouse",

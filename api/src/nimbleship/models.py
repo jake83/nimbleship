@@ -20,6 +20,9 @@ class Consignment(Base):
     address_lines: Mapped[list[str]] = mapped_column(JSON)
     postcode: Mapped[str] = mapped_column(String(32))
     destination_country: Mapped[str] = mapped_column(String(3))
+    # The Delivery Proposition the customer bought; kept so dry-run replays
+    # evaluate the same facts dispatch saw (ADR 0003/0007).
+    proposition: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32))
     carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
     service: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -60,6 +63,18 @@ class OrderEvent(Base):
     stage: Mapped[str] = mapped_column(String(32))
     detail: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class DeliveryProposition(Base):
+    """The Delivery Proposition catalogue (CONTEXT.md): the customer-facing
+    delivery promises services may declare they fulfil. The code is the
+    natural key rulebook declarations reference."""
+
+    __tablename__ = "delivery_propositions"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(String(500))
 
 
 class Warehouse(Base):

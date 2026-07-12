@@ -230,6 +230,50 @@ def test_an_empty_draft_is_rejected(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def _draft_with_propositions(codes: list[str]) -> dict[str, object]:
+    services = [
+        {**DRAFT_WITH_US["services"][0], "propositions": codes},  # type: ignore[dict-item]
+        DRAFT_WITH_US["services"][1],
+    ]
+    return {"author": "jake", "services": services}
+
+
+def test_draft_naming_catalogue_propositions_is_accepted(client: TestClient) -> None:
+    response = client.post(
+        "/api/rulebook/drafts", json=_draft_with_propositions(["next-day", "economy"])
+    )
+
+    assert response.status_code == 201
+
+
+def test_draft_naming_an_unknown_proposition_is_rejected_at_draft_time(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/rulebook/drafts", json=_draft_with_propositions(["same-day"])
+    )
+
+    assert response.status_code == 422
+    assert "same-day" in response.text
+    versions = client.get("/api/rulebook/versions").json()
+    assert [v["status"] for v in versions] == ["published"]
+
+
+def test_draft_may_name_a_proposition_added_to_the_catalogue(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/api/propositions",
+        json={"code": "saturday", "name": "Saturday", "description": ""},
+    )
+
+    response = client.post(
+        "/api/rulebook/drafts", json=_draft_with_propositions(["saturday"])
+    )
+
+    assert response.status_code == 201
+
+
 def test_dry_run_order_list_is_bounded_like_limit(client: TestClient) -> None:
     client.get("/api/rulebook/active")
     draft = client.post("/api/rulebook/drafts", json=DRAFT_WITH_US).json()["version"]

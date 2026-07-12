@@ -35,6 +35,9 @@ class ConsignmentIn(BaseModel):
     address_lines: list[str]
     postcode: str
     destination_country: str = Field(min_length=2, max_length=3)
+    # The Delivery Proposition the customer bought (CONTEXT.md); dispatch
+    # selects only among services fulfilling it. None = no filter.
+    proposition: str | None = Field(default=None, min_length=1, max_length=64)
     parcels: list[ParcelIn] = Field(min_length=1)
     # The Warehouse code the consignment dispatches from (CONTEXT.md:
     # Warehouse - a logical dispatch identity); it supplies the label's
@@ -129,6 +132,7 @@ def create_consignment(
             destination_country=payload.destination_country,
             total_weight_kg=total_weight,
             parcel_count=len(payload.parcels),
+            proposition=payload.proposition,
             shipping_areas=shipping_areas,
         ),
     )
@@ -140,6 +144,7 @@ def create_consignment(
         address_lines=payload.address_lines,
         postcode=payload.postcode,
         destination_country=payload.destination_country,
+        proposition=payload.proposition,
         status="allocated" if selected else "rejected",
         carrier=selected.carrier if selected else None,
         service=selected.code if selected else None,

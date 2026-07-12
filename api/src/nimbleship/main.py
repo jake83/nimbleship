@@ -6,6 +6,7 @@ from fastapi import APIRouter, FastAPI
 
 from nimbleship.labels.store import get_label_store
 from nimbleship.routers.consignments import router as consignments_router
+from nimbleship.routers.propositions import router as propositions_router
 from nimbleship.routers.quotes import router as quotes_router
 from nimbleship.routers.rulebook import router as rulebook_router
 from nimbleship.routers.shipping_areas import router as shipping_areas_router
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     router.include_router(consignments_router)
+    router.include_router(propositions_router)
     router.include_router(quotes_router)
     router.include_router(rulebook_router)
     router.include_router(shipping_areas_router)
