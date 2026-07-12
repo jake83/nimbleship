@@ -90,3 +90,23 @@ the old system where relevant (use the receiving-code-review skill if
 available). Fix what verifies as real; rebut what does not, with evidence,
 as a PR comment. The refuter is deliberately aggressive - an unexamined
 "fix" for an overclaimed refutation is itself a bug.
+
+## When the review loop ends
+
+The fix-review cycle terminates by rule, not by luck (established on PR #9,
+which took five substantive rounds):
+
+- **Settlement rule**: the loop closes when a pass yields zero new REAL
+  findings against the CURRENT tip. Findings against superseded commits are
+  rebutted with the fix reference and do not count - but a real finding
+  against the tip reopens the loop, always, even after settlement was
+  declared.
+- **Severity floor**: non-blocking findings (coverage gaps, wording nits,
+  bounded follow-ups) become tracked follow-ups in the wrap-up comment, not
+  new fix-pushes. Deliberately ending the cycle is allowed; the human merge
+  ratifies "good enough".
+- **Comments are free**: triage and rebuttal comments never trigger
+  re-review - only pushes do. Never push comment-only or cosmetic changes
+  into a settling loop; they ride the next real PR.
+- The human is the fixed point: total rounds are bounded by real bugs, and
+  any disagreement the machines cannot settle ends at the human merge gate.
