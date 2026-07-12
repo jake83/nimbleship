@@ -9,6 +9,7 @@ from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
+from nimbleship.domain.propositions import known_proposition_codes
 from nimbleship.models import RulebookVersion
 
 # Demo seed for fresh installs: two generic Drop Out services proving the
@@ -110,9 +111,16 @@ def create_draft(
 ) -> RulebookVersion:
     """Create an immutable draft version. Validation (unique codes and
     tie-break orders) happens by constructing the Rulebook model before
-    anything is stored; the version number is only meaningful once saved."""
+    anything is stored; the version number is only meaningful once saved.
+    Proposition references are checked against the catalogue here, at
+    authoring time, so a typo fails the author instead of silently never
+    matching any shipment at allocation time."""
     _seed_if_fresh(session)
     Rulebook(version=0, services=services)
+    named = {code for service in services for code in service.propositions}
+    unknown = named - known_proposition_codes(session)
+    if unknown:
+        raise ValueError("unknown proposition codes: " + ", ".join(sorted(unknown)))
     row = RulebookVersion(
         status="draft",
         author=author,

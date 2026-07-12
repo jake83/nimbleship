@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from nimbleship.db import get_session
@@ -47,16 +48,25 @@ def propositions(session: SessionDep) -> list[PropositionOut]:
 
 @router.post("", status_code=201)
 def create(payload: PropositionIn, session: SessionDep) -> PropositionOut:
-    row = create_proposition(
-        session, payload.code, payload.name, payload.description
-    )
+    try:
+        row = create_proposition(
+            session, payload.code, payload.name, payload.description
+        )
+    except IntegrityError as error:
+        # Losing a duplicate race: the primary key is the last line of
+        # defence behind the pre-check (the PR #6 consignments pattern).
+        raise HTTPException(
+            409, "a proposition with this code already exists"
+        ) from error
     if row is None:
         raise HTTPException(409, "a proposition with this code already exists")
     return _out(row)
 
 
 @router.put("/{code}")
-def update(code: str, payload: PropositionFields, session: SessionDep) -> PropositionOut:
+def update(
+    code: str, payload: PropositionFields, session: SessionDep
+) -> PropositionOut:
     row = get_proposition(session, code)
     if row is None:
         raise HTTPException(404, "no such proposition")

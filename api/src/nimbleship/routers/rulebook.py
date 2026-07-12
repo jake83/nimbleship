@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -89,7 +89,9 @@ def versions(session: SessionDep) -> list[VersionDetailOut]:
 def create_draft_version(payload: DraftIn, session: SessionDep) -> VersionOut:
     try:
         row = create_draft(session, payload.services, payload.author)
-    except ValidationError as error:
+    except ValueError as error:
+        # Covers pydantic's ValidationError (a ValueError subclass) and the
+        # catalogue check in create_draft alike: both are authoring errors.
         raise HTTPException(422, str(error)) from error
     return VersionOut(version=row.version, status=row.status, author=row.author)
 

@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 SATURDAY = {
@@ -63,6 +64,22 @@ def test_updating_an_unknown_proposition_is_not_found(client: TestClient) -> Non
     )
 
     assert response.status_code == 404
+
+
+def test_losing_a_duplicate_create_race_still_returns_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import nimbleship.domain.propositions as propositions_module
+
+    client.post("/api/propositions", json=SATURDAY)
+    # Simulate the race: the pre-check misses the row another request has
+    # already committed, so the primary key is the last line of defence
+    # (the consignments duplicate race, refuter finding on PR #6).
+    monkeypatch.setattr(propositions_module, "_code_taken", lambda session, code: False)
+
+    response = client.post("/api/propositions", json=SATURDAY)
+
+    assert response.status_code == 409
 
 
 def test_a_blank_code_is_rejected(client: TestClient) -> None:
