@@ -51,8 +51,8 @@ jobs (reviewer + refuter).
 
 ## The development loop
 
-Every change follows this loop; step 1 applies only to PRs that establish
-patterns or restructure things - roughly the first PR of a phase:
+Every change follows this loop; step 1 applies only to fat PRs, as
+defined in step 1 itself:
 
 1. (fat PRs only) Local code review before pushing; act on design-level
    findings while they are cheap. A PR is "fat" when it establishes
