@@ -194,7 +194,7 @@ def test_each_over_an_unresolved_step_output_renders_a_placeholder() -> None:
             },
         }
     )
-    facts = {
+    facts: dict[str, object] = {
         "shipment": {"order_number": "95000254580"},
         "config": {"base_url": "https://api.pf.example"},
     }
