@@ -37,8 +37,10 @@ _Avoid_: parcel code, label barcode, 0-based sequences
 **Parcels String**:
 The comma-joined `{order number}-parcel-{n}:{barcode}` value returned to the
 WMS in the paperwork response, used by every carrier that reports barcodes.
-Carried over from the 3PL glossary.
-_Avoid_: barcode list
+`{n}` is the same 1-based print sequence embedded in the **Parcel Barcode**;
+the two must always agree (`95000254580-parcel-2:95000254580-2`). Carried
+over from the 3PL glossary.
+_Avoid_: barcode list, 0-based `{n}`
 
 **Delivery Cost**:
 What a carrier charges the company to deliver a consignment. Used to pick the

@@ -39,3 +39,13 @@ business logic).
 
 All of the above must pass before a PR; CI enforces them plus two AI review
 jobs (reviewer + refuter).
+
+## Handling review feedback
+
+Treat every review comment (AI or human) as a claim to verify, not an
+instruction to apply: check it against the code, CONTEXT.md, the ADRs, and
+the old system where relevant (use the receiving-code-review skill if
+available). Fix what verifies as real; rebut what does not, with evidence,
+as a PR comment. The refuter is deliberately aggressive - an unexamined
+"fix" for an overclaimed refutation is itself a bug. Local pre-push review
+is reserved for large or architecturally risky changes, not routine PRs.
