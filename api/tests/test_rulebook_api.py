@@ -196,3 +196,11 @@ def test_overlong_author_is_rejected_not_a_server_error(client: TestClient) -> N
     response = client.post("/api/rulebook/drafts", json=draft)
 
     assert response.status_code == 422
+
+
+def test_an_empty_draft_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/rulebook/drafts", json={"author": "ops", "services": []}
+    )
+
+    assert response.status_code == 422

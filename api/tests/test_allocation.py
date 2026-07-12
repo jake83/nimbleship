@@ -162,3 +162,8 @@ def test_duplicate_tie_break_orders_are_rejected() -> None:
                 service(code="B", tie_break_order=1),
             ],
         )
+
+
+def test_a_rulebook_must_declare_at_least_one_service() -> None:
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        Rulebook(version=1, services=[])

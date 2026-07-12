@@ -5,7 +5,7 @@ published - never edited. The highest published version is live."""
 
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
@@ -109,6 +109,20 @@ def create_draft(
     return row
 
 
+# Arbitrary app-wide advisory lock key: "rulebook publish" serialisation.
+_PUBLISH_LOCK_KEY = 815_003
+
+
+def _serialise_publishes(session: Session) -> None:
+    """The stale-draft guard in publish() is check-then-act: two concurrent
+    publishes could both read the same live version and both pass the check
+    (refuter, PR #9). On Postgres a transaction-scoped advisory lock
+    serialises publishers; SQLite permits a single writer, so the race
+    cannot occur there and no lock is needed."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(select(func.pg_advisory_xact_lock(_PUBLISH_LOCK_KEY)))
+
+
 def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
     """Publish a draft. Rows are immutable except for this one transition;
     the newly published version becomes live because highest-published wins.
@@ -117,6 +131,7 @@ def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
     a new version with the old content, keeping history linear."""
     if row.status != "draft":
         raise ValueError(f"version {row.version} is {row.status}, not a draft")
+    _serialise_publishes(session)
     live = session.execute(
         select(RulebookVersion.version)
         .where(RulebookVersion.status == "published")
