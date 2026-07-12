@@ -32,8 +32,9 @@ class ShippingAreaFields(BaseModel):
     @field_validator("prefixes")
     @classmethod
     def _normalise_prefixes(cls, value: list[str]) -> list[str]:
-        """Uppercase and trim like the old system stored them; matching is
-        exact against these, so normalisation belongs at the write edge."""
+        """Prefixes are stored normalised (uppercase, trimmed): the
+        resolver matches exactly against stored values, so normalisation
+        must happen at the write edge, never at lookup time."""
         normalised = sorted({prefix.strip().upper() for prefix in value})
         for prefix in normalised:
             if not prefix:

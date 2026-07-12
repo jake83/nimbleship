@@ -25,7 +25,8 @@ class QuotedServiceOut(BaseModel):
     carrier: str
     name: str
     # None = no Delivery Charge configured for this service/destination/
-    # weight - shown honestly, never as the old system's 0.0 sentinel.
+    # weight - shown honestly as null, never a 0.0 sentinel a caller
+    # could mistake for a real price.
     charge: Decimal | None
 
 

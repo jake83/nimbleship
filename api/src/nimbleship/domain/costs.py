@@ -1,7 +1,7 @@
 """Delivery Cost structures and calculator: what a carrier charges the
 company (CONTEXT.md: Delivery Cost, never confused with Delivery Charge).
 
-Ports the old system's DeliveryCostCalculator band semantics: weight bands
+Band semantics: weight bands
 (base charge plus an additional charge per kg over the band minimum), parcel
 bands, a fuel surcharge percentage over the carriage subtotal, and dimension
 surcharges added after fuel. The band type implies its fields: each type is
@@ -88,10 +88,9 @@ def calculate_cost(bands: list[CostBand], shipment: "Shipment") -> Decimal | Non
     """The Delivery Cost for a shipment under a service's cost bands, or
     None when no weight or parcel band matches (no basis for a cost).
 
-    Where several bands of one kind match, the cheapest wins: the old
-    calculator's within-scope behaviour for weight bands, extended to
-    parcel bands so the result is band-order-blind (the old system took
-    whichever parcel row the database returned first).
+    Where several bands of one kind match, the cheapest wins, so the
+    result is band-order-blind (same rulebook, same shipment, same cost -
+    regardless of how the bands are listed).
 
     An unknown longest dimension skips the surcharge (optimistic, ADR
     0007); dispatch re-calculates when the facts are complete."""

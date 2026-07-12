@@ -2,14 +2,12 @@
 customer (never confused with Delivery Cost, what a carrier charges the
 company).
 
-Ports the old system's charge rules: weight bands with scope precedence
-area -> country -> all. The first scope with a band matching the shipment's
-weight wins; within that scope the cheapest matching band prices the
-shipment as base charge + additional charge per started increment over the
-band minimum. One deliberate non-port: the old calculator matched ANY
-country band once a shipping area was resolved (it dropped the country id
-to null in the fallback); here country bands only ever price their own
-country."""
+Weight bands with scope precedence area -> country -> all: the first
+scope with a band matching the shipment's weight wins, and within that
+scope the cheapest matching band prices the shipment as base charge +
+additional charge per started increment over the band minimum. Country
+bands only ever price their own country - they are never a fallback for
+shipments whose area resolved."""
 
 from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Literal
@@ -29,9 +27,9 @@ class ChargeBand(BaseModel):
     max_weight_kg: Decimal
     charge: Decimal = Field(ge=0)
     additional_charge: Decimal | None = Field(default=None, ge=0)
-    # Increment size for the additional charge; omitted = per whole kg. The
-    # old system stored 0 and silently coerced it to 1 at calculation time;
-    # ambiguous rows are refused at authoring instead (ADR 0003 rails).
+    # Increment size for the additional charge; omitted = per whole kg.
+    # Zero would be ambiguous (charge per nothing?) and is refused at
+    # authoring rather than silently reinterpreted at calculation time.
     additional_charge_per_kg: Decimal | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
@@ -54,8 +52,7 @@ class ChargeBand(BaseModel):
 
 def _band_charge(band: ChargeBand, weight_kg: Decimal) -> Decimal:
     """Base charge plus the additional charge for every started increment
-    over the band minimum (a started kilogram counts in full, as the old
-    calculator's ceil did)."""
+    over the band minimum - a started kilogram counts in full."""
     if band.additional_charge is None:
         return band.charge
     excess_kg = weight_kg - band.min_weight_kg

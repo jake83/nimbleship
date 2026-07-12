@@ -3,24 +3,23 @@
 A Warehouse (CONTEXT.md: a logical dispatch identity) carries collection
 days and holidays; dispatch dates must land on a day a carrier actually
 collects. Pure functions only - the ORM rows are mapped into these shapes
-at the edge. Ported from the old system's WarehouseCollectionDay flags and
-DispatchScheduler scan (cutoff times are out of scope until delivery dates
-arrive)."""
+at the edge. Cutoff times are out of scope until delivery dates
+arrive."""
 
 from collections.abc import Collection
 from datetime import date, timedelta
 
 from pydantic import BaseModel
 
-# A holiday-saturated calendar must fail loudly, never spin: no real
-# warehouse closes for a whole year (the old system fell back to "tomorrow"
-# here, which silently scheduled collection on a non-collection day).
+# A holiday-saturated calendar must fail loudly, never spin or guess:
+# no real warehouse closes for a whole year, and silently scheduling
+# collection on a non-collection day is worse than an error.
 _SCAN_LIMIT_DAYS = 366
 
 
 class CollectionDays(BaseModel):
-    """Weekday collection flags, one set per Warehouse - the old system's
-    warehouse_collection_days shape, defaults included (Monday to Friday)."""
+    """Weekday collection flags, one set per Warehouse; collection
+    defaults to weekdays (Monday to Friday)."""
 
     monday: bool = True
     tuesday: bool = True

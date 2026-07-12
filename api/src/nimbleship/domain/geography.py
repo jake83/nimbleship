@@ -2,11 +2,11 @@
 
 The areas a shipment is in are facts resolved BEFORE the pure evaluation
 (ADR 0008 addendum), so allocate() stays a pure function. Every matching
-prefix counts (old-system parity): IV1 2AB is in the IV-defined area AND
-the IV1-defined one - a specific prefix never shadows a general one, so
-area definitions stay independent of each other. "Longest prefix" survives
-only as the query optimisation (one query against every prefix of the
-postcode, ported from the old getBlockedHauliersForPostcode)."""
+prefix counts: IV1 2AB is in the IV-defined area AND the IV1-defined one -
+a specific prefix never shadows a general one, so area definitions stay
+independent of each other (carve-outs, if ever wanted, must be an explicit
+feature). The lookup is one query against every prefix of the postcode
+rather than a table scan."""
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
