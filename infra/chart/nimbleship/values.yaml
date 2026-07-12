@@ -1,5 +1,8 @@
 api:
   image: nimbleship-api:dev
+  # Before raising replicas above 1: boot runs `alembic upgrade head`, and
+  # concurrent pods would race the migration. Move migrations to a Job or
+  # pre-install hook first.
   replicas: 1
 
 web:

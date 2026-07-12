@@ -26,6 +26,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-postgres
                   key: database-url
+          # Boot blocks on `alembic upgrade head`; the startup probe gives a
+          # slow migration up to ~5 minutes before liveness may kill the pod.
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             httpGet:
               path: /api/health
