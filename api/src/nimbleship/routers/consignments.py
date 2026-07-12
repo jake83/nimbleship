@@ -8,13 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from nimbleship.carriers.dropout import LabelRequest, render_labels
+from nimbleship.carriers.dropout import LabelRequest, LabelSender, render_labels
 from nimbleship.db import get_session
 from nimbleship.domain.allocation import AllocationResult, Shipment, allocate
 from nimbleship.domain.barcodes import parcel_barcodes
 from nimbleship.domain.rulebook import active_rulebook
 from nimbleship.labels.store import LabelStore, get_label_store
-from nimbleship.models import Consignment, OrderEvent, Parcel
+from nimbleship.models import Consignment, OrderEvent, Parcel, Warehouse
 
 router = APIRouter(prefix="/consignments", tags=["consignments"])
 
@@ -35,6 +35,10 @@ class ConsignmentIn(BaseModel):
     postcode: str
     destination_country: str = Field(min_length=2, max_length=3)
     parcels: list[ParcelIn] = Field(min_length=1)
+    # The Warehouse code the consignment dispatches from (CONTEXT.md:
+    # Warehouse - a logical dispatch identity); it supplies the label's
+    # sender details.
+    warehouse: str | None = Field(default=None, max_length=64)
 
 
 class ConsignmentOut(BaseModel):
@@ -42,6 +46,7 @@ class ConsignmentOut(BaseModel):
     status: str
     carrier: str | None
     service: str | None
+    warehouse: str | None
     label_url: str | None
     allocation: AllocationResult
 
@@ -77,12 +82,37 @@ def _order_exists(session: Session, order_number: str) -> bool:
     return row is not None
 
 
+def _resolve_warehouse(session: Session, code: str | None) -> Warehouse | None:
+    """Look up the named Warehouse; an unknown code is a caller error, not
+    a fact to store optimistically - fail before anything is written."""
+    if code is None:
+        return None
+    warehouse = session.execute(
+        select(Warehouse).where(Warehouse.code == code)
+    ).scalar_one_or_none()
+    if warehouse is None:
+        raise HTTPException(422, "unknown warehouse code")
+    return warehouse
+
+
+def _label_sender(warehouse: Warehouse | None) -> LabelSender | None:
+    if warehouse is None:
+        return None
+    return LabelSender(
+        name=warehouse.company_name or warehouse.name,
+        address_lines=warehouse.address_lines,
+        postcode=warehouse.postcode,
+        country=warehouse.country,
+    )
+
+
 @router.post("", status_code=201)
 def create_consignment(
     payload: ConsignmentIn, session: SessionDep, store: LabelStoreDep
 ) -> ConsignmentOut:
     if _order_exists(session, payload.order_number):
         raise HTTPException(409, "a consignment already exists for this order")
+    warehouse = _resolve_warehouse(session, payload.warehouse)
 
     rulebook = active_rulebook(session)
     total_weight = sum((p.weight_kg for p in payload.parcels), Decimal("0"))
@@ -106,6 +136,7 @@ def create_consignment(
         status="allocated" if selected else "rejected",
         carrier=selected.carrier if selected else None,
         service=selected.code if selected else None,
+        warehouse=payload.warehouse,
         allocation=result.model_dump(mode="json"),
     )
     barcodes = parcel_barcodes(payload.order_number, len(payload.parcels))
@@ -146,6 +177,7 @@ def create_consignment(
                 postcode=payload.postcode,
                 country=payload.destination_country,
                 parcel_count=len(payload.parcels),
+                sender=_label_sender(warehouse),
             )
         )
         store.save(payload.order_number, pdf)
@@ -170,6 +202,7 @@ def create_consignment(
         status=consignment.status,
         carrier=consignment.carrier,
         service=consignment.service,
+        warehouse=consignment.warehouse,
         label_url=_label_url(consignment),
         allocation=result,
     )
@@ -201,6 +234,7 @@ def consignment_detail(order_number: str, session: SessionDep) -> ConsignmentDet
         status=consignment.status,
         carrier=consignment.carrier,
         service=consignment.service,
+        warehouse=consignment.warehouse,
         label_url=_label_url(consignment),
         allocation=AllocationResult.model_validate(consignment.allocation),
         recipient_name=consignment.recipient_name,

@@ -1,5 +1,8 @@
+import io
+
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 CONSIGNMENT = {
     "order_number": "95000254580",
@@ -105,6 +108,59 @@ def test_non_latin_order_numbers_are_rejected_with_422(client: TestClient) -> No
     response = client.post("/api/consignments", json=unicode_order)
 
     assert response.status_code == 422
+
+
+WAREHOUSE = {
+    "code": "MAIN",
+    "name": "Main Warehouse",
+    "company_name": "Acme Fulfilment Ltd",
+    "address_lines": ["Unit 5, Trading Estate"],
+    "postcode": "LE1 1AA",
+    "country": "GB",
+}
+
+
+def _label_text(client: TestClient, order_number: str) -> str:
+    pdf = client.get(f"/api/consignments/{order_number}/label.pdf").content
+    return PdfReader(io.BytesIO(pdf)).pages[0].extract_text()
+
+
+def test_consignment_stores_its_warehouse_and_labels_carry_its_sender_details(
+    client: TestClient,
+) -> None:
+    client.post("/api/warehouses", json=WAREHOUSE)
+
+    response = client.post(
+        "/api/consignments", json={**CONSIGNMENT, "warehouse": "MAIN"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["warehouse"] == "MAIN"
+    assert client.get("/api/consignments/95000254580").json()["warehouse"] == "MAIN"
+    text = _label_text(client, "95000254580")
+    assert "Acme Fulfilment Ltd" in text
+    assert "LE1 1AA" in text
+
+
+def test_consignment_without_a_warehouse_has_no_sender_details(
+    client: TestClient,
+) -> None:
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 201
+    assert response.json()["warehouse"] is None
+    assert "From" not in _label_text(client, "95000254580")
+
+
+def test_unknown_warehouse_code_is_rejected_and_stores_nothing(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/consignments", json={**CONSIGNMENT, "warehouse": "NOPE"}
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/consignments/95000254580").status_code == 404
 
 
 def test_losing_a_duplicate_race_still_returns_409(
