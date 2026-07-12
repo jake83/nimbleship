@@ -70,6 +70,28 @@ def test_versions_lists_seed_and_new_draft(client: TestClient) -> None:
     ]
 
 
+def test_get_single_version_returns_metadata_and_services(
+    client: TestClient,
+) -> None:
+    client.get("/api/rulebook/active")
+    client.post("/api/rulebook/drafts", json=DRAFT_WITH_US)
+
+    response = client.get("/api/rulebook/versions/2")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["version"] == 2
+    assert body["status"] == "draft"
+    assert body["author"] == "jake"
+    assert "created_at" in body
+    assert [s["code"] for s in body["services"]] == ["DROPOUT-STD", "DROPOUT-XL"]
+    assert body["services"][1]["countries"] == ["GB", "IE", "FR", "US"]
+
+
+def test_get_unknown_version_is_not_found(client: TestClient) -> None:
+    assert client.get("/api/rulebook/versions/99").status_code == 404
+
+
 def test_invalid_draft_is_rejected(client: TestClient) -> None:
     bad = {
         "author": "jake",

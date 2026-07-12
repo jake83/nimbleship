@@ -1,5 +1,8 @@
+import io
+
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 CONSIGNMENT = {
     "order_number": "95000254580",
@@ -107,6 +110,59 @@ def test_non_latin_order_numbers_are_rejected_with_422(client: TestClient) -> No
     assert response.status_code == 422
 
 
+WAREHOUSE = {
+    "code": "MAIN",
+    "name": "Main Warehouse",
+    "company_name": "Acme Fulfilment Ltd",
+    "address_lines": ["Unit 5, Trading Estate"],
+    "postcode": "LE1 1AA",
+    "country": "GB",
+}
+
+
+def _label_text(client: TestClient, order_number: str) -> str:
+    pdf = client.get(f"/api/consignments/{order_number}/label.pdf").content
+    return PdfReader(io.BytesIO(pdf)).pages[0].extract_text()
+
+
+def test_consignment_stores_its_warehouse_and_labels_carry_its_sender_details(
+    client: TestClient,
+) -> None:
+    client.post("/api/warehouses", json=WAREHOUSE)
+
+    response = client.post(
+        "/api/consignments", json={**CONSIGNMENT, "warehouse": "MAIN"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["warehouse"] == "MAIN"
+    assert client.get("/api/consignments/95000254580").json()["warehouse"] == "MAIN"
+    text = _label_text(client, "95000254580")
+    assert "Acme Fulfilment Ltd" in text
+    assert "LE1 1AA" in text
+
+
+def test_consignment_without_a_warehouse_has_no_sender_details(
+    client: TestClient,
+) -> None:
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 201
+    assert response.json()["warehouse"] is None
+    assert "From" not in _label_text(client, "95000254580")
+
+
+def test_unknown_warehouse_code_is_rejected_and_stores_nothing(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/consignments", json={**CONSIGNMENT, "warehouse": "NOPE"}
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/consignments/95000254580").status_code == 404
+
+
 def test_losing_a_duplicate_race_still_returns_409(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -123,3 +179,115 @@ def test_losing_a_duplicate_race_still_returns_409(
     response = client.post("/api/consignments", json=CONSIGNMENT)
 
     assert response.status_code == 409
+
+
+def _publish_services(client: TestClient, services: list[dict[str, object]]) -> None:
+    draft = client.post("/api/rulebook/drafts", json={"services": services})
+    assert draft.status_code == 201
+    version = draft.json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+
+def test_destination_in_a_blocked_area_excludes_the_blocking_service(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/api/shipping-areas",
+        json={
+            "code": "HIGHLANDS",
+            "name": "Scottish Highlands",
+            "country": "GB",
+            "prefixes": ["IV"],
+        },
+    )
+    base = {
+        "carrier": "dropout",
+        "weight_min_kg": "0",
+        "weight_max_kg": "999",
+        "countries": ["GB"],
+    }
+    _publish_services(
+        client,
+        [
+            {
+                **base,
+                "code": "CHEAP-MAINLAND",
+                "name": "Cheap Mainland",
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "areas_blocked": ["HIGHLANDS"],
+            },
+            {
+                **base,
+                "code": "EVERYWHERE",
+                "name": "Everywhere",
+                "cost": "12.00",
+                "tie_break_order": 2,
+            },
+        ],
+    )
+    highlands_order = {
+        **CONSIGNMENT,
+        "order_number": "95000254590",
+        "postcode": "IV1 2AB",
+    }
+
+    response = client.post("/api/consignments", json=highlands_order)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "allocated"
+    assert body["service"] == "EVERYWHERE"
+    blocked = next(
+        r
+        for r in body["allocation"]["service_results"]
+        if r["service_code"] == "CHEAP-MAINLAND"
+    )
+    assert blocked["eligible"] is False
+    failed = [c["name"] for c in blocked["checks"] if not c["ok"]]
+    assert failed == ["area_blocked"]
+
+
+def test_destination_outside_the_blocked_area_keeps_the_cheap_service(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/api/shipping-areas",
+        json={
+            "code": "HIGHLANDS",
+            "name": "Scottish Highlands",
+            "country": "GB",
+            "prefixes": ["IV"],
+        },
+    )
+    base = {
+        "carrier": "dropout",
+        "weight_min_kg": "0",
+        "weight_max_kg": "999",
+        "countries": ["GB"],
+    }
+    _publish_services(
+        client,
+        [
+            {
+                **base,
+                "code": "CHEAP-MAINLAND",
+                "name": "Cheap Mainland",
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "areas_blocked": ["HIGHLANDS"],
+            },
+            {
+                **base,
+                "code": "EVERYWHERE",
+                "name": "Everywhere",
+                "cost": "12.00",
+                "tie_break_order": 2,
+            },
+        ],
+    )
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 201
+    assert response.json()["service"] == "CHEAP-MAINLAND"

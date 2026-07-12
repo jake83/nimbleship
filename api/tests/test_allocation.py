@@ -117,6 +117,8 @@ def test_trace_records_every_check_for_every_service() -> None:
             "weight",
             "dimension",
             "girth",
+            "area_blocked",
+            "area_served",
         }
         for check in service_result.checks:
             assert check.actual != ""
@@ -257,6 +259,45 @@ def test_service_without_girth_limit_accepts_anything() -> None:
     assert result.selected is not None
 
 
+def test_shipment_in_a_blocked_area_excludes_service() -> None:
+    rulebook = Rulebook(version=1, services=[service(areas_blocked=["HIGHLANDS"])])
+
+    result = allocate(rulebook, shipment(shipping_areas=["HIGHLANDS"]))
+
+    assert result.selected is None
+    failed = [c for c in result.service_results[0].checks if not c.ok]
+    assert [c.name for c in failed] == ["area_blocked"]
+
+
+def test_shipment_outside_blocked_areas_stays_eligible() -> None:
+    rulebook = Rulebook(version=1, services=[service(areas_blocked=["HIGHLANDS"])])
+
+    result = allocate(rulebook, shipment(shipping_areas=["NORTHERN-IRELAND"]))
+
+    assert result.selected is not None
+
+
+def test_no_matched_areas_is_optimistic_for_blocked_areas() -> None:
+    rulebook = Rulebook(version=1, services=[service(areas_blocked=["HIGHLANDS"])])
+
+    result = allocate(rulebook, shipment(shipping_areas=[]))
+
+    assert result.selected is not None
+    check = next(
+        c for c in result.service_results[0].checks if c.name == "area_blocked"
+    )
+    assert check.ok is True
+    assert "optimistic" in check.actual
+
+
+def test_service_without_blocked_areas_accepts_any_area() -> None:
+    rulebook = Rulebook(version=1, services=[service()])
+
+    result = allocate(rulebook, shipment(shipping_areas=["HIGHLANDS"]))
+
+    assert result.selected is not None
+
+
 def weight_bands(charge: str, additional: str | None = None) -> list[dict[str, str]]:
     band = {
         "cost_type": "consignment_weight",
@@ -393,3 +434,40 @@ def test_rejection_reports_no_selected_cost() -> None:
     result = allocate(rulebook, shipment())
 
     assert result.selected_cost is None
+
+
+def test_shipment_outside_served_areas_excludes_service() -> None:
+    rulebook = Rulebook(version=1, services=[service(areas_served=["LONDON"])])
+
+    result = allocate(rulebook, shipment(shipping_areas=["HIGHLANDS"]))
+
+    assert result.selected is None
+    failed = [c for c in result.service_results[0].checks if not c.ok]
+    assert [c.name for c in failed] == ["area_served"]
+
+
+def test_shipment_overlapping_served_areas_stays_eligible() -> None:
+    rulebook = Rulebook(version=1, services=[service(areas_served=["LONDON"])])
+
+    result = allocate(rulebook, shipment(shipping_areas=["LONDON", "ZONE-1"]))
+
+    assert result.selected is not None
+
+
+def test_no_matched_areas_is_optimistic_for_served_areas() -> None:
+    rulebook = Rulebook(version=1, services=[service(areas_served=["LONDON"])])
+
+    result = allocate(rulebook, shipment(shipping_areas=[]))
+
+    assert result.selected is not None
+    check = next(c for c in result.service_results[0].checks if c.name == "area_served")
+    assert check.ok is True
+    assert "optimistic" in check.actual
+
+
+def test_service_serving_anywhere_accepts_any_area() -> None:
+    rulebook = Rulebook(version=1, services=[service(areas_served=None)])
+
+    result = allocate(rulebook, shipment(shipping_areas=["HIGHLANDS"]))
+
+    assert result.selected is not None
