@@ -182,3 +182,52 @@ def test_draft_with_invalid_charge_band_is_rejected_at_authoring(
 
     assert response.status_code == 422
     assert "scope_code" in response.text
+
+
+def test_warehouse_scoped_charge_bands_apply_only_for_that_warehouse(
+    client: TestClient,
+) -> None:
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "DROPOUT-STD",
+                "carrier": "dropout",
+                "name": "Drop Out Standard",
+                "weight_min_kg": "0",
+                "weight_max_kg": "30",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "charge_bands": [
+                    {
+                        "scope_type": "all",
+                        "min_weight_kg": "0",
+                        "max_weight_kg": "999",
+                        "charge": "9.99",
+                    },
+                    {
+                        "scope_type": "all",
+                        "warehouse": "HR",
+                        "min_weight_kg": "0",
+                        "max_weight_kg": "999",
+                        "charge": "5.99",
+                    },
+                ],
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+    from_hr = client.post(
+        "/api/quotes", json={**GB_QUOTE_REQUEST, "warehouse": "HR"}
+    ).json()
+    from_other = client.post(
+        "/api/quotes", json={**GB_QUOTE_REQUEST, "warehouse": "LDS"}
+    ).json()
+    unstated = client.post("/api/quotes", json=GB_QUOTE_REQUEST).json()
+
+    assert from_hr["services"][0]["charge"] == "5.99"
+    assert from_other["services"][0]["charge"] == "9.99"
+    assert unstated["services"][0]["charge"] == "9.99"

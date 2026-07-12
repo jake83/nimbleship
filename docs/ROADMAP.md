@@ -88,9 +88,21 @@ Held on 2026-07-11; outcomes are ADRs 0007 and 0008 plus CONTEXT.md terms
   haulier_postcode_surcharge table (apparently dead - confirm and drop),
   and the 40-row service-group mapping table.
 
-## Phase 2 - Allocation, unified
+## Phase 2 - Allocation, unified (DELIVERED 2026-07-12)
 
-Goal: the routing brain, done properly.
+Delivered via foundations F1/F2 (PRs #12/#13), six parallel agent chunks
+(PRs #14-#19), and the integration step: Alembic-owned schema with Postgres
+in CI, the evaluator registry with seven declaration kinds, banded Delivery
+Costs driving selection, warehouse-scoped Delivery Charges with the
+/api/quotes checkout projection, geography (every matching prefix counts),
+the Delivery Proposition catalogue, Warehouses with collection calendars,
+the rules UI (versions, diff, draft editor, dry-run, publish), dry-run
+replay that re-resolves area facts, and force-allocation behind the
+testing_tools capability. Carried forward: delivery dates/cutoff times,
+per-website warehouse mapping, the models.py naming split (Phase 3), rules
+UI editing for cost/charge bands.
+
+Original goal: the routing brain, done properly.
 
 - Implement the Session A model: delivery options, costs, charges,
   propositions, geography - one linked model, versioned per ADR 0003.

@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from nimbleship.carriers.dropout import LabelRequest, LabelSender, render_labels
+from nimbleship.config import get_settings
 from nimbleship.db import get_session
 from nimbleship.domain.allocation import AllocationResult, Shipment, allocate
 from nimbleship.domain.barcodes import parcel_barcodes
@@ -43,6 +44,9 @@ class ConsignmentIn(BaseModel):
     # Warehouse - a logical dispatch identity); it supplies the label's
     # sender details.
     warehouse: str | None = Field(default=None, max_length=64)
+    # Testing tools only (403 in production): pins the allocation to one
+    # service, bypassing selection but not the audit trail.
+    force_service: str | None = Field(default=None, max_length=64)
 
 
 class ConsignmentOut(BaseModel):
@@ -116,6 +120,10 @@ def create_consignment(
 ) -> ConsignmentOut:
     if _order_exists(session, payload.order_number):
         raise HTTPException(409, "a consignment already exists for this order")
+    if payload.force_service is not None and not get_settings().testing_tools_enabled:
+        raise HTTPException(
+            403, "force_service requires testing tools, which are disabled here"
+        )
     warehouse = _resolve_warehouse(session, payload.warehouse)
 
     rulebook = active_rulebook(session)
@@ -134,8 +142,25 @@ def create_consignment(
             parcel_count=len(payload.parcels),
             proposition=payload.proposition,
             shipping_areas=shipping_areas,
+            warehouse=payload.warehouse,
         ),
     )
+    if payload.force_service is not None:
+        forced = next(
+            (s for s in rulebook.services if s.code == payload.force_service), None
+        )
+        if forced is None:
+            raise HTTPException(422, "force_service names no service in the rulebook")
+        # The genuine evaluation trace is kept; only the selection is
+        # overridden, so the audit trail shows both what would have
+        # happened and that it was forced.
+        result = result.model_copy(
+            update={
+                "selected": forced,
+                "selected_cost": None,
+                "reason": "forced by testing tools",
+            }
+        )
 
     selected = result.selected
     consignment = Consignment(
@@ -180,6 +205,7 @@ def create_consignment(
                     # not the flat `selected.cost` fallback field.
                     "cost": str(result.selected_cost),
                     "rulebook_version": rulebook.version,
+                    "forced": payload.force_service is not None,
                 },
             )
         )
