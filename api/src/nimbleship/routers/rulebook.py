@@ -135,7 +135,11 @@ def publish_version(version: int, session: SessionDep) -> VersionOut:
 def _shipment_from(session: Session, consignment: Consignment) -> Shipment:
     """Rebuild the dispatch-time facts. Areas are re-resolved from the
     stored postcode: replaying without them would evaluate area checks
-    optimistically and misreport outcomes the live run rejected."""
+    optimistically and misreport outcomes the live run rejected.
+
+    Resolution uses TODAY's geography tables by design - a replay answers
+    "what would this version do now", so a divergence can reflect area
+    definition drift as well as rulebook drift."""
     return Shipment(
         order_number=consignment.order_number,
         destination_country=consignment.destination_country,

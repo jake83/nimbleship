@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 from nimbleship.carriers.dropout import LabelRequest, LabelSender, render_labels
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
-from nimbleship.domain.allocation import AllocationResult, Shipment, allocate
+from nimbleship.domain.allocation import (
+    AllocationResult,
+    Shipment,
+    allocate,
+    selection_cost,
+)
 from nimbleship.domain.barcodes import parcel_barcodes
 from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import active_rulebook
@@ -133,18 +138,16 @@ def create_consignment(
     shipping_areas = resolve_shipping_areas(
         session, payload.postcode, payload.destination_country
     )
-    result = allocate(
-        rulebook,
-        Shipment(
-            order_number=payload.order_number,
-            destination_country=payload.destination_country,
-            total_weight_kg=total_weight,
-            parcel_count=len(payload.parcels),
-            proposition=payload.proposition,
-            shipping_areas=shipping_areas,
-            warehouse=payload.warehouse,
-        ),
+    shipment = Shipment(
+        order_number=payload.order_number,
+        destination_country=payload.destination_country,
+        total_weight_kg=total_weight,
+        parcel_count=len(payload.parcels),
+        proposition=payload.proposition,
+        shipping_areas=shipping_areas,
+        warehouse=payload.warehouse,
     )
+    result = allocate(rulebook, shipment)
     if payload.force_service is not None:
         forced = next(
             (s for s in rulebook.services if s.code == payload.force_service), None
@@ -153,11 +156,14 @@ def create_consignment(
             raise HTTPException(422, "force_service names no service in the rulebook")
         # The genuine evaluation trace is kept; only the selection is
         # overridden, so the audit trail shows both what would have
-        # happened and that it was forced.
+        # happened and that it was forced. The forced cost comes from the
+        # selection policy's own helper - one definition of "the cost",
+        # never a drifting copy.
+        forced_cost = selection_cost(forced, shipment)
         result = result.model_copy(
             update={
                 "selected": forced,
-                "selected_cost": None,
+                "selected_cost": forced_cost,
                 "reason": "forced by testing tools",
             }
         )
@@ -202,8 +208,13 @@ def create_consignment(
                     "carrier": selected.carrier,
                     "service": selected.code,
                     # The cost selection compared (banded when configured),
-                    # not the flat `selected.cost` fallback field.
-                    "cost": str(result.selected_cost),
+                    # not the flat `selected.cost` fallback field. Absent
+                    # cost (a forced service with no matching band) is JSON
+                    # null - the audit trail never carries a stringified
+                    # None (refuter, PR #25).
+                    "cost": str(result.selected_cost)
+                    if result.selected_cost is not None
+                    else None,
                     "rulebook_version": rulebook.version,
                     "forced": payload.force_service is not None,
                 },
