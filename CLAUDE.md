@@ -40,6 +40,48 @@ business logic).
 All of the above must pass before a PR; CI enforces them plus two AI review
 jobs (reviewer + refuter).
 
+## The development loop
+
+Every change follows this loop; step 1 applies only to PRs that establish
+patterns or restructure things - roughly the first PR of a phase:
+
+1. (fat PRs only) Local code review before pushing; act on design-level
+   findings while they are cheap.
+2. Push and open the PR. CI plus the reviewer and refuter jobs run.
+3. Triage every AI finding per "Handling review feedback" below; push fixes,
+   post rebuttals. The pipeline re-runs on each push until settled.
+4. When the loop is settled, post a wrap-up comment ("AI loop complete:
+   N findings, M fixed, K rebutted"), then:
+   - **Trivial PR** - judged by change TYPE, not size. Every change in the
+     PR must be behaviour-preserving and of one of these kinds: a pure
+     rename, a comment/docstring/typo fix, a cosmetic frontend tweak (copy,
+     spacing, styling, markup rearrangement with no logic change), or an
+     equivalent no-behaviour-change edit. Nothing touching domain logic,
+     schema, API contracts, workflows, dependencies, CONTEXT.md, or ADRs is
+     ever trivial, however small. Size backstop: past ~25 changed lines even
+     type-trivial changes get human eyes. Apply the `trivial` label; the
+     agent may merge on green.
+   - **Everything else**: apply `needs-human-review` and assign the repo
+     owner (GitHub cannot request a review from the PR author, so the flag
+     is label + assignee). An agent NEVER merges a non-trivial PR - this is
+     law, not enforced by GitHub, so it must never be broken. When in doubt,
+     a PR is not trivial. The human's merge IS the approval: no GitHub
+     review approval exists on a solo repo (an author cannot approve their
+     own PR); findings arrive in conversation or PR comments, and the merge
+     commit records the sign-off.
+   Stacked PRs: merge the base PR and DELETE its branch first so GitHub
+   retargets the stacked PR to main - otherwise it merges into a dead
+   branch and its content silently never reaches main.
+   The trivial definition starts deliberately tight and is loosened only
+   with evidence: when human review of a class of PRs has stopped finding
+   anything for a sustained stretch, widen the definition here and record
+   why in the same commit.
+5. Route every HUMAN review finding into exactly one artifact, so the same
+   finding never needs a human twice: coding convention -> CLAUDE.md; domain
+   language -> CONTEXT.md; architectural decision -> new or amended ADR; a
+   bug class the AI reviewers should have caught -> the reviewer/refuter
+   prompts in .github/workflows/claude-review.yml.
+
 ## Handling review feedback
 
 Treat every review comment (AI or human) as a claim to verify, not an
@@ -47,5 +89,4 @@ instruction to apply: check it against the code, CONTEXT.md, the ADRs, and
 the old system where relevant (use the receiving-code-review skill if
 available). Fix what verifies as real; rebut what does not, with evidence,
 as a PR comment. The refuter is deliberately aggressive - an unexamined
-"fix" for an overclaimed refutation is itself a bug. Local pre-push review
-is reserved for large or architecturally risky changes, not routine PRs.
+"fix" for an overclaimed refutation is itself a bug.
