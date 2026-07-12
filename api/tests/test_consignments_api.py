@@ -413,3 +413,19 @@ def test_forcing_an_unknown_service_is_rejected(
     )
 
     assert response.status_code == 422
+
+
+def test_forced_allocation_records_a_real_cost_not_a_sentinel(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NIMBLESHIP_TESTING_TOOLS_ENABLED", "true")
+
+    client.post(
+        "/api/consignments",
+        json={**CONSIGNMENT, "force_service": "DROPOUT-XL"},
+    )
+
+    timeline = client.get(f"/api/consignments/{CONSIGNMENT['order_number']}").json()
+    allocated = next(e for e in timeline["events"] if e["stage"] == "allocated")
+    assert allocated["detail"]["cost"] == "12.00"
+    assert timeline["allocation"]["selected_cost"] == "12.00"
