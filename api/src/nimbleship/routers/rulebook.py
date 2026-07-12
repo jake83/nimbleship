@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from nimbleship.db import get_session
 from nimbleship.domain.allocation import (
@@ -33,7 +33,8 @@ DRY_RUN_DEFAULT_LIMIT = 50
 
 class DraftIn(BaseModel):
     services: list[ServiceDeclaration]
-    author: str = "api"
+    # Placeholder identity pending the auth story; bounded to the column.
+    author: str = Field(default="api", max_length=64)
 
 
 class VersionOut(BaseModel):
@@ -128,7 +129,11 @@ def dry_run(version: int, payload: DryRunIn, session: SessionDep) -> DryRunOut:
     row = _get_version_or_404(session, version)
     rulebook = rulebook_for(row)
 
-    query = select(Consignment).order_by(Consignment.id.desc())
+    query = (
+        select(Consignment)
+        .options(selectinload(Consignment.parcels))
+        .order_by(Consignment.id.desc())
+    )
     if payload.order_numbers is not None:
         query = query.where(Consignment.order_number.in_(payload.order_numbers))
     else:

@@ -188,3 +188,11 @@ def test_publishing_a_draft_older_than_the_live_version_conflicts(
 
     assert response.status_code == 409
     assert "would not become live" in response.text
+
+
+def test_overlong_author_is_rejected_not_a_server_error(client: TestClient) -> None:
+    draft = {**DRAFT_WITH_US, "author": "x" * 65}
+
+    response = client.post("/api/rulebook/drafts", json=draft)
+
+    assert response.status_code == 422

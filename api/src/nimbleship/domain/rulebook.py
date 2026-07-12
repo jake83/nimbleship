@@ -38,13 +38,18 @@ _DEMO_SERVICES: list[dict[str, object]] = [
 ]
 
 
-def _to_rulebook(row: RulebookVersion) -> Rulebook:
+def rulebook_for(row: RulebookVersion) -> Rulebook:
     declared = cast(list[dict[str, object]], row.data["services"])
     services = [ServiceDeclaration.model_validate(service) for service in declared]
     return Rulebook(version=row.version, services=services)
 
 
 def _seed_if_fresh(session: Session) -> None:
+    """Seed when NO row exists at all. Invariant this relies on: every
+    public entry point in this module seeds before drafts can be created,
+    so a published version always exists whenever any row exists - which is
+    what lets active_rulebook() use scalar_one(). If an entry point ever
+    skips seeding, restore a status == "published" check here."""
     exists = session.execute(
         select(RulebookVersion.version).limit(1)
     ).scalar_one_or_none()
@@ -69,7 +74,7 @@ def active_rulebook(session: Session) -> Rulebook:
         .order_by(RulebookVersion.version.desc())
         .limit(1)
     ).scalar_one()
-    return _to_rulebook(row)
+    return rulebook_for(row)
 
 
 def list_versions(session: Session) -> list[RulebookVersion]:
@@ -126,7 +131,3 @@ def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
     row.status = "published"
     session.flush()
     return row
-
-
-def rulebook_for(row: RulebookVersion) -> Rulebook:
-    return _to_rulebook(row)
