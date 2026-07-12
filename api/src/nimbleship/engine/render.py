@@ -68,6 +68,11 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     assert entry.source is not None  # schema guarantees exactly one
     value = _resolve(entry.source, facts)
     if entry.each is not None:
+        # An unresolved step output stays a stable placeholder token so
+        # multi-step operations replay offline (refuter, PR #26 - the
+        # PalletForce label loop is the motivating case).
+        if isinstance(value, str) and value == f"<{entry.source}>":
+            return value
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
         return [

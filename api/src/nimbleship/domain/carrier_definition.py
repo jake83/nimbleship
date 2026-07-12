@@ -160,6 +160,10 @@ class CarrierDefinition(BaseModel):
 
     @model_validator(mode="after")
     def _sources_resolve(self) -> "CarrierDefinition":
+        # The auth secret is a source path too: a typo there must fail at
+        # authoring like any other unknown fact (refuter, PR #26).
+        if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
+            _validate_source(self.auth.secret, set(), False, "auth")
         for op_name, operation in self.operations.items():
             earlier: set[str] = set()
             for step in operation.steps:

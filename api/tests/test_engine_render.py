@@ -138,3 +138,71 @@ def test_renders_are_deterministic() -> None:
     second = render_operation(DEFINITION, "book", FACTS)
 
     assert [r.model_dump() for r in first] == [r.model_dump() for r in second]
+
+
+def test_each_over_an_unresolved_step_output_renders_a_placeholder() -> None:
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "palletforce",
+            "name": "PalletForce",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "manifest",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "order",
+                                        "source": "shipment.order_number",
+                                    }
+                                ],
+                            },
+                            "response": {
+                                "format": "json",
+                                "extract": [{"name": "labels", "path": "labelImages"}],
+                            },
+                        },
+                        {
+                            "name": "fetch",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "images",
+                                        "source": "steps.manifest.labels",
+                                        "each": [
+                                            {
+                                                "target": "data",
+                                                "source": "item.imageData",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    facts = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"base_url": "https://api.pf.example"},
+    }
+
+    _, second = render_operation(definition, "book", facts)
+
+    assert second.body["images"] == "<steps.manifest.labels>"
+    # Deterministic across renders - the placeholder is stable.
+    assert render_operation(definition, "book", facts)[1].body["images"] == (
+        "<steps.manifest.labels>"
+    )

@@ -222,3 +222,17 @@ def test_step_reference_to_unknown_step_is_rejected() -> None:
 
     with pytest.raises(ValidationError, match="unknown step"):
         CarrierDefinition.model_validate(bad)
+
+
+def test_auth_secret_source_is_validated_at_authoring() -> None:
+    bad = {
+        **MINIMAL,
+        "auth": {
+            "scheme": "query_key",
+            "param": "key",
+            "secret": "cofnig.api_key",
+        },
+    }
+
+    with pytest.raises(ValidationError, match="unknown source root"):
+        CarrierDefinition.model_validate(bad)
