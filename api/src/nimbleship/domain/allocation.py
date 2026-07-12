@@ -7,7 +7,7 @@ Phase 2; the structures here already leave room for them.
 
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class ServiceDeclaration(BaseModel):
@@ -24,6 +24,25 @@ class ServiceDeclaration(BaseModel):
 class Rulebook(BaseModel):
     version: int
     services: list[ServiceDeclaration]
+
+    @model_validator(mode="after")
+    def _codes_and_tie_breaks_are_unique(self) -> "Rulebook":
+        """Selection must be order-blind: same rulebook version, same
+        shipment, same answer, always. Duplicate codes would make winner
+        lookup ambiguous; duplicate tie-break orders would let JSON order
+        decide a cost tie."""
+        seen_codes: set[str] = set()
+        seen_orders: set[int] = set()
+        for service in self.services:
+            if service.code in seen_codes:
+                raise ValueError(f"duplicate service code: {service.code}")
+            if service.tie_break_order in seen_orders:
+                raise ValueError(
+                    f"duplicate tie-break order: {service.tie_break_order}"
+                )
+            seen_codes.add(service.code)
+            seen_orders.add(service.tie_break_order)
+        return self
 
 
 class Shipment(BaseModel):
@@ -49,7 +68,7 @@ class ServiceResult(BaseModel):
 class AllocationResult(BaseModel):
     rulebook_version: int
     service_results: list[ServiceResult]
-    selected: str | None
+    selected: ServiceDeclaration | None
     reason: str
 
 
@@ -96,6 +115,6 @@ def allocate(rulebook: Rulebook, shipment: Shipment) -> AllocationResult:
     return AllocationResult(
         rulebook_version=rulebook.version,
         service_results=service_results,
-        selected=winner.code,
+        selected=winner,
         reason="cheapest eligible service",
     )

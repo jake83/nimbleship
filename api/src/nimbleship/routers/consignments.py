@@ -96,7 +96,7 @@ def create_consignment(
         ),
     )
 
-    selected = next((s for s in rulebook.services if s.code == result.selected), None)
+    selected = result.selected
     consignment = Consignment(
         order_number=payload.order_number,
         recipient_name=payload.recipient_name,

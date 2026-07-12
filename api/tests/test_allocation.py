@@ -1,5 +1,8 @@
 from decimal import Decimal
 
+import pytest
+from pydantic import ValidationError
+
 from nimbleship.domain.allocation import (
     Rulebook,
     ServiceDeclaration,
@@ -39,7 +42,8 @@ def test_service_matching_all_declarations_is_eligible_and_selected() -> None:
 
     result = allocate(rulebook, shipment())
 
-    assert result.selected == "STD"
+    assert result.selected is not None
+    assert result.selected.code == "STD"
     assert result.service_results[0].eligible is True
 
 
@@ -47,14 +51,15 @@ def test_cheapest_eligible_service_wins() -> None:
     rulebook = Rulebook(
         version=1,
         services=[
-            service(code="PRICY", cost=Decimal("12.00")),
-            service(code="CHEAP", cost=Decimal("4.50")),
+            service(code="PRICY", cost=Decimal("12.00"), tie_break_order=1),
+            service(code="CHEAP", cost=Decimal("4.50"), tie_break_order=2),
         ],
     )
 
     result = allocate(rulebook, shipment())
 
-    assert result.selected == "CHEAP"
+    assert result.selected is not None
+    assert result.selected.code == "CHEAP"
 
 
 def test_equal_costs_fall_back_to_tie_break_order() -> None:
@@ -68,7 +73,8 @@ def test_equal_costs_fall_back_to_tie_break_order() -> None:
 
     result = allocate(rulebook, shipment())
 
-    assert result.selected == "FIRST"
+    assert result.selected is not None
+    assert result.selected.code == "FIRST"
 
 
 def test_country_outside_declaration_excludes_service() -> None:
@@ -97,8 +103,8 @@ def test_trace_records_every_check_for_every_service() -> None:
     rulebook = Rulebook(
         version=1,
         services=[
-            service(code="A"),
-            service(code="B", countries=["FR"]),
+            service(code="A", tie_break_order=1),
+            service(code="B", countries=["FR"], tie_break_order=2),
         ],
     )
 
@@ -127,3 +133,32 @@ def test_selection_reason_names_cost_policy() -> None:
     result = allocate(rulebook, shipment())
 
     assert result.reason == "cheapest eligible service"
+
+
+def test_selected_carries_the_full_service_declaration() -> None:
+    rulebook = Rulebook(version=1, services=[service()])
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected is not None
+    assert result.selected.carrier == "dropout"
+    assert result.selected.cost == Decimal("4.50")
+
+
+def test_duplicate_service_codes_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="duplicate service code"):
+        Rulebook(
+            version=1,
+            services=[service(code="SAME"), service(code="SAME", tie_break_order=2)],
+        )
+
+
+def test_duplicate_tie_break_orders_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="duplicate tie-break order"):
+        Rulebook(
+            version=1,
+            services=[
+                service(code="A", tie_break_order=1),
+                service(code="B", tie_break_order=1),
+            ],
+        )
