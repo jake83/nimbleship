@@ -31,7 +31,9 @@ business logic).
 ## Commands
 
 - API: `cd api && uv run pytest`, `uv run ruff check .`,
-  `uv run ruff format --check .`, `uv run mypy --strict src tests`
+  `uv run ruff format --check .`, `uv run mypy --strict src tests`;
+  schema is owned by Alembic: `uv run alembic upgrade head` (dev setup),
+  `uv run alembic revision --autogenerate -m "..."` (schema changes)
 - Web: `cd web && npm test`, `npm run lint`, `npm run typecheck`,
   `npm run build`
 - Chart: `helm lint infra/chart/nimbleship`

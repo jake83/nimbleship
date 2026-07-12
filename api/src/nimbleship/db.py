@@ -13,11 +13,9 @@ class Base(DeclarativeBase):
 
 @lru_cache(maxsize=4)
 def _engine(database_url: str) -> Engine:
-    engine = create_engine(database_url)
-    # Schema management via Alembic arrives with Phase 2's first real
-    # migration; the walking skeleton creates its schema directly.
-    Base.metadata.create_all(engine)
-    return engine
+    # Schema is owned by Alembic (uv run alembic upgrade head); the engine
+    # never creates tables. Tests build their own engines with create_all.
+    return create_engine(database_url)
 
 
 def get_session() -> Iterator[Session]:
