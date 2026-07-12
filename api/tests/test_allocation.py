@@ -112,7 +112,11 @@ def test_trace_records_every_check_for_every_service() -> None:
 
     assert {r.service_code for r in result.service_results} == {"A", "B"}
     for service_result in result.service_results:
-        assert {c.name for c in service_result.checks} == {"country", "weight"}
+        assert {c.name for c in service_result.checks} == {
+            "country",
+            "weight",
+            "dimension",
+        }
         for check in service_result.checks:
             assert check.actual != ""
             assert check.expected != ""
@@ -167,3 +171,57 @@ def test_duplicate_tie_break_orders_are_rejected() -> None:
 def test_a_rulebook_must_declare_at_least_one_service() -> None:
     with pytest.raises(ValidationError, match="at least 1 item"):
         Rulebook(version=1, services=[])
+
+
+def test_old_stored_rulebooks_still_validate() -> None:
+    legacy_shape = {
+        "code": "OLD",
+        "carrier": "dropout",
+        "name": "Stored before Phase 2 fields existed",
+        "weight_min_kg": "0",
+        "weight_max_kg": "30",
+        "countries": ["GB"],
+        "cost": "4.50",
+        "tie_break_order": 1,
+    }
+
+    declaration = ServiceDeclaration.model_validate(legacy_shape)
+
+    assert declaration.max_dimension_cm is None
+    assert declaration.max_girth_cm is None
+    assert declaration.areas_served is None
+    assert declaration.areas_blocked == []
+    assert declaration.propositions == []
+    assert declaration.cost_bands is None
+    assert declaration.charge_bands is None
+
+
+def test_dimension_over_service_limit_excludes_service() -> None:
+    rulebook = Rulebook(version=1, services=[service(max_dimension_cm=Decimal("120"))])
+
+    result = allocate(rulebook, shipment(max_dimension_cm=Decimal("150")))
+
+    assert result.selected is None
+    failed = [c for c in result.service_results[0].checks if not c.ok]
+    assert [c.name for c in failed] == ["dimension"]
+
+
+def test_unknown_dimension_is_optimistically_eligible() -> None:
+    rulebook = Rulebook(version=1, services=[service(max_dimension_cm=Decimal("120"))])
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected is not None
+    dimension = next(
+        c for c in result.service_results[0].checks if c.name == "dimension"
+    )
+    assert dimension.ok is True
+    assert "unknown" in dimension.actual
+
+
+def test_service_without_dimension_limit_accepts_anything() -> None:
+    rulebook = Rulebook(version=1, services=[service()])
+
+    result = allocate(rulebook, shipment(max_dimension_cm=Decimal("400")))
+
+    assert result.selected is not None
