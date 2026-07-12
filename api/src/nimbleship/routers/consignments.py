@@ -208,8 +208,13 @@ def create_consignment(
                     "carrier": selected.carrier,
                     "service": selected.code,
                     # The cost selection compared (banded when configured),
-                    # not the flat `selected.cost` fallback field.
-                    "cost": str(result.selected_cost),
+                    # not the flat `selected.cost` fallback field. Absent
+                    # cost (a forced service with no matching band) is JSON
+                    # null - the audit trail never carries a stringified
+                    # None (refuter, PR #25).
+                    "cost": str(result.selected_cost)
+                    if result.selected_cost is not None
+                    else None,
                     "rulebook_version": rulebook.version,
                     "forced": payload.force_service is not None,
                 },

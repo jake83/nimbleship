@@ -429,3 +429,45 @@ def test_forced_allocation_records_a_real_cost_not_a_sentinel(
     allocated = next(e for e in timeline["events"] if e["stage"] == "allocated")
     assert allocated["detail"]["cost"] == "12.00"
     assert timeline["allocation"]["selected_cost"] == "12.00"
+
+
+def test_forcing_a_costless_service_records_an_honest_null_cost(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NIMBLESHIP_TESTING_TOOLS_ENABLED", "true")
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "COSTLESS",
+                "carrier": "dropout",
+                "name": "Bands that cover nothing",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "cost_bands": [
+                    {
+                        "cost_type": "consignment_weight",
+                        "min_weight_kg": "0",
+                        "max_weight_kg": "1",
+                        "charge": "2.00",
+                    }
+                ],
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+    response = client.post(
+        "/api/consignments", json={**CONSIGNMENT, "force_service": "COSTLESS"}
+    )
+
+    assert response.status_code == 201
+    timeline = client.get(f"/api/consignments/{CONSIGNMENT['order_number']}").json()
+    allocated = next(e for e in timeline["events"] if e["stage"] == "allocated")
+    assert allocated["detail"]["cost"] is None
+    assert allocated["detail"]["cost"] != "None"
+    assert timeline["allocation"]["selected_cost"] is None
