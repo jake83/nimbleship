@@ -47,11 +47,18 @@ def test_postcode_matching_nothing_resolves_to_no_areas(session: Session) -> Non
     assert resolve_shipping_areas(session, "SW1A 2AA", "GB") == []
 
 
-def test_longest_matching_prefix_wins(session: Session) -> None:
+def test_every_matching_prefix_counts(session: Session) -> None:
+    """Old-system parity: IV1 2AB is in the Highlands AND in Inverness city;
+    a specific prefix never shadows a general one. Carve-out semantics, if
+    ever wanted, must arrive as an explicit feature, not via prefix length
+    (human review decision, PR #15)."""
     area(session, "HIGHLANDS", ["IV"])
     area(session, "INVERNESS-CITY", ["IV1"])
 
-    assert resolve_shipping_areas(session, "IV1 2AB", "GB") == ["INVERNESS-CITY"]
+    assert resolve_shipping_areas(session, "IV1 2AB", "GB") == [
+        "HIGHLANDS",
+        "INVERNESS-CITY",
+    ]
     assert resolve_shipping_areas(session, "IV63 6TU", "GB") == ["HIGHLANDS"]
 
 
