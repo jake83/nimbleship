@@ -27,6 +27,13 @@ business logic).
   warehouse details are data, never constants.
 - Commit messages: imperative subject, body explains why. Never add an agent
   co-author line.
+- Comments and docstrings state present-tense constraints the code cannot
+  show - never provenance. No "the old system", "3PL", legacy class names,
+  or "ported from X" in code: a future reader inherits this codebase without
+  that context. Provenance lives in commit messages, PR bodies, and ADRs
+  (historical documents by nature); CONTEXT.md carry-over notes are fine.
+  PR/finding references (e.g. "refuter, PR #9") are acceptable only as a
+  trailing pointer AFTER the constraint itself is stated in full.
 
 ## Commands
 
