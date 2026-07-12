@@ -18,6 +18,7 @@ from nimbleship.domain.allocation import (
     selection_cost,
 )
 from nimbleship.domain.barcodes import parcel_barcodes
+from nimbleship.domain.definitions import active_definition
 from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import active_rulebook
 from nimbleship.labels.store import LabelStore, get_label_store
@@ -169,6 +170,19 @@ def create_consignment(
         )
 
     selected = result.selected
+    definition = (
+        active_definition(session, selected.carrier) if selected is not None else None
+    )
+    if selected is not None and definition is None:
+        # A service selectable by the rulebook but whose carrier has no
+        # published Carrier Definition is a configuration error - loud,
+        # never a silent skip or a mystery failure later at booking.
+        raise HTTPException(
+            500,
+            f"no published carrier definition for '{selected.carrier}': "
+            "publish one before its services can dispatch",
+        )
+
     consignment = Consignment(
         order_number=payload.order_number,
         recipient_name=payload.recipient_name,
@@ -220,6 +234,14 @@ def create_consignment(
                 },
             )
         )
+        assert definition is not None
+        label_spec = definition.operations["book"].label
+        if label_spec is None or label_spec.source != "local_render":
+            raise HTTPException(
+                500,
+                f"carrier '{selected.carrier}' does not local_render labels; "
+                "transport execution arrives with the http carriers",
+            )
         pdf = render_labels(
             LabelRequest(
                 order_number=payload.order_number,

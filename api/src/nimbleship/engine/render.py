@@ -17,6 +17,15 @@ from nimbleship.domain.carrier_definition import (
     Transform,
 )
 
+
+class UnresolvedStepOutput(str):
+    """A placeholder for a step output the carrier has not answered yet.
+    A distinct type, not a magic string: real data shaped like a token
+    must never be mistaken for one (refuter, PR #26 round 3)."""
+
+    __slots__ = ()
+
+
 type Facts = dict[str, object]
 type Rendered = str | list[object] | dict[str, object] | None
 
@@ -39,7 +48,7 @@ def _resolve(path: str, facts: Facts) -> object:
             node = node[part]
         else:
             if path.startswith("steps."):
-                return f"<{path}>"
+                return UnresolvedStepOutput(f"<{path}>")
             raise ValueError(f"no fact at '{path}'")
     return node
 
@@ -71,8 +80,8 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     # An unresolved step output stays a stable placeholder token - through
     # each-loops AND transforms alike - so multi-step operations replay
     # offline deterministically (refuter, PR #26, both rounds).
-    if isinstance(value, str) and value == f"<{entry.source}>":
-        return value
+    if isinstance(value, UnresolvedStepOutput):
+        return str(value)
     if entry.each is not None:
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
@@ -97,10 +106,14 @@ def _render_step(
     query = dict(step.request.query)
     headers: dict[str, str] = {}
     auth = definition.auth
-    if auth.scheme == "query_key":
-        query[auth.param] = str(_resolve(auth.secret, facts))
-    elif auth.scheme == "header_key":
-        headers[auth.header] = str(_resolve(auth.secret, facts))
+    # Auth belongs to the wire protocol: only http steps carry it. Anything
+    # broader would embed secrets in renders (and the Golden Replay corpus)
+    # for steps that never transmit them (refuter, PR #26 round 3).
+    if step.transport == "http":
+        if auth.scheme == "query_key":
+            query[auth.param] = str(_resolve(auth.secret, facts))
+        elif auth.scheme == "header_key":
+            headers[auth.header] = str(_resolve(auth.secret, facts))
     body = {entry.target: _render_entry(entry, facts) for entry in step.request.mapping}
     return RenderedRequest(
         step=step.name,

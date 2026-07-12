@@ -105,8 +105,18 @@ class LabelSpec(BaseModel):
 
 
 class Operation(BaseModel):
-    steps: list[Step] = Field(min_length=1)
+    steps: list[Step] = []
     label: LabelSpec | None = None
+
+    @model_validator(mode="after")
+    def _does_something(self) -> "Operation":
+        if not self.steps and (
+            self.label is None or self.label.source != "local_render"
+        ):
+            raise ValueError(
+                "an operation needs at least one step or a local_render label"
+            )
+        return self
 
 
 class QueryKeyAuth(BaseModel):

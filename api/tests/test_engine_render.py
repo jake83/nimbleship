@@ -309,3 +309,89 @@ def test_transform_over_an_unresolved_step_output_keeps_the_placeholder() -> Non
     _, second = render_operation(definition, "book", facts)
 
     assert second.body["ref_upper"] == "<steps.first.ref>"
+
+
+def test_a_real_value_shaped_like_a_placeholder_is_still_transformed() -> None:
+    """Placeholders are a type, not a magic string: genuine data that
+    happens to look like a token must not silently skip its transforms."""
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "only",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "ref",
+                                        "source": "shipment.reference",
+                                        "transform": {"name": "uppercase"},
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"reference": "<steps.only.ref>"},
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    [request] = render_operation(definition, "book", facts)
+
+    assert request.body["ref"] == "<STEPS.ONLY.REF>"
+
+
+def test_auth_is_not_injected_into_non_http_steps() -> None:
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "fagans",
+            "name": "Fagans",
+            "auth": {
+                "scheme": "header_key",
+                "header": "X-Key",
+                "secret": "config.api_key",
+            },
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "csv",
+                            "transport": "ftp_upload",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.ftp_path",
+                                "content_type": "csv",
+                                "mapping": [
+                                    {
+                                        "target": "order",
+                                        "source": "shipment.order_number",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"api_key": "SECRET", "ftp_path": "/outbound"},
+    }
+
+    [request] = render_operation(definition, "book", facts)
+
+    assert request.headers == {}
+    assert "SECRET" not in repr(request.model_dump())
