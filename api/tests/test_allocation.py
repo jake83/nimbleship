@@ -116,6 +116,7 @@ def test_trace_records_every_check_for_every_service() -> None:
             "country",
             "weight",
             "dimension",
+            "proposition",
         }
         for check in service_result.checks:
             assert check.actual != ""
@@ -223,5 +224,46 @@ def test_service_without_dimension_limit_accepts_anything() -> None:
     rulebook = Rulebook(version=1, services=[service()])
 
     result = allocate(rulebook, shipment(max_dimension_cm=Decimal("400")))
+
+    assert result.selected is not None
+
+
+def test_service_not_fulfilling_the_bought_proposition_is_excluded() -> None:
+    rulebook = Rulebook(version=1, services=[service(propositions=["economy"])])
+
+    result = allocate(rulebook, shipment(proposition="next-day"))
+
+    assert result.selected is None
+    failed = [c for c in result.service_results[0].checks if not c.ok]
+    assert [c.name for c in failed] == ["proposition"]
+
+
+def test_service_fulfilling_the_bought_proposition_is_eligible() -> None:
+    rulebook = Rulebook(
+        version=1, services=[service(propositions=["next-day", "economy"])]
+    )
+
+    result = allocate(rulebook, shipment(proposition="next-day"))
+
+    assert result.selected is not None
+
+
+def test_unknown_proposition_is_optimistically_eligible() -> None:
+    rulebook = Rulebook(version=1, services=[service(propositions=["next-day"])])
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected is not None
+    proposition = next(
+        c for c in result.service_results[0].checks if c.name == "proposition"
+    )
+    assert proposition.ok is True
+    assert "unknown" in proposition.actual
+
+
+def test_service_declaring_no_propositions_is_unrestricted() -> None:
+    rulebook = Rulebook(version=1, services=[service()])
+
+    result = allocate(rulebook, shipment(proposition="next-day"))
 
     assert result.selected is not None
