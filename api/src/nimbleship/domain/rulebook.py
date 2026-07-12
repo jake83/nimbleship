@@ -5,7 +5,7 @@ published - never edited. The highest published version is live."""
 
 from typing import cast
 
-from sqlalchemy import func, select
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
@@ -59,7 +59,10 @@ def _seed_if_fresh(session: Session) -> None:
     # including the order-creation hot path, so the (transaction-scoped,
     # global) lock is taken only in the once-per-install case where a seed
     # insert may actually happen - then the check repeats under the lock
-    # (reviewer, PR #9).
+    # (reviewer, PR #9). On SQLite the lock is a no-op and two concurrent
+    # first-ever requests can double-seed; that is accepted as benign (the
+    # rows are identical demo data and highest-published wins) rather than
+    # falsely claimed prevented (refuter, PR #9).
     _serialise_rulebook_writes(session)
     exists = session.execute(
         select(RulebookVersion.version).limit(1)
@@ -125,12 +128,13 @@ _RULEBOOK_LOCK_KEY = 815_003
 
 
 def _serialise_rulebook_writes(session: Session) -> None:
-    """Seeding and the stale-draft guard in publish() are check-then-act:
-    concurrent callers could both pass the read before either writes - the
-    refuter on PR #9 proved a double seed with two connections and a
-    barrier. On Postgres a transaction-scoped advisory lock serialises the
-    writers; SQLite permits a single writer, so the race cannot occur there
-    and no lock is needed."""
+    """Advisory serialisation of rulebook writers on Postgres. This is
+    belt-and-braces around the atomic guarded UPDATE in publish(): the lock
+    additionally makes the stale-draft (would-not-become-live) check exact
+    under concurrency. On SQLite this is a no-op; there, the guarded UPDATE
+    carries the correctness load alone (this branch is untested in CI, which
+    runs SQLite only - verify against real Postgres before reusing the
+    pattern elsewhere)."""
     if session.get_bind().dialect.name == "postgresql":
         session.execute(select(func.pg_advisory_xact_lock(_RULEBOOK_LOCK_KEY)))
 
@@ -142,9 +146,6 @@ def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
     "succeed" while silently changing nothing. Rolling back means drafting
     a new version with the old content, keeping history linear."""
     _serialise_rulebook_writes(session)
-    # Re-read under the lock: the caller fetched this row before the lock
-    # existed, so a double-submitted publish would otherwise see stale
-    # status == "draft" on both calls (refuter, PR #9).
     session.refresh(row)
     if row.status != "draft":
         raise ValueError(f"version {row.version} is {row.status}, not a draft")
@@ -159,6 +160,19 @@ def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
             f"version {row.version} would not become live: "
             f"version {live} is already published"
         )
-    row.status = "published"
-    session.flush()
+    # The transition itself is a single guarded UPDATE: atomic on every
+    # engine, so two racing publishes of the same draft cannot both win -
+    # multi-statement check-then-act is NOT atomic under SQLite's
+    # single-writer model, as the refuter proved with a barrier race.
+    claimed: CursorResult[object] = session.execute(  # type: ignore[assignment]
+        update(RulebookVersion)
+        .where(
+            RulebookVersion.version == row.version,
+            RulebookVersion.status == "draft",
+        )
+        .values(status="published")
+    )
+    if claimed.rowcount != 1:
+        raise ValueError(f"version {row.version} was published by a concurrent request")
+    session.refresh(row)
     return row
