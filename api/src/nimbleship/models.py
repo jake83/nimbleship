@@ -57,6 +57,40 @@ class OrderEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class ShippingArea(Base):
+    """A named geography defined by postcode prefixes (CONTEXT.md: Shipping
+    Area). Services reference areas by code in their declarations; the
+    mechanism is data, never constants."""
+
+    __tablename__ = "shipping_areas"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    country: Mapped[str] = mapped_column(String(3))
+
+    prefixes: Mapped[list["PostcodeArea"]] = relationship(
+        back_populates="area",
+        order_by="PostcodeArea.prefix",
+        cascade="all, delete-orphan",
+    )
+
+
+class PostcodeArea(Base):
+    """One postcode prefix defining part of a Shipping Area. Prefixes are
+    stored normalised (uppercase, trimmed); the resolver matches a
+    destination postcode to areas by its longest matching prefix."""
+
+    __tablename__ = "postcode_areas"
+    __table_args__ = (UniqueConstraint("area_id", "prefix"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    area_id: Mapped[int] = mapped_column(ForeignKey("shipping_areas.id"))
+    prefix: Mapped[str] = mapped_column(String(16), index=True)
+
+    area: Mapped[ShippingArea] = relationship(back_populates="prefixes")
+
+
 class RulebookVersion(Base):
     """A versioned rulebook per ADR 0003: immutable rows, draft or published;
     the highest published version is live."""
