@@ -53,7 +53,10 @@ def _resolve(path: str, facts: Facts) -> object:
     return node
 
 
-def _apply(transform: Transform, value: object) -> object:
+def apply_transform(transform: Transform, value: object) -> object:
+    """The closed transform vocabulary (ADR 0009). Shared with response
+    extraction: an Extraction's transform means exactly what a mapping's
+    does."""
     match transform.name:
         case "join":
             if not isinstance(value, list):
@@ -93,15 +96,18 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
             for item in value
         ]
     if entry.transform is not None:
-        value = _apply(entry.transform, value)
+        value = apply_transform(entry.transform, value)
     if isinstance(value, str | list | dict) or value is None:
         return value
     return str(value)
 
 
-def _render_step(
+def render_step(
     definition: CarrierDefinition, step: Step, facts: Facts
 ) -> RenderedRequest:
+    """Render one step. The executor renders step-by-step so each step sees
+    the extractions of the steps before it; render_operation renders them
+    all at once for offline replay."""
     url = _resolve(step.request.url, facts)
     query = dict(step.request.query)
     headers: dict[str, str] = {}
@@ -133,6 +139,6 @@ def render_operation(
     if operation not in definition.operations:
         raise ValueError(f"definition has no operation '{operation}'")
     return [
-        _render_step(definition, step, facts)
+        render_step(definition, step, facts)
         for step in definition.operations[operation].steps
     ]

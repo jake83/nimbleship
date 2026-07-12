@@ -50,8 +50,18 @@ def test_timeline_records_allocation_and_label_creation(
     body = response.json()
     assert [e["stage"] for e in body["events"]] == ["allocated", "label_created"]
     assert body["parcels"] == [
-        {"sequence": 1, "weight_kg": "4.2", "barcode": "95000254580-1"},
-        {"sequence": 2, "weight_kg": "3.1", "barcode": "95000254580-2"},
+        {
+            "sequence": 1,
+            "weight_kg": "4.2",
+            "barcode": "95000254580-1",
+            "carrier_barcode": None,
+        },
+        {
+            "sequence": 2,
+            "weight_kg": "3.1",
+            "barcode": "95000254580-2",
+            "carrier_barcode": None,
+        },
     ]
 
 

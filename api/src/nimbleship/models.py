@@ -1,7 +1,15 @@
 from datetime import UTC, datetime
 from datetime import date as date_type
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from nimbleship.db import Base
@@ -30,6 +38,9 @@ class Consignment(Base):
     # Warehouse). A denormalised copy like carrier/service: the allocation
     # record must survive later warehouse edits.
     warehouse: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The carrier's own reference for the consignment, extracted from the
+    # book operation's response. None until a live-API carrier has booked.
+    tracking_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     allocation: Mapped[dict[str, object]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -47,6 +58,9 @@ class Parcel(Base):
     sequence: Mapped[int] = mapped_column()
     weight_kg: Mapped[str] = mapped_column(String(16))
     barcode: Mapped[str] = mapped_column(String(80))
+    # The barcode the carrier issued for this parcel at booking - distinct
+    # from `barcode`, the Parcel Barcode this system prints (CONTEXT.md).
+    carrier_barcode: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     consignment: Mapped[Consignment] = relationship(back_populates="parcels")
 
@@ -201,6 +215,25 @@ class CarrierDefinitionVersion(Base):
     status: Mapped[str] = mapped_column(String(16))
     author: Mapped[str] = mapped_column(String(64))
     data: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CarrierTraffic(Base):
+    """One executed carrier step: the rendered request and the raw
+    response. Append-only - this is the golden corpus Golden Replay diffs
+    draft definitions against (ADR 0009). Response bodies arrive truncated
+    to the executor's TRAFFIC_BODY_LIMIT."""
+
+    __tablename__ = "carrier_traffic"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    carrier: Mapped[str] = mapped_column(String(64), index=True)
+    order_number: Mapped[str] = mapped_column(String(64), index=True)
+    step: Mapped[str] = mapped_column(String(64))
+    request: Mapped[dict[str, object]] = mapped_column(JSON)
+    # None when the carrier was never reached (connect/timeout failures).
+    response_status: Mapped[int | None] = mapped_column(nullable=True)
+    response_body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

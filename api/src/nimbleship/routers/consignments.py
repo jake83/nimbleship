@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -18,16 +19,25 @@ from nimbleship.domain.allocation import (
     selection_cost,
 )
 from nimbleship.domain.barcodes import parcel_barcodes
-from nimbleship.domain.definitions import active_definition
+from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.domain.definitions import active_definition, carrier_config
+from nimbleship.domain.facts import shipment_facts, warehouse_facts
 from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import active_rulebook
+from nimbleship.engine.execute import (
+    CarrierCallError,
+    StepRecord,
+    execute_operation,
+)
+from nimbleship.http_client import get_http_client
 from nimbleship.labels.store import LabelStore, get_label_store
-from nimbleship.models import Consignment, OrderEvent, Parcel, Warehouse
+from nimbleship.models import CarrierTraffic, Consignment, OrderEvent, Parcel, Warehouse
 
 router = APIRouter(prefix="/consignments", tags=["consignments"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
 LabelStoreDep = Annotated[LabelStore, Depends(get_label_store)]
+HttpClientDep = Annotated[httpx.Client, Depends(get_http_client)]
 
 
 class ParcelIn(BaseModel):
@@ -61,6 +71,7 @@ class ConsignmentOut(BaseModel):
     carrier: str | None
     service: str | None
     warehouse: str | None
+    tracking_reference: str | None
     label_url: str | None
     allocation: AllocationResult
 
@@ -69,6 +80,7 @@ class ParcelOut(BaseModel):
     sequence: int
     weight_kg: str
     barcode: str
+    carrier_barcode: str | None
 
 
 class EventOut(BaseModel):
@@ -120,9 +132,89 @@ def _label_sender(warehouse: Warehouse | None) -> LabelSender | None:
     )
 
 
+def _book_with_carrier(
+    session: Session,
+    definition: CarrierDefinition,
+    consignment: Consignment,
+    warehouse: Warehouse | None,
+    http_client: httpx.Client,
+) -> None:
+    """Execute the book operation's http steps, recording every step as
+    carrier traffic (ADR 0009's golden corpus grows from real calls). On
+    success the extracted tracking reference and carrier barcodes land on
+    the consignment; on failure the traffic and a booking_failed event are
+    committed before the 502 - never a silent success."""
+    facts: dict[str, object] = {
+        "shipment": shipment_facts(consignment),
+        "config": carrier_config(session, consignment.carrier or ""),
+    }
+    if warehouse is not None:
+        facts["warehouse"] = warehouse_facts(warehouse)
+
+    def record(step_record: StepRecord) -> None:
+        session.add(
+            CarrierTraffic(
+                carrier=consignment.carrier or "",
+                order_number=consignment.order_number,
+                step=step_record.step,
+                request=step_record.request.model_dump(mode="json"),
+                response_status=step_record.response_status,
+                response_body=step_record.response_body,
+            )
+        )
+
+    try:
+        result = execute_operation(definition, "book", facts, http_client, record)
+    except CarrierCallError as error:
+        consignment.status = "booking_failed"
+        session.add(
+            OrderEvent(
+                order_number=consignment.order_number,
+                stage="booking_failed",
+                detail={"carrier": consignment.carrier, "error": str(error)},
+            )
+        )
+        session.flush()
+        # Commit explicitly: raising unwinds the session dependency before
+        # its normal commit, and a failure's traffic and timeline must
+        # survive the 502.
+        session.commit()
+        raise HTTPException(502, str(error)) from error
+
+    tracking = result.outputs.get("tracking_reference")
+    if tracking is not None:
+        consignment.tracking_reference = str(tracking)
+    barcodes = result.outputs.get("barcodes")
+    detail: dict[str, object] = {
+        "carrier": consignment.carrier,
+        "tracking_reference": consignment.tracking_reference,
+        "steps": [
+            {"step": r.step, "status": r.response_status, "success": r.success}
+            for r in result.records
+        ],
+    }
+    if isinstance(barcodes, list):
+        # Carrier barcodes pair with parcels positionally, like the labels
+        # they arrive on; the full list is kept on the event so a count
+        # mismatch loses nothing.
+        for parcel, barcode in zip(consignment.parcels, barcodes, strict=False):
+            parcel.carrier_barcode = str(barcode)
+        detail["barcodes"] = [str(b) for b in barcodes]
+    session.add(
+        OrderEvent(
+            order_number=consignment.order_number,
+            stage="booked",
+            detail=detail,
+        )
+    )
+
+
 @router.post("", status_code=201)
 def create_consignment(
-    payload: ConsignmentIn, session: SessionDep, store: LabelStoreDep
+    payload: ConsignmentIn,
+    session: SessionDep,
+    store: LabelStoreDep,
+    http_client: HttpClientDep,
 ) -> ConsignmentOut:
     if _order_exists(session, payload.order_number):
         raise HTTPException(409, "a consignment already exists for this order")
@@ -243,12 +335,17 @@ def create_consignment(
                 "published definition; it cannot dispatch consignments",
             )
         label_spec = book.label
+        # The label spec is checked before any carrier call: an unsupported
+        # label source must fail before a booking exists on the carrier's
+        # side, not after.
         if label_spec is None or label_spec.source != "local_render":
             raise HTTPException(
                 500,
                 f"carrier '{selected.carrier}' does not local_render labels; "
-                "transport execution arrives with the http carriers",
+                "only the local_render label source is supported so far",
             )
+        if book.steps:
+            _book_with_carrier(session, definition, consignment, warehouse, http_client)
         pdf = render_labels(
             LabelRequest(
                 order_number=payload.order_number,
@@ -283,6 +380,7 @@ def create_consignment(
         carrier=consignment.carrier,
         service=consignment.service,
         warehouse=consignment.warehouse,
+        tracking_reference=consignment.tracking_reference,
         label_url=_label_url(consignment),
         allocation=result,
     )
@@ -315,11 +413,17 @@ def consignment_detail(order_number: str, session: SessionDep) -> ConsignmentDet
         carrier=consignment.carrier,
         service=consignment.service,
         warehouse=consignment.warehouse,
+        tracking_reference=consignment.tracking_reference,
         label_url=_label_url(consignment),
         allocation=AllocationResult.model_validate(consignment.allocation),
         recipient_name=consignment.recipient_name,
         parcels=[
-            ParcelOut(sequence=p.sequence, weight_kg=p.weight_kg, barcode=p.barcode)
+            ParcelOut(
+                sequence=p.sequence,
+                weight_kg=p.weight_kg,
+                barcode=p.barcode,
+                carrier_barcode=p.carrier_barcode,
+            )
             for p in consignment.parcels
         ],
         events=[

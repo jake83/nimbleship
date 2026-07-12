@@ -77,7 +77,9 @@ _Avoid_: putting credentials in a Carrier Definition, "carrier settings"
 The offline test gate for a draft Carrier Definition: its rendered requests
 are diffed against recorded real traffic for historical shipments. Green
 replay is required to publish; live sandbox calls are a separate, optional
-tier.
+tier. Staging caveat: until live traffic exists for a carrier, the baseline
+is the active definition's re-render; recorded traffic becomes the baseline
+as it accumulates.
 _Avoid_: dry run (that is the rulebook's replay; this one renders requests)
 
 **Delivery Cost**:
