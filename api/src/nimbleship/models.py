@@ -108,8 +108,8 @@ class Warehouse(Base):
 
 
 class WarehouseCollectionDay(Base):
-    """Weekday collection flags, one row per warehouse - the old system's
-    shape, ported (global flags, not per carrier)."""
+    """Weekday collection flags, one row per warehouse: the flags are
+    global, not per-carrier."""
 
     __tablename__ = "warehouse_collection_days"
 
