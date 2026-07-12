@@ -11,9 +11,13 @@ from sqlalchemy.orm import Session
 from nimbleship.carriers.dropout import LabelRequest, LabelSender, render_labels
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
-from nimbleship.domain.allocation import AllocationResult, Shipment, allocate
+from nimbleship.domain.allocation import (
+    AllocationResult,
+    Shipment,
+    allocate,
+    selection_cost,
+)
 from nimbleship.domain.barcodes import parcel_barcodes
-from nimbleship.domain.costs import calculate_cost
 from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import active_rulebook
 from nimbleship.labels.store import LabelStore, get_label_store
@@ -152,14 +156,10 @@ def create_consignment(
             raise HTTPException(422, "force_service names no service in the rulebook")
         # The genuine evaluation trace is kept; only the selection is
         # overridden, so the audit trail shows both what would have
-        # happened and that it was forced. The forced service's real cost
-        # is computed (banded when configured, flat otherwise): the audit
-        # trail must never carry a stringified None.
-        forced_cost = (
-            calculate_cost(forced.cost_bands, shipment)
-            if forced.cost_bands is not None
-            else forced.cost
-        )
+        # happened and that it was forced. The forced cost comes from the
+        # selection policy's own helper - one definition of "the cost",
+        # never a drifting copy.
+        forced_cost = selection_cost(forced, shipment)
         result = result.model_copy(
             update={
                 "selected": forced,

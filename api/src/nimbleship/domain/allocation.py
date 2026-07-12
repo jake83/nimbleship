@@ -38,7 +38,7 @@ def _evaluate_service(service: ServiceDeclaration, shipment: Shipment) -> Servic
     )
 
 
-def _selection_cost(service: ServiceDeclaration, shipment: Shipment) -> Decimal | None:
+def selection_cost(service: ServiceDeclaration, shipment: Shipment) -> Decimal | None:
     """The Delivery Cost the selection policy compares: calculated from the
     service's cost bands when it has any, else the flat cost (the migration
     path for services whose banded costs are not configured yet)."""
@@ -67,7 +67,7 @@ def allocate(rulebook: Rulebook, shipment: Shipment) -> AllocationResult:
     # silently skipped.
     costed: list[tuple[Decimal, ServiceDeclaration]] = []
     for service in eligible:
-        cost = _selection_cost(service, shipment)
+        cost = selection_cost(service, shipment)
         if cost is None:
             result = results_by_code[service.code]
             result.checks.append(_NO_COST_DATA.model_copy())
