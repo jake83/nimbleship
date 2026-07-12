@@ -57,6 +57,22 @@ are resolved from its destination postcode at evaluation time.
 _Avoid_: blocked area (that is one use of an area, not the concept),
 postcode list (the area is the named thing, prefixes are its definition)
 
+**Carrier Definition**:
+The versioned, declarative document that tells the integration engine how
+to book, label, manifest, and track with one carrier: auth scheme, mapping
+entries (target field, source fact, transforms from a closed vocabulary),
+response extraction, and named plugins for the exotic parts. Data on the
+draft/test/publish rails - never code.
+_Avoid_: carrier integration (when meaning the document), adapter/driver
+(those imply code)
+
+**Golden Replay**:
+The offline test gate for a draft Carrier Definition: its rendered requests
+are diffed against recorded real traffic for historical shipments. Green
+replay is required to publish; live sandbox calls are a separate, optional
+tier.
+_Avoid_: dry run (that is the rulebook's replay; this one renders requests)
+
 **Delivery Cost**:
 What a carrier charges the company to deliver a consignment. Used to pick the
 cheapest suitable carrier during allocation.

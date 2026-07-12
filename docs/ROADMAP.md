@@ -115,12 +115,17 @@ Original goal: the routing brain, done properly.
 - Force allocation as a testing_tools capability: server-enforced 403 in
   production, visible banner where enabled.
 
-## [G] Session B - Carrier definition spec language
+## [G] Session B - Carrier definition spec language (HELD 2026-07-12)
 
-Held before Phase 3, informed by a structured audit of all 11 existing
-integrations. Scope: the declarative schema (auth, endpoints, mappings, label
-extraction, error taxonomy, capability flags), the plugin interface, and
-which existing carriers prove which spec features.
+Held 2026-07-12 against a full audit of all 11 integrations (10,625 lines;
+~8 carriers reduce to auth + templated request + extraction; ten plugin
+candidates in four clusters). Outcome: ADR 0009 - declarative mapping
+entries with closed transform/transport/label vocabularies, multi-step
+operations, named plugins at four extension points; golden replay +
+optional sandbox as the test gate; proving ladder DropOut -> Furdeco ->
+FedEx -> PalletForce, Fagans for ftp_upload, Dachser as its own mini-epic,
+DPD/PalletTrack reserved as the AI onboarding flow's first real customers.
+MetaPack explicitly excluded (legacy edge, not a definition).
 
 ## Phase 3 - Integration engine and real carriers
 
@@ -128,8 +133,9 @@ Goal: the spec language demonstrably expresses reality.
 
 - Integration engine v1 executing carrier definitions; definitions are
   versioned data on the draft/test/publish rails.
-- Hand-write definitions for 2-3 real carriers in increasing difficulty
-  (e.g. Fagans/DPD shape first, then FedEx to force the OAuth plugin).
+- Hand-write definitions up the proving ladder (ADR 0009): DropOut,
+  Furdeco, FedEx, PalletForce; Fagans for the ftp_upload transport;
+  Dachser as its own mini-epic.
 - Plugins as needed: OAuth token provider, signing schemes; later the Dachser
   outliers (EDI emitter, DigiDocs, SSCC ranges with exhaustion refresh).
 - Manifest as a first-class concept (the trigger is the WMS dispatch
