@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from fastapi.testclient import TestClient
 
 GB_CONSIGNMENT = {
@@ -216,3 +218,81 @@ def test_dry_run_order_list_is_bounded_like_limit(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_banded_costs_survive_publish_and_drive_live_allocation(
+    client: TestClient,
+) -> None:
+    """Cost bands round-trip through the JSON rulebook column (no migration,
+    ADR 0007 data-is-data) and the live allocation selects on the calculated
+    Delivery Cost, excluding an uncostable service loudly."""
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "BANDED",
+                "carrier": "dropout",
+                "name": "Banded",
+                "weight_min_kg": "0",
+                "weight_max_kg": "30",
+                "countries": ["GB"],
+                "cost": "99.00",  # the flat fallback must NOT be used
+                "cost_bands": [
+                    {
+                        "cost_type": "consignment_weight",
+                        "min_weight_kg": "0",
+                        "max_weight_kg": "30",
+                        "charge": "3.00",
+                    },
+                    {"cost_type": "fuel_surcharge", "percentage": "10"},
+                ],
+                "tie_break_order": 1,
+            },
+            {
+                "code": "FLAT",
+                "carrier": "dropout",
+                "name": "Flat",
+                "weight_min_kg": "0",
+                "weight_max_kg": "30",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 2,
+            },
+            {
+                "code": "COSTLESS",
+                "carrier": "dropout",
+                "name": "Bands never match",
+                "weight_min_kg": "0",
+                "weight_max_kg": "30",
+                "countries": ["GB"],
+                "cost": "0.01",
+                "cost_bands": [
+                    {
+                        "cost_type": "consignment_weight",
+                        "min_weight_kg": "0",
+                        "max_weight_kg": "1",
+                        "charge": "1.00",
+                    }
+                ],
+                "tie_break_order": 3,
+            },
+        ],
+    }
+    client.get("/api/rulebook/active")
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+    response = client.post("/api/consignments", json=GB_CONSIGNMENT)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["service"] == "BANDED"
+    allocation = body["allocation"]
+    assert Decimal(str(allocation["selected_cost"])) == Decimal("3.30")
+    costless = next(
+        r for r in allocation["service_results"] if r["service_code"] == "COSTLESS"
+    )
+    assert costless["eligible"] is False
+    no_cost = next(c for c in costless["checks"] if c["name"] == "no-cost-data")
+    assert no_cost["ok"] is False
+    assert no_cost["actual"] == "no cost data"

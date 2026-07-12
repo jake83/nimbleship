@@ -133,7 +133,9 @@ def create_consignment(
                 detail={
                     "carrier": selected.carrier,
                     "service": selected.code,
-                    "cost": str(selected.cost),
+                    # The cost selection compared (banded when configured),
+                    # not the flat `selected.cost` fallback field.
+                    "cost": str(result.selected_cost),
                     "rulebook_version": rulebook.version,
                 },
             )

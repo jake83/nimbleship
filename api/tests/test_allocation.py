@@ -116,6 +116,7 @@ def test_trace_records_every_check_for_every_service() -> None:
             "country",
             "weight",
             "dimension",
+            "girth",
         }
         for check in service_result.checks:
             assert check.actual != ""
@@ -225,3 +226,170 @@ def test_service_without_dimension_limit_accepts_anything() -> None:
     result = allocate(rulebook, shipment(max_dimension_cm=Decimal("400")))
 
     assert result.selected is not None
+
+
+def test_girth_over_service_limit_excludes_service() -> None:
+    rulebook = Rulebook(version=1, services=[service(max_girth_cm=Decimal("300"))])
+
+    result = allocate(rulebook, shipment(max_girth_cm=Decimal("350")))
+
+    assert result.selected is None
+    failed = [c for c in result.service_results[0].checks if not c.ok]
+    assert [c.name for c in failed] == ["girth"]
+
+
+def test_unknown_girth_is_optimistically_eligible() -> None:
+    rulebook = Rulebook(version=1, services=[service(max_girth_cm=Decimal("300"))])
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected is not None
+    girth = next(c for c in result.service_results[0].checks if c.name == "girth")
+    assert girth.ok is True
+    assert "unknown" in girth.actual
+
+
+def test_service_without_girth_limit_accepts_anything() -> None:
+    rulebook = Rulebook(version=1, services=[service()])
+
+    result = allocate(rulebook, shipment(max_girth_cm=Decimal("900")))
+
+    assert result.selected is not None
+
+
+def weight_bands(charge: str, additional: str | None = None) -> list[dict[str, str]]:
+    band = {
+        "cost_type": "consignment_weight",
+        "min_weight_kg": "0",
+        "max_weight_kg": "30",
+        "charge": charge,
+    }
+    if additional is not None:
+        band["additional_charge"] = additional
+    return [band]
+
+
+def test_selection_uses_calculated_cost_when_cost_bands_are_present() -> None:
+    """The flat cost is only the fallback: a banded service whose calculated
+    cost undercuts a flat-cost rival wins even if its flat number is dearer."""
+    rulebook = Rulebook(
+        version=1,
+        services=[
+            service(code="FLAT", cost=Decimal("4.50"), tie_break_order=1),
+            service(
+                code="BANDED",
+                cost=Decimal("99.00"),
+                cost_bands=weight_bands("3.00"),
+                tie_break_order=2,
+            ),
+        ],
+    )
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected is not None
+    assert result.selected.code == "BANDED"
+    assert result.selected_cost == Decimal("3.00")
+
+
+def test_flat_cost_service_can_beat_a_banded_one() -> None:
+    rulebook = Rulebook(
+        version=1,
+        services=[
+            service(code="FLAT", cost=Decimal("4.50"), tie_break_order=1),
+            service(
+                code="BANDED",
+                cost=Decimal("1.00"),
+                cost_bands=weight_bands("2.00", additional="1.00"),
+                tie_break_order=2,
+            ),
+        ],
+    )
+
+    result = allocate(rulebook, shipment(total_weight_kg=Decimal("10")))
+
+    assert result.selected is not None
+    assert result.selected.code == "FLAT"  # banded costs 2 + 10kg * 1 = 12
+    assert result.selected_cost == Decimal("4.50")
+
+
+def test_equal_calculated_costs_fall_back_to_tie_break_order() -> None:
+    rulebook = Rulebook(
+        version=1,
+        services=[
+            service(
+                code="SECOND",
+                cost=Decimal("99.00"),
+                cost_bands=weight_bands("5.00"),
+                tie_break_order=2,
+            ),
+            service(code="FIRST", cost=Decimal("5.00"), tie_break_order=1),
+        ],
+    )
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected is not None
+    assert result.selected.code == "FIRST"
+
+
+def test_service_with_no_applicable_cost_band_is_excluded_loudly() -> None:
+    """ADR 0007: missing cost data is flagged in the trace, never silently
+    skipped - the exclusion must be readable as no-cost-data."""
+    rulebook = Rulebook(
+        version=1,
+        services=[
+            service(
+                code="COSTLESS",
+                cost_bands=[
+                    {
+                        "cost_type": "consignment_weight",
+                        "min_weight_kg": "0",
+                        "max_weight_kg": "5",
+                        "charge": "3.00",
+                    }
+                ],
+                tie_break_order=1,
+            ),
+            service(code="FLAT", cost=Decimal("8.00"), tie_break_order=2),
+        ],
+    )
+
+    result = allocate(rulebook, shipment(total_weight_kg=Decimal("10")))
+
+    assert result.selected is not None
+    assert result.selected.code == "FLAT"
+    costless = next(r for r in result.service_results if r.service_code == "COSTLESS")
+    assert costless.eligible is False
+    no_cost = next(c for c in costless.checks if c.name == "no-cost-data")
+    assert no_cost.ok is False
+    assert no_cost.actual == "no cost data"
+
+
+def test_all_eligible_services_lacking_cost_data_is_a_loud_rejection() -> None:
+    rulebook = Rulebook(
+        version=1,
+        services=[service(code="COSTLESS", cost_bands=[], tie_break_order=1)],
+    )
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected is None
+    assert result.reason == "no cost data for any eligible service"
+    assert result.service_results[0].eligible is False
+
+
+def test_flat_cost_selection_reports_the_selected_cost() -> None:
+    rulebook = Rulebook(version=1, services=[service(cost=Decimal("4.50"))])
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected_cost == Decimal("4.50")
+
+
+def test_rejection_reports_no_selected_cost() -> None:
+    rulebook = Rulebook(version=1, services=[service(countries=["FR"])])
+
+    result = allocate(rulebook, shipment())
+
+    assert result.selected_cost is None
