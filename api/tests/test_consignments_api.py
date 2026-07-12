@@ -368,3 +368,48 @@ def test_destination_outside_the_blocked_area_keeps_the_cheap_service(
 
     assert response.status_code == 201
     assert response.json()["service"] == "CHEAP-MAINLAND"
+
+
+def test_force_service_is_refused_when_testing_tools_are_disabled(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/consignments",
+        json={**CONSIGNMENT, "force_service": "DROPOUT-XL"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_force_service_pins_the_allocation_when_testing_tools_are_enabled(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NIMBLESHIP_TESTING_TOOLS_ENABLED", "true")
+
+    response = client.post(
+        "/api/consignments",
+        json={**CONSIGNMENT, "force_service": "DROPOUT-XL"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "allocated"
+    assert body["service"] == "DROPOUT-XL"
+    assert body["allocation"]["reason"] == "forced by testing tools"
+
+    timeline = client.get(f"/api/consignments/{CONSIGNMENT['order_number']}").json()
+    allocated = next(e for e in timeline["events"] if e["stage"] == "allocated")
+    assert allocated["detail"]["forced"] is True
+
+
+def test_forcing_an_unknown_service_is_rejected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NIMBLESHIP_TESTING_TOOLS_ENABLED", "true")
+
+    response = client.post(
+        "/api/consignments",
+        json={**CONSIGNMENT, "force_service": "NOPE"},
+    )
+
+    assert response.status_code == 422

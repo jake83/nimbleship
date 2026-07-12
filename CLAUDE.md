@@ -91,6 +91,15 @@ patterns or restructure things - roughly the first PR of a phase:
    bug class the AI reviewers should have caught -> the reviewer/refuter
    prompts in .github/workflows/claude-review.yml.
 
+## Resolving merge conflicts
+
+Union-merging both-sides-added tests is the right instinct but has a known
+hazard: conflict boundaries can cut a test mid-function, silently dropping
+its trailing assertions (it struck three times during the Phase 2 merges;
+the unused-variable lint caught it each time). After any union resolution,
+check every touched test still asserts, and never pipe a gate command into
+anything that swallows its exit code.
+
 ## Handling review feedback
 
 Treat every review comment (AI or human) as a claim to verify, not an

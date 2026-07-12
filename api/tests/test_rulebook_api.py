@@ -362,3 +362,50 @@ def test_banded_costs_survive_publish_and_drive_live_allocation(
     no_cost = next(c for c in costless["checks"] if c["name"] == "no-cost-data")
     assert no_cost["ok"] is False
     assert no_cost["actual"] == "no cost data"
+
+
+def test_dry_run_replays_area_facts_for_historical_orders(
+    client: TestClient,
+) -> None:
+    """Replaying the LIVE version must reproduce the live outcome: an order
+    rejected because its postcode resolved to a blocked area must stay
+    rejected in the replay, which requires re-resolving areas from the
+    stored postcode rather than evaluating optimistically."""
+    area = client.post(
+        "/api/shipping-areas",
+        json={
+            "code": "HIGHLANDS",
+            "name": "Scottish Highlands",
+            "country": "GB",
+            "prefixes": ["IV"],
+        },
+    )
+    assert area.status_code == 201
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                **DRAFT_WITH_US["services"][0],  # type: ignore[dict-item]
+                "areas_blocked": ["HIGHLANDS"],
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+    blocked = client.post(
+        "/api/consignments",
+        json={**GB_CONSIGNMENT, "order_number": "95000254590", "postcode": "IV1 2AB"},
+    )
+    assert blocked.json()["status"] == "rejected"
+
+    replay = client.post(
+        f"/api/rulebook/versions/{version}/dry-run",
+        json={"order_numbers": ["95000254590"]},
+    ).json()
+
+    assert replay["results"][0] == {
+        "order_number": "95000254590",
+        "current_service": None,
+        "draft_service": None,
+        "changed": False,
+    }

@@ -14,6 +14,7 @@ from nimbleship.domain.allocation import (
     Shipment,
     allocate,
 )
+from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import (
     active_rulebook,
     create_draft,
@@ -131,7 +132,10 @@ def publish_version(version: int, session: SessionDep) -> VersionOut:
     return VersionOut(version=row.version, status=row.status, author=row.author)
 
 
-def _shipment_from(consignment: Consignment) -> Shipment:
+def _shipment_from(session: Session, consignment: Consignment) -> Shipment:
+    """Rebuild the dispatch-time facts. Areas are re-resolved from the
+    stored postcode: replaying without them would evaluate area checks
+    optimistically and misreport outcomes the live run rejected."""
     return Shipment(
         order_number=consignment.order_number,
         destination_country=consignment.destination_country,
@@ -140,6 +144,10 @@ def _shipment_from(consignment: Consignment) -> Shipment:
         ),
         parcel_count=len(consignment.parcels),
         proposition=consignment.proposition,
+        shipping_areas=resolve_shipping_areas(
+            session, consignment.postcode, consignment.destination_country
+        ),
+        warehouse=consignment.warehouse,
     )
 
 
@@ -164,7 +172,7 @@ def dry_run(version: int, payload: DryRunIn, session: SessionDep) -> DryRunOut:
 
     results = []
     for consignment in consignments:
-        outcome = allocate(rulebook, _shipment_from(consignment))
+        outcome = allocate(rulebook, _shipment_from(session, consignment))
         draft_service = outcome.selected.code if outcome.selected else None
         results.append(
             DryRunResultOut(

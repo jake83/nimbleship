@@ -1,5 +1,8 @@
 api:
   image: nimbleship-api:dev
+  # NEVER true in production: enables force-allocation and future test
+  # tools (server-enforced 403 when false).
+  testingTools: false
   # Before raising replicas above 1: boot runs `alembic upgrade head`, and
   # concurrent pods would race the migration. Move migrations to a Job or
   # pre-install hook first.

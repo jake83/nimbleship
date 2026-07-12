@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 class ChargeBand(BaseModel):
     scope_type: Literal["all", "country", "area"]
     scope_code: str | None = None
-    # Warehouse scoping needs chunk E; the field is carried but never read.
+    # Restricts the band to one dispatching Warehouse; None = any.
     warehouse: str | None = None
     min_weight_kg: Decimal = Field(ge=0)
     max_weight_kg: Decimal
@@ -69,6 +69,9 @@ def calculate_charge(
     """The Delivery Charge for a shipment, or None when no band applies
     (no charge is configured for this destination and weight)."""
     weight_kg = shipment.total_weight_kg
+    bands = [
+        b for b in bands if b.warehouse is None or b.warehouse == shipment.warehouse
+    ]
     scopes = (
         [b for b in bands if b.scope_type == "area" and b.scope_code in areas],
         [

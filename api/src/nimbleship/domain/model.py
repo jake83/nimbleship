@@ -80,8 +80,11 @@ class Shipment(BaseModel):
     value: Decimal | None = None
     # The Delivery Proposition the customer bought; None = no filter.
     proposition: str | None = None
-    # Shipping area codes matched from the destination (chunk A computes).
+    # Shipping area codes matched from the destination postcode.
     shipping_areas: list[str] = []
+    # The dispatching Warehouse code; None = not stated (charges that are
+    # warehouse-scoped then never match).
+    warehouse: str | None = None
 
 
 class Check(BaseModel):
