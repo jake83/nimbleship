@@ -13,6 +13,16 @@ from reportlab.pdfgen.canvas import Canvas
 from nimbleship.domain.barcodes import parcel_barcodes
 
 
+class LabelSender(BaseModel):
+    """Sender details for the label's From block, drawn from the Warehouse
+    (the logical dispatch identity) when the consignment names one."""
+
+    name: str
+    address_lines: list[str]
+    postcode: str
+    country: str
+
+
 class LabelRequest(BaseModel):
     order_number: str
     recipient_name: str
@@ -20,6 +30,7 @@ class LabelRequest(BaseModel):
     postcode: str
     country: str
     parcel_count: int
+    sender: LabelSender | None = None
 
 
 def render_labels(request: LabelRequest) -> bytes:
@@ -42,6 +53,20 @@ def render_labels(request: LabelRequest) -> bytes:
         for line in [*request.address_lines, request.postcode, request.country]:
             y -= 5 * mm
             canvas.drawString(10 * mm, y, line)
+
+        if request.sender is not None:
+            y -= 8 * mm
+            canvas.setFont("Helvetica", 8)
+            canvas.drawString(10 * mm, y, f"From: {request.sender.name}")
+            sender_address = ", ".join(
+                [
+                    *request.sender.address_lines,
+                    request.sender.postcode,
+                    request.sender.country,
+                ]
+            )
+            y -= 4 * mm
+            canvas.drawString(10 * mm, y, sender_address)
 
         barcode = code128.Code128(barcode_value, barHeight=18 * mm, barWidth=0.4)
         barcode.drawOn(canvas, 10 * mm, 18 * mm)

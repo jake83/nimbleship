@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
+from datetime import date as date_type
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from nimbleship.db import Base
@@ -25,6 +26,10 @@ class Consignment(Base):
     status: Mapped[str] = mapped_column(String(32))
     carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
     service: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The Warehouse code the consignment dispatches from (CONTEXT.md:
+    # Warehouse). A denormalised copy like carrier/service: the allocation
+    # record must survive later warehouse edits.
+    warehouse: Mapped[str | None] = mapped_column(String(64), nullable=True)
     allocation: Mapped[dict[str, object]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -70,6 +75,103 @@ class DeliveryProposition(Base):
     code: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(String(500))
+
+
+class Warehouse(Base):
+    """A logical dispatch identity (CONTEXT.md: Warehouse) - the sender the
+    WMS names per order, not necessarily a physical building. Carries
+    collection days and holidays."""
+
+    __tablename__ = "warehouses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    # Sender details for labels and carrier bookings.
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    address_lines: Mapped[list[str]] = mapped_column(JSON)
+    postcode: Mapped[str] = mapped_column(String(32))
+    country: Mapped[str] = mapped_column(String(3))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    # One row per warehouse; None only transiently, before first flush.
+    collection_days: Mapped["WarehouseCollectionDay | None"] = relationship(
+        back_populates="warehouse", cascade="all, delete-orphan"
+    )
+    holidays: Mapped[list["WarehouseHoliday"]] = relationship(
+        back_populates="warehouse",
+        cascade="all, delete-orphan",
+        order_by="WarehouseHoliday.date",
+    )
+
+
+class WarehouseCollectionDay(Base):
+    """Weekday collection flags, one row per warehouse - the old system's
+    shape, ported (global flags, not per carrier)."""
+
+    __tablename__ = "warehouse_collection_days"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), unique=True)
+    monday: Mapped[bool] = mapped_column(default=True)
+    tuesday: Mapped[bool] = mapped_column(default=True)
+    wednesday: Mapped[bool] = mapped_column(default=True)
+    thursday: Mapped[bool] = mapped_column(default=True)
+    friday: Mapped[bool] = mapped_column(default=True)
+    saturday: Mapped[bool] = mapped_column(default=False)
+    sunday: Mapped[bool] = mapped_column(default=False)
+
+    warehouse: Mapped[Warehouse] = relationship(back_populates="collection_days")
+
+
+class WarehouseHoliday(Base):
+    """A date the warehouse does not dispatch (bank holiday, shutdown)."""
+
+    __tablename__ = "warehouse_holidays"
+    __table_args__ = (UniqueConstraint("warehouse_id", "date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"))
+    date: Mapped[date_type] = mapped_column(Date, index=True)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    warehouse: Mapped[Warehouse] = relationship(back_populates="holidays")
+
+
+class ShippingArea(Base):
+    """A named geography defined by postcode prefixes (CONTEXT.md: Shipping
+    Area). Services reference areas by code in their declarations; the
+    mechanism is data, never constants."""
+
+    __tablename__ = "shipping_areas"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    country: Mapped[str] = mapped_column(String(3))
+
+    prefixes: Mapped[list["PostcodeArea"]] = relationship(
+        back_populates="area",
+        order_by="PostcodeArea.prefix",
+        cascade="all, delete-orphan",
+    )
+
+
+class PostcodeArea(Base):
+    """One postcode prefix defining part of a Shipping Area. Prefixes are
+    stored normalised (uppercase, trimmed); the resolver matches a
+    destination postcode to areas by its longest matching prefix."""
+
+    __tablename__ = "postcode_areas"
+    __table_args__ = (UniqueConstraint("area_id", "prefix"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    area_id: Mapped[int] = mapped_column(ForeignKey("shipping_areas.id"))
+    prefix: Mapped[str] = mapped_column(String(16), index=True)
+
+    area: Mapped[ShippingArea] = relationship(back_populates="prefixes")
 
 
 class RulebookVersion(Base):

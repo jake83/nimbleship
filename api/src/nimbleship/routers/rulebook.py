@@ -47,6 +47,10 @@ class VersionDetailOut(VersionOut):
     created_at: datetime
 
 
+class VersionContentOut(VersionDetailOut):
+    services: list[ServiceDeclaration]
+
+
 class DryRunIn(BaseModel):
     # Bounded like limit: naming orders must not bypass the replay cap.
     order_numbers: list[str] | None = Field(default=None, max_length=500)
@@ -101,6 +105,20 @@ def _get_version_or_404(session: Session, version: int) -> RulebookVersion:
     if row is None:
         raise HTTPException(404, "no such rulebook version")
     return row
+
+
+@router.get("/versions/{version}")
+def version_content(version: int, session: SessionDep) -> VersionContentOut:
+    """One version with its full service content - what the UI diffs,
+    edits from, and inspects; the list endpoint stays metadata-only."""
+    row = _get_version_or_404(session, version)
+    return VersionContentOut(
+        version=row.version,
+        status=row.status,
+        author=row.author,
+        created_at=row.created_at,
+        services=rulebook_for(row).services,
+    )
 
 
 @router.post("/versions/{version}/publish")

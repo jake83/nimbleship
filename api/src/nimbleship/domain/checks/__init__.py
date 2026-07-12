@@ -9,6 +9,8 @@ checks/dimension.py for the pattern."""
 
 from typing import Protocol
 
+from nimbleship.domain.checks.area_blocked import AreaBlockedCheck
+from nimbleship.domain.checks.area_served import AreaServedCheck
 from nimbleship.domain.checks.country import CountryCheck
 from nimbleship.domain.checks.dimension import DimensionCheck
 from nimbleship.domain.checks.proposition import PropositionCheck
@@ -27,4 +29,6 @@ ALL_CHECKS: tuple[DeclarationCheck, ...] = (
     WeightBandCheck(),
     DimensionCheck(),
     PropositionCheck(),
+    AreaBlockedCheck(),
+    AreaServedCheck(),
 )
