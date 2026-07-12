@@ -109,7 +109,7 @@ class Operation(BaseModel):
     label: LabelSpec | None = None
 
     @model_validator(mode="after")
-    def _does_something(self) -> "Operation":
+    def _requires_steps_or_local_render(self) -> "Operation":
         if not self.steps and (
             self.label is None or self.label.source != "local_render"
         ):
@@ -163,8 +163,8 @@ def _validate_source(
 
 
 class CarrierDefinition(BaseModel):
-    carrier: str
-    name: str
+    carrier: str = Field(max_length=64)
+    name: str = Field(max_length=255)
     auth: Auth
     operations: dict[str, Operation]
 

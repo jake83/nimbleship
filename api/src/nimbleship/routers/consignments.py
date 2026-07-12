@@ -235,7 +235,14 @@ def create_consignment(
             )
         )
         assert definition is not None
-        label_spec = definition.operations["book"].label
+        book = definition.operations.get("book")
+        if book is None:
+            raise HTTPException(
+                500,
+                f"carrier '{selected.carrier}' has no book operation in its "
+                "published definition; it cannot dispatch consignments",
+            )
+        label_spec = book.label
         if label_spec is None or label_spec.source != "local_render":
             raise HTTPException(
                 500,

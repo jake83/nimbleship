@@ -113,11 +113,45 @@ def create_draft_version(
     )
 
 
+def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) -> None:
+    """ADR 0009's publish gate: renders must succeed (diffs are the
+    author's business; render errors are not) against recent consignments.
+    Zero history passes trivially - there is nothing to render."""
+    book = definition.operations.get("book")
+    if book is None:
+        return
+    config = carrier_config(session, carrier)
+    recent = (
+        session.execute(
+            select(Consignment)
+            .options(selectinload(Consignment.parcels))
+            .order_by(Consignment.id.desc())
+            .limit(20)
+        )
+        .scalars()
+        .all()
+    )
+    for consignment in recent:
+        facts: dict[str, object] = {
+            "shipment": _shipment_facts(consignment),
+            "config": config,
+        }
+        try:
+            render_operation(definition, "book", facts)
+        except ValueError as error:
+            raise HTTPException(
+                409,
+                f"publish refused: rendering against order "
+                f"{consignment.order_number} failed: {error}",
+            ) from error
+
+
 @router.post("/definitions/versions/{version}/publish")
 def publish_version(carrier: str, version: int, session: SessionDep) -> VersionOut:
     row = get_version(session, carrier, version)
     if row is None:
         raise HTTPException(404, "no such definition version")
+    _render_gate(session, carrier, definition_for(row))
     try:
         publish(session, row)
     except ValueError as error:
@@ -187,7 +221,12 @@ def golden_replay(
 ) -> ReplayOut:
     """Golden Replay (CONTEXT.md): render the draft's book operation for
     historical consignments and diff field-by-field against the active
-    definition's renders - fully offline, no carrier contact."""
+    definition's renders - fully offline, no carrier contact.
+
+    Baseline staging: until transports execute live calls there is no
+    recorded-traffic corpus, so the active definition's renders are the
+    baseline. When execution lands (Furdeco rung onward), recorded real
+    requests become the preferred baseline per ADR 0009."""
     row = get_version(session, carrier, version)
     if row is None:
         raise HTTPException(404, "no such definition version")

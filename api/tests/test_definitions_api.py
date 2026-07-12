@@ -200,3 +200,92 @@ def test_golden_replay_of_an_identical_draft_reports_no_changes(
     ).json()
 
     assert replay["changed"] == 0
+
+
+def test_a_definition_without_a_book_operation_fails_loudly_at_dispatch(
+    client: TestClient,
+) -> None:
+    trackonly = {
+        "carrier": "trackonly",
+        "name": "Track Only",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "track": {
+                "steps": [
+                    {
+                        "name": "status",
+                        "transport": "http",
+                        "request": {
+                            "method": "GET",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {
+                                    "target": "order",
+                                    "source": "shipment.order_number",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    client.put("/api/carriers/trackonly/config", json={"base_url": "https://x"})
+    client.post(
+        "/api/carriers/trackonly/definitions/drafts",
+        json={"author": "jake", "definition": trackonly},
+    )
+    client.post("/api/carriers/trackonly/definitions/versions/1/publish")
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "TRACKONLY-STD",
+                "carrier": "trackonly",
+                "name": "Bookless",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    client.post(f"/api/rulebook/versions/{version}/publish")
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 500
+    assert "book" in response.text
+    assert "trackonly" in response.text
+
+
+def test_publish_refuses_a_draft_whose_renders_error(client: TestClient) -> None:
+    """ADR 0009: a green replay (renders succeed - diffs are fine, errors
+    are not) is required to publish. The gate runs inline at publish time
+    against recent consignments."""
+    _publish_v1_with_config(client)
+    client.post("/api/consignments", json=CONSIGNMENT)
+
+    broken = {
+        **TEST_CARRIER_DEFINITION,
+        "auth": {
+            "scheme": "query_key",
+            "param": "key",
+            "secret": "config.missing_key",
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": broken},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "render" in response.text.lower()
+    assert "missing_key" in response.text

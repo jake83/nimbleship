@@ -66,6 +66,13 @@ draft/test/publish rails - never code.
 _Avoid_: carrier integration (when meaning the document), adapter/driver
 (those imply code)
 
+**Carrier Config**:
+The per-install account facts for one carrier - credentials, endpoints,
+account numbers - referenced by Carrier Definitions as config.* sources and
+stored outside them: a definition describes HOW to talk to a carrier;
+config holds WHO is talking. A fresh install is a deploy plus configuration.
+_Avoid_: putting credentials in a Carrier Definition, "carrier settings"
+
 **Golden Replay**:
 The offline test gate for a draft Carrier Definition: its rendered requests
 are diffed against recorded real traffic for historical shipments. Green
