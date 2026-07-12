@@ -114,22 +114,38 @@ available). Fix what verifies as real; rebut what does not, with evidence,
 as a PR comment. The refuter is deliberately aggressive - an unexamined
 "fix" for an overclaimed refutation is itself a bug.
 
-## When the review loop ends
+## When the review loop ends: the two-round rule
 
-The fix-review cycle terminates by rule, not by luck (established on PR #9,
-which took five substantive rounds):
+The fix-review cycle is capped by structure, not exhaustion (amended
+2026-07-13 after PR #9 ran five rounds and later loops showed round 3+ is
+almost always diminishing returns - while the round-2 pass over the FIXES
+caught fix-introduced bugs three separate times, so it stays):
 
-- **Settlement rule**: the loop closes when a pass yields zero new REAL
-  findings against the CURRENT tip. Findings against superseded commits are
-  rebutted with the fix reference and do not count - but a real finding
-  against the tip reopens the loop, always, even after settlement was
-  declared.
-- **Severity floor**: non-blocking findings (coverage gaps, wording nits,
-  bounded follow-ups) become tracked follow-ups in the wrap-up comment, not
-  new fix-pushes. Deliberately ending the cycle is allowed; the human merge
-  ratifies "good enough".
-- **Comments are free**: triage and rebuttal comments never trigger
-  re-review - only pushes do. Never push comment-only or cosmetic changes
-  into a settling loop; they ride the next real PR.
-- The human is the fixed point: total rounds are bounded by real bugs, and
-  any disagreement the machines cannot settle ends at the human merge gate.
+1. **Round 1**: the original push gets the full adversarial pass. Triage
+   every finding (verify, fix, or rebut) and land all fixes as ONE
+   consolidated push - drip-feeding fixes spins wasted pipeline rounds.
+2. **Round 2**: the pass over the fixes. Fixes are new code written faster
+   than the original and are MORE bug-prone per line - this verification
+   round has repeatedly caught fix-introduced bugs and false "fixed"
+   claims. Triage its findings with the default flipped: everything
+   non-blocking becomes a tracked follow-up in the wrap-up comment, never
+   a new fix push.
+3. **Blocking exception**: only a genuine blocking finding against the
+   current tip (real correctness or security, including silent-wrong
+   behaviour) earns another consolidated fix push and one more
+   verification round. This should be rare.
+4. **The human is the terminator**: after round 2 (or a blocking round),
+   the PR goes to the human with the wrap-up in hand - what was fixed,
+   what was rebutted, what is tracked. The human's merge closes the loop;
+   a clean machine pass is not required and not waited for.
+
+Standing rules that survive the amendment:
+- Findings against superseded commits are rebutted with the fix reference
+  and never count as rounds.
+- Comments are free: triage and rebuttals never trigger re-review - only
+  pushes do. Never push comment-only or cosmetic changes into an open
+  loop; they ride the next real PR.
+- Run gates BARE, never piped: `uv run pytest && uv run ruff check .` -
+  piping a gate into tail/grep/head swallows its exit code, and this has
+  let red commits through twice. Filter output only AFTER the bare run
+  has passed.
