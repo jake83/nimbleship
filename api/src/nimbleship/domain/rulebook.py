@@ -50,6 +50,16 @@ def _seed_if_fresh(session: Session) -> None:
     so a published version always exists whenever any row exists - which is
     what lets active_rulebook() use scalar_one(). If an entry point ever
     skips seeding, restore a status == "published" check here."""
+    exists = session.execute(
+        select(RulebookVersion.version).limit(1)
+    ).scalar_one_or_none()
+    if exists is not None:
+        return
+    # Double-checked locking: this path runs on every rulebook read,
+    # including the order-creation hot path, so the (transaction-scoped,
+    # global) lock is taken only in the once-per-install case where a seed
+    # insert may actually happen - then the check repeats under the lock
+    # (reviewer, PR #9).
     _serialise_rulebook_writes(session)
     exists = session.execute(
         select(RulebookVersion.version).limit(1)
@@ -131,9 +141,13 @@ def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
     Publishing a draft older than the live version is refused: it would
     "succeed" while silently changing nothing. Rolling back means drafting
     a new version with the old content, keeping history linear."""
+    _serialise_rulebook_writes(session)
+    # Re-read under the lock: the caller fetched this row before the lock
+    # existed, so a double-submitted publish would otherwise see stale
+    # status == "draft" on both calls (refuter, PR #9).
+    session.refresh(row)
     if row.status != "draft":
         raise ValueError(f"version {row.version} is {row.status}, not a draft")
-    _serialise_rulebook_writes(session)
     live = session.execute(
         select(RulebookVersion.version)
         .where(RulebookVersion.status == "published")
