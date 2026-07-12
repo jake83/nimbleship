@@ -181,6 +181,10 @@ def _book_with_carrier(
         session.commit()
         raise HTTPException(502, str(error)) from error
 
+    # The extraction names "tracking_reference" and "barcodes" are the
+    # contract between a book operation and this flow: a definition must
+    # extract under exactly these names for the values to reach the
+    # consignment (see api/examples/furdeco.definition.json).
     tracking = result.outputs.get("tracking_reference")
     if tracking is not None:
         consignment.tracking_reference = str(tracking)

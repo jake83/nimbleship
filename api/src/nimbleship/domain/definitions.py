@@ -28,8 +28,8 @@ _DROPOUT_DEFINITION: dict[str, object] = {
 }
 
 # Advisory lock key registry - every pg_advisory_xact_lock key in this
-# codebase, in one place, so a new key can never silently collide with an
-# existing one (the previous value here shared 815_004 with propositions):
+# codebase, in one place: a new key MUST be unique here, or two unrelated
+# write paths silently serialise against each other.
 #   815_003  rulebook writes            (domain/rulebook.py)
 #   815_004  proposition seeding        (domain/propositions.py)
 #   815_005  definition writes          (this module)

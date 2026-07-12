@@ -84,10 +84,24 @@ class Extraction(BaseModel):
     transform: Transform | None = None
 
 
+class SuccessCondition(BaseModel):
+    """Success means the value at `path` exists and is non-empty; with
+    `equals`, it must also match exactly."""
+
+    path: str
+    equals: str | None = None
+
+
+class ErrorMessageSource(BaseModel):
+    """Where the carrier puts its human-readable error message."""
+
+    path: str
+
+
 class ResponseSpec(BaseModel):
     format: Literal["json", "xml"]
-    success_when: dict[str, str] | None = None
-    error_message: dict[str, str] | None = None
+    success_when: SuccessCondition | None = None
+    error_message: ErrorMessageSource | None = None
     extract: list[Extraction] = []
 
 

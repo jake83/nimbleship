@@ -111,7 +111,7 @@ def _error_message(
     spec: ResponseSpec, parsed: object, fmt: _Format, fallback: str
 ) -> str:
     if spec.error_message is not None:
-        found = _lookup(parsed, fmt, spec.error_message["path"])
+        found = _lookup(parsed, fmt, spec.error_message.path)
         if found is not _MISSING and str(found).strip():
             return str(found)
     return fallback
@@ -154,16 +154,15 @@ def _failure_reason(
     """The message a failed success condition earns, or None on success."""
     if spec.success_when is None:
         return None
-    value = _lookup(parsed, fmt, spec.success_when["path"])
+    value = _lookup(parsed, fmt, spec.success_when.path)
     if value is _MISSING:
         return _error_message(
             spec,
             parsed,
             fmt,
-            f"step '{step.name}' response has no value at "
-            f"'{spec.success_when['path']}'",
+            f"step '{step.name}' response has no value at '{spec.success_when.path}'",
         )
-    expected = spec.success_when.get("equals")
+    expected = spec.success_when.equals
     if expected is not None and str(value) != expected:
         return _error_message(
             spec,

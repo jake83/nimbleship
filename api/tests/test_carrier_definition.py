@@ -236,3 +236,25 @@ def test_auth_secret_source_is_validated_at_authoring() -> None:
 
     with pytest.raises(ValidationError, match="unknown source root"):
         CarrierDefinition.model_validate(bad)
+
+
+def test_success_when_without_a_path_is_rejected_at_authoring() -> None:
+    import copy
+
+    malformed = copy.deepcopy(MINIMAL)
+    step = malformed["operations"]["book"]["steps"][0]  # type: ignore[index]
+    step["response"]["success_when"] = {"equals": "OK"}
+
+    with pytest.raises(ValidationError, match="path"):
+        CarrierDefinition.model_validate(malformed)
+
+
+def test_error_message_without_a_path_is_rejected_at_authoring() -> None:
+    import copy
+
+    malformed = copy.deepcopy(MINIMAL)
+    step = malformed["operations"]["book"]["steps"][0]  # type: ignore[index]
+    step["response"]["error_message"] = {"pat": "/response/error"}
+
+    with pytest.raises(ValidationError, match="path"):
+        CarrierDefinition.model_validate(malformed)
