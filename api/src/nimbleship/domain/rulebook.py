@@ -50,6 +50,7 @@ def _seed_if_fresh(session: Session) -> None:
     so a published version always exists whenever any row exists - which is
     what lets active_rulebook() use scalar_one(). If an entry point ever
     skips seeding, restore a status == "published" check here."""
+    _serialise_rulebook_writes(session)
     exists = session.execute(
         select(RulebookVersion.version).limit(1)
     ).scalar_one_or_none()
@@ -109,18 +110,19 @@ def create_draft(
     return row
 
 
-# Arbitrary app-wide advisory lock key: "rulebook publish" serialisation.
-_PUBLISH_LOCK_KEY = 815_003
+# Arbitrary app-wide advisory lock key for rulebook writes (seed, publish).
+_RULEBOOK_LOCK_KEY = 815_003
 
 
-def _serialise_publishes(session: Session) -> None:
-    """The stale-draft guard in publish() is check-then-act: two concurrent
-    publishes could both read the same live version and both pass the check
-    (refuter, PR #9). On Postgres a transaction-scoped advisory lock
-    serialises publishers; SQLite permits a single writer, so the race
-    cannot occur there and no lock is needed."""
+def _serialise_rulebook_writes(session: Session) -> None:
+    """Seeding and the stale-draft guard in publish() are check-then-act:
+    concurrent callers could both pass the read before either writes - the
+    refuter on PR #9 proved a double seed with two connections and a
+    barrier. On Postgres a transaction-scoped advisory lock serialises the
+    writers; SQLite permits a single writer, so the race cannot occur there
+    and no lock is needed."""
     if session.get_bind().dialect.name == "postgresql":
-        session.execute(select(func.pg_advisory_xact_lock(_PUBLISH_LOCK_KEY)))
+        session.execute(select(func.pg_advisory_xact_lock(_RULEBOOK_LOCK_KEY)))
 
 
 def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
@@ -131,7 +133,7 @@ def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
     a new version with the old content, keeping history linear."""
     if row.status != "draft":
         raise ValueError(f"version {row.version} is {row.status}, not a draft")
-    _serialise_publishes(session)
+    _serialise_rulebook_writes(session)
     live = session.execute(
         select(RulebookVersion.version)
         .where(RulebookVersion.status == "published")

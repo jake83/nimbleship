@@ -204,3 +204,15 @@ def test_an_empty_draft_is_rejected(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_dry_run_order_list_is_bounded_like_limit(client: TestClient) -> None:
+    client.get("/api/rulebook/active")
+    draft = client.post("/api/rulebook/drafts", json=DRAFT_WITH_US).json()["version"]
+
+    response = client.post(
+        f"/api/rulebook/versions/{draft}/dry-run",
+        json={"order_numbers": [f"9{n:07d}" for n in range(501)]},
+    )
+
+    assert response.status_code == 422

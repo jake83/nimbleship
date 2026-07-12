@@ -48,7 +48,8 @@ class VersionDetailOut(VersionOut):
 
 
 class DryRunIn(BaseModel):
-    order_numbers: list[str] | None = None
+    # Bounded like limit: naming orders must not bypass the replay cap.
+    order_numbers: list[str] | None = Field(default=None, max_length=500)
     limit: int = Field(default=DRY_RUN_DEFAULT_LIMIT, ge=1, le=500)
 
 
