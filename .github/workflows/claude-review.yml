@@ -48,6 +48,17 @@ jobs:
             is the ONLY comment you ever post - never post test or placeholder
             comments; the PR thread is an audit record.
           claude_args: '--allowed-tools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+      - name: Fail if no comment was posted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Code review"
+        run: |
+          sleep 10
+          if ! gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+              --jq '.[] | select(.user.login == "claude[bot]") | .body' | grep -q "$TITLE"; then
+            echo "::error::The Reviewer finished without posting its comment - a usage limit or silent exit is masquerading as success."
+            exit 1
+          fi
 
   refuter:
     name: Refuter
@@ -102,3 +113,14 @@ jobs:
             the PR thread is an audit record. Finishing without posting is
             itself a failure.
           claude_args: '--allowed-tools "Read,Grep,Glob,Write,Edit,Bash(cd:*),Bash(uv:*),Bash(npm:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+      - name: Fail if no comment was posted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Refutation attempt"
+        run: |
+          sleep 10
+          if ! gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+              --jq '.[] | select(.user.login == "claude[bot]") | .body' | grep -q "$TITLE"; then
+            echo "::error::The Refuter finished without posting its comment - a usage limit or silent exit is masquerading as success."
+            exit 1
+          fi
