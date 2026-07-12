@@ -42,6 +42,21 @@ the two must always agree (`95000254580-parcel-2:95000254580-2`). Carried
 over from the 3PL glossary.
 _Avoid_: barcode list, 0-based `{n}`
 
+**Girth**:
+The parcel size measure carriers price and restrict by: twice the height
+plus twice the width plus the length, in centimetres. A shipment fact;
+services may declare a maximum. Carried over from the old system's
+allocation vocabulary.
+_Avoid_: circumference, "size" (ambiguous with longest dimension)
+
+**Shipping Area**:
+A named geography (e.g. Scottish Highlands, Northern Ireland) defined by
+postcode prefixes, used by services to declare where they do or do not
+deliver. The mechanism is data (area and prefix tables); a shipment's areas
+are resolved from its destination postcode at evaluation time.
+_Avoid_: blocked area (that is one use of an area, not the concept),
+postcode list (the area is the named thing, prefixes are its definition)
+
 **Delivery Cost**:
 What a carrier charges the company to deliver a consignment. Used to pick the
 cheapest suitable carrier during allocation.

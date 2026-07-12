@@ -188,8 +188,12 @@ def test_old_stored_rulebooks_still_validate() -> None:
     declaration = ServiceDeclaration.model_validate(legacy_shape)
 
     assert declaration.max_dimension_cm is None
+    assert declaration.max_girth_cm is None
+    assert declaration.areas_served is None
     assert declaration.areas_blocked == []
     assert declaration.propositions == []
+    assert declaration.cost_bands is None
+    assert declaration.charge_bands is None
 
 
 def test_dimension_over_service_limit_excludes_service() -> None:
