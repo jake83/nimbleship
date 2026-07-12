@@ -16,6 +16,7 @@ from nimbleship.domain.carrier_definition import (
     Step,
     Transform,
 )
+from nimbleship.engine.field_plugins import field_plugin
 
 
 class UnresolvedStepOutput(str):
@@ -72,9 +73,20 @@ def _apply(transform: Transform, value: object) -> object:
             return transform.table[key]
 
 
+def _coerce(value: object) -> Rendered:
+    if isinstance(value, str | list | dict) or value is None:
+        return value
+    return str(value)
+
+
 def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     if entry.const is not None:
         return entry.const
+    if entry.plugin is not None:
+        # Plugins compute from the facts alone - the render stays pure.
+        # Stateful inputs (allocated numbers, tokens) are injected as facts
+        # before render (see nimbleship.engine.field_plugins).
+        return _coerce(field_plugin(entry.plugin).compute(facts))
     assert entry.source is not None  # schema guarantees exactly one
     value = _resolve(entry.source, facts)
     # An unresolved step output stays a stable placeholder token - through
@@ -94,9 +106,7 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
         ]
     if entry.transform is not None:
         value = _apply(entry.transform, value)
-    if isinstance(value, str | list | dict) or value is None:
-        return value
-    return str(value)
+    return _coerce(value)
 
 
 def _render_step(

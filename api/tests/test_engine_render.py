@@ -2,7 +2,10 @@
 requests. Pure by design - Golden Replay diffs renders without touching a
 carrier (ADR 0009)."""
 
+import pytest
+
 from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.engine.field_plugins import FIELD_PLUGINS
 from nimbleship.engine.render import render_operation
 
 DEFINITION = CarrierDefinition.model_validate(
@@ -125,8 +128,6 @@ def test_auth_query_key_lands_in_query_not_body() -> None:
 
 
 def test_missing_fact_fails_loudly_with_the_path_named() -> None:
-    import pytest
-
     facts = {**FACTS, "shipment": {"order_number": "X"}}
 
     with pytest.raises(ValueError, match=r"shipment\.postcode"):
@@ -351,6 +352,59 @@ def test_a_real_value_shaped_like_a_placeholder_is_still_transformed() -> None:
     [request] = render_operation(definition, "book", facts)
 
     assert request.body["ref"] == "<STEPS.ONLY.REF>"
+
+
+class _EchoOrderPlugin:
+    """Computes a value from the facts it is handed - proof the renderer
+    passes the whole facts dict through."""
+
+    def compute(self, facts: dict[str, object]) -> object:
+        shipment = facts["shipment"]
+        assert isinstance(shipment, dict)
+        return f"computed:{shipment['order_number']}"
+
+
+def _single_entry_definition(entry: dict[str, object]) -> CarrierDefinition:
+    return CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "only",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [entry],
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+
+def test_plugin_entries_render_by_calling_the_registered_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(FIELD_PLUGINS, "test_echo_order", _EchoOrderPlugin())
+    definition = _single_entry_definition(
+        {"target": "reference", "plugin": "test_echo_order"}
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    [request] = render_operation(definition, "book", facts)
+
+    assert request.body["reference"] == "computed:95000254580"
 
 
 def test_auth_is_not_injected_into_non_http_steps() -> None:

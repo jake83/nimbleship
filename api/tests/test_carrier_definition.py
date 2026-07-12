@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.engine.field_plugins import FIELD_PLUGINS
 
 MINIMAL = {
     "carrier": "furdeco",
@@ -222,6 +223,78 @@ def test_step_reference_to_unknown_step_is_rejected() -> None:
 
     with pytest.raises(ValidationError, match="unknown step"):
         CarrierDefinition.model_validate(bad)
+
+
+def _with_entries(*entries: dict[str, object]) -> dict[str, object]:
+    return {
+        **MINIMAL,
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": list(entries),
+                        },
+                    }
+                ],
+            }
+        },
+    }
+
+
+class _StaticPlugin:
+    def compute(self, facts: dict[str, object]) -> object:
+        return "computed"
+
+
+def test_plugin_entries_validate_when_the_plugin_is_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(FIELD_PLUGINS, "test_static", _StaticPlugin())
+
+    definition = CarrierDefinition.model_validate(
+        _with_entries({"target": "number", "plugin": "test_static"})
+    )
+
+    entry = definition.operations["book"].steps[0].request.mapping[0]
+    assert entry.plugin == "test_static"
+
+
+def test_unregistered_plugin_names_are_rejected_at_authoring() -> None:
+    bad = _with_entries({"target": "number", "plugin": "reticulator"})
+
+    with pytest.raises(ValidationError, match="unknown field plugin 'reticulator'"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_plugin_is_exclusive_with_source_and_const(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(FIELD_PLUGINS, "test_static", _StaticPlugin())
+    for entry in (
+        {"target": "x", "plugin": "test_static", "source": "shipment.order_number"},
+        {"target": "x", "plugin": "test_static", "const": "0000001"},
+    ):
+        with pytest.raises(ValidationError, match="exactly one of"):
+            CarrierDefinition.model_validate(_with_entries(entry))
+
+
+def test_plugin_entries_take_no_transform_or_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(FIELD_PLUGINS, "test_static", _StaticPlugin())
+    for extra in (
+        {"transform": {"name": "uppercase"}},
+        {"each": [{"target": "y", "source": "item.value"}]},
+    ):
+        entry: dict[str, object] = {"target": "x", "plugin": "test_static", **extra}
+        with pytest.raises(ValidationError, match="no transform or each"):
+            CarrierDefinition.model_validate(_with_entries(entry))
 
 
 def test_auth_secret_source_is_validated_at_authoring() -> None:

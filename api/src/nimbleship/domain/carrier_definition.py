@@ -10,6 +10,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from nimbleship.engine.field_plugins import field_plugin_names
+
 FACT_ROOTS = ("shipment", "warehouse", "config")
 
 
@@ -50,17 +52,31 @@ class MappingEntry(BaseModel):
     target: str
     source: str | None = None
     const: str | None = None
+    # A computed-field plugin name (ADR 0009): the engine calls the
+    # registered plugin with the facts and maps its value to the target.
+    plugin: str | None = None
     transform: Transform | None = None
     # Loop over a collection source; inner entries read from the `item.` root.
     each: list["MappingEntry"] | None = None
 
     @model_validator(mode="after")
     def _exactly_one_value_origin(self) -> "MappingEntry":
-        if (self.source is None) == (self.const is None):
-            raise ValueError(f"mapping '{self.target}': exactly one of source or const")
+        origins = (self.source, self.const, self.plugin)
+        if sum(origin is not None for origin in origins) != 1:
+            raise ValueError(
+                f"mapping '{self.target}': exactly one of source, const, or plugin"
+            )
         if self.const is not None and (self.transform or self.each):
             raise ValueError(
                 f"mapping '{self.target}': const takes no transform or each"
+            )
+        if self.plugin is not None and (self.transform or self.each):
+            raise ValueError(
+                f"mapping '{self.target}': plugin takes no transform or each"
+            )
+        if self.plugin is not None and self.plugin not in field_plugin_names():
+            raise ValueError(
+                f"mapping '{self.target}': unknown field plugin '{self.plugin}'"
             )
         if self.each is not None and self.transform is not None:
             raise ValueError(
