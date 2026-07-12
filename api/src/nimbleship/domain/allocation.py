@@ -7,7 +7,7 @@ Phase 2; the structures here already leave room for them.
 
 from decimal import Decimal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class ServiceDeclaration(BaseModel):
@@ -23,7 +23,9 @@ class ServiceDeclaration(BaseModel):
 
 class Rulebook(BaseModel):
     version: int
-    services: list[ServiceDeclaration]
+    # Non-empty: a live rulebook with zero services would silently reject
+    # every order - a total allocation outage behind 200s (refuter, PR #9).
+    services: list[ServiceDeclaration] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _codes_and_tie_breaks_are_unique(self) -> "Rulebook":

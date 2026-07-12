@@ -46,3 +46,17 @@ versioned:
   effects).
 - Cost: the rules storage model is version-aware from day one, and the
   editing UI works on drafts rather than live state.
+
+## Addendum (2026-07-12): rollback is redraft, not repoint
+
+The original decision said "rollback means repointing to an older version".
+Implementation (PR #9) deliberately supersedes that: the live version is
+always the highest published one, and publishing a draft older than the live
+version is refused - it would report success while changing nothing.
+
+Rolling back therefore means drafting the old content as a NEW version and
+publishing it. This keeps history strictly linear (the timeline of published
+versions is the timeline of what was live, with no pointer moves to
+reconstruct), at the cost of a rollback creating a new version number rather
+than reusing the old one. The "diff" the original decision called for is
+derived by comparing adjacent versions rather than stored.
