@@ -276,10 +276,11 @@ def test_plugin_is_exclusive_with_source_and_const(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setitem(FIELD_PLUGINS, "test_static", _StaticPlugin())
-    for entry in (
+    entries: list[dict[str, object]] = [
         {"target": "x", "plugin": "test_static", "source": "shipment.order_number"},
         {"target": "x", "plugin": "test_static", "const": "0000001"},
-    ):
+    ]
+    for entry in entries:
         with pytest.raises(ValidationError, match="exactly one of"):
             CarrierDefinition.model_validate(_with_entries(entry))
 
@@ -295,6 +296,23 @@ def test_plugin_entries_take_no_transform_or_each(
         entry: dict[str, object] = {"target": "x", "plugin": "test_static", **extra}
         with pytest.raises(ValidationError, match="no transform or each"):
             CarrierDefinition.model_validate(_with_entries(entry))
+
+
+def test_conflicting_nested_targets_are_rejected_at_authoring() -> None:
+    bad = _with_entries(
+        {"target": "consignment", "const": "flat"},
+        {"target": "consignment.weight", "source": "shipment.weight_kg"},
+    )
+
+    with pytest.raises(ValidationError, match="conflict"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_a_skipped_list_index_in_a_target_is_rejected_at_authoring() -> None:
+    bad = _with_entries({"target": "consignments.1.weight", "source": "shipment.w"})
+
+    with pytest.raises(ValidationError, match="index"):
+        CarrierDefinition.model_validate(bad)
 
 
 def test_auth_secret_source_is_validated_at_authoring() -> None:

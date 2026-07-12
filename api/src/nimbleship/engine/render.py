@@ -15,6 +15,7 @@ from nimbleship.domain.carrier_definition import (
     MappingEntry,
     Step,
     Transform,
+    insert_at_target,
 )
 from nimbleship.engine.field_plugins import field_plugin
 
@@ -39,7 +40,7 @@ class RenderedRequest(BaseModel):
     query: dict[str, str]
     headers: dict[str, str] = {}
     content_type: str
-    body: dict[str, Rendered]
+    body: dict[str, object]
 
 
 def _resolve(path: str, facts: Facts) -> object:
@@ -47,6 +48,8 @@ def _resolve(path: str, facts: Facts) -> object:
     for part in path.split("."):
         if isinstance(node, dict) and part in node:
             node = node[part]
+        elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+            node = node[int(part)]
         else:
             if path.startswith("steps."):
                 return UnresolvedStepOutput(f"<{path}>")
@@ -97,13 +100,17 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     if entry.each is not None:
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
-        return [
-            {
-                inner.target: _render_entry(inner, {**facts, "item": item})
-                for inner in entry.each
-            }
-            for item in value
-        ]
+        items: list[object] = []
+        for item in value:
+            rendered: dict[str, object] = {}
+            for inner in entry.each:
+                insert_at_target(
+                    rendered,
+                    inner.target,
+                    _render_entry(inner, {**facts, "item": item}),
+                )
+            items.append(rendered)
+        return items
     if entry.transform is not None:
         value = _apply(entry.transform, value)
     return _coerce(value)
@@ -124,7 +131,9 @@ def _render_step(
             query[auth.param] = str(_resolve(auth.secret, facts))
         elif auth.scheme == "header_key":
             headers[auth.header] = str(_resolve(auth.secret, facts))
-    body = {entry.target: _render_entry(entry, facts) for entry in step.request.mapping}
+    body: dict[str, object] = {}
+    for entry in step.request.mapping:
+        insert_at_target(body, entry.target, _render_entry(entry, facts))
     return RenderedRequest(
         step=step.name,
         transport=step.transport,

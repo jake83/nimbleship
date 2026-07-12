@@ -407,6 +407,130 @@ def test_plugin_entries_render_by_calling_the_registered_plugin(
     assert request.body["reference"] == "computed:95000254580"
 
 
+def _entries_definition(*entries: dict[str, object]) -> CarrierDefinition:
+    return CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "only",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": list(entries),
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+
+def test_dotted_targets_render_nested_objects_and_lists() -> None:
+    definition = _entries_definition(
+        {"target": "deliveryAddress.name", "source": "shipment.recipient_name"},
+        {"target": "deliveryAddress.postcode", "source": "shipment.postcode"},
+        {"target": "consignments.0.weight", "source": "shipment.weight_kg"},
+        {"target": "consignments.0.pallets.0.palletType", "const": "H"},
+        {"target": "consignments.0.pallets.0.numberofPallets", "const": "1"},
+    )
+    facts: dict[str, object] = {
+        "shipment": {
+            "recipient_name": "John Doe",
+            "postcode": "IV1 2AB",
+            "weight_kg": "410",
+        },
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    [request] = render_operation(definition, "book", facts)
+
+    assert request.body == {
+        "deliveryAddress": {"name": "John Doe", "postcode": "IV1 2AB"},
+        "consignments": [
+            {
+                "weight": "410",
+                "pallets": [{"palletType": "H", "numberofPallets": "1"}],
+            }
+        ],
+    }
+
+
+def test_source_paths_index_into_extracted_lists() -> None:
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "manifest",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "order", "source": "shipment.order"}
+                                ],
+                            },
+                            "response": {
+                                "format": "json",
+                                "extract": [
+                                    {
+                                        "name": "tracking_codes",
+                                        "path": "successfulTrackingCodes",
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "name": "label",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "trackingNumber",
+                                        "source": "steps.manifest.tracking_codes.0",
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    base_facts: dict[str, object] = {
+        "shipment": {"order": "95000254580"},
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    # Before the manifest step has answered: a stable placeholder.
+    _, before = render_operation(definition, "book", base_facts)
+    assert before.body["trackingNumber"] == "<steps.manifest.tracking_codes.0>"
+
+    # After execution injects the extracted outputs: the first code.
+    facts = {
+        **base_facts,
+        "steps": {"manifest": {"tracking_codes": ["UMB0000042", "UMB0000043"]}},
+    }
+    _, after = render_operation(definition, "book", facts)
+    assert after.body["trackingNumber"] == "UMB0000042"
+
+
 def test_auth_is_not_injected_into_non_http_steps() -> None:
     definition = CarrierDefinition.model_validate(
         {

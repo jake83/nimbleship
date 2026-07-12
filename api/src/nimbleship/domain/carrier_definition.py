@@ -48,6 +48,56 @@ type Transform = Annotated[
 ]
 
 
+def insert_at_target(
+    container: dict[str, object] | list[object], target: str, value: object
+) -> None:
+    """Place a value at a mapping target. Dots nest objects; an all-digit
+    segment is a 0-based list position and must be used densely, in order.
+    Structural conflicts (a target through another target's value, a list
+    position skipped) fail loudly - and, because definitions dry-run their
+    targets at authoring time, before a definition is ever stored."""
+    _insert(container, target.split("."), value, target)
+
+
+def _insert(
+    container: dict[str, object] | list[object],
+    parts: list[str],
+    value: object,
+    target: str,
+) -> None:
+    part, rest = parts[0], parts[1:]
+    if isinstance(container, list) != part.isdigit():
+        raise ValueError(f"mapping targets conflict at '{target}'")
+    child: object
+    if isinstance(container, list):
+        index = int(part)
+        if index > len(container):
+            raise ValueError(
+                f"mapping '{target}': list index {index} skips position "
+                f"{len(container)}"
+            )
+        if not rest:
+            if index < len(container):
+                raise ValueError(f"mapping targets conflict at '{target}'")
+            container.append(value)
+            return
+        if index == len(container):
+            container.append([] if rest[0].isdigit() else {})
+        child = container[index]
+    else:
+        if not rest:
+            if part in container:
+                raise ValueError(f"mapping targets conflict at '{target}'")
+            container[part] = value
+            return
+        if part not in container:
+            container[part] = [] if rest[0].isdigit() else {}
+        child = container[part]
+    if not isinstance(child, dict | list):
+        raise ValueError(f"mapping targets conflict at '{target}'")
+    _insert(child, rest, value, target)
+
+
 class MappingEntry(BaseModel):
     target: str
     source: str | None = None
@@ -197,8 +247,21 @@ class CarrierDefinition(BaseModel):
                 _validate_source(step.request.url, earlier, False, where)
                 for entry in step.request.mapping:
                     self._validate_entry(entry, earlier, False, where)
+                self._validate_targets(step.request.mapping, where)
                 earlier.add(step.name)
         return self
+
+    def _validate_targets(self, entries: list[MappingEntry], where: str) -> None:
+        # Dry-run the targets so structural conflicts fail at authoring
+        # time, not when the first booking renders.
+        probe: dict[str, object] = {}
+        for entry in entries:
+            try:
+                insert_at_target(probe, entry.target, None)
+            except ValueError as error:
+                raise ValueError(f"{where}: {error}") from error
+            if entry.each:
+                self._validate_targets(entry.each, where)
 
     def _validate_entry(
         self,
