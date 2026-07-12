@@ -4,6 +4,13 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
 
+# A new push cancels in-flight reviews of obsolete commits: on PR #9 most
+# late-round findings were against superseded code, because reviews of
+# commit N kept landing after commit N+1 existed.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   reviewer:
     name: Reviewer
@@ -28,9 +35,18 @@ jobs:
             this repo's conventions and architecture decisions. Assess:
             correctness, test quality (do the tests pin behaviour, not
             implementation?), convention/ADR adherence, security, and
-            maintainability. You MUST finish by posting your whole review as one
-            PR comment titled "Code review" via `gh pr comment`, referencing
-            files and line numbers inline, ending with a short verdict paragraph.
+            maintainability.
+
+            State which commit you reviewed. Treat earlier review comments on
+            the PR as UNVERIFIED claims: re-verify anything you repeat against
+            the current commit - prior findings may already be fixed or may
+            have been wrong.
+
+            You MUST finish by posting your whole review as one PR comment
+            titled "Code review" via `gh pr comment`, referencing files and
+            line numbers inline, ending with a short verdict paragraph. That
+            is the ONLY comment you ever post - never post test or placeholder
+            comments; the PR thread is an audit record.
           claude_args: '--allowed-tools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
 
   refuter:
@@ -73,8 +89,16 @@ jobs:
             a failing test that should pass, quoted in your comment. Nothing
             you write can be pushed; the workspace is disposable.
 
+            State which commit you attacked. Treat earlier review comments on
+            the PR as UNVERIFIED claims: re-verify anything you repeat against
+            the current commit - prior findings may already be fixed, and
+            repeating a stale finding wastes a human's time. Re-executing a
+            triage comment's "fixed" claim IS a legitimate attack.
+
             You MUST finish by posting your findings as a PR comment titled
             "Refutation attempt" via gh, even if every attack failed (then:
-            what you attacked and why each attack failed). Finishing without
-            posting a comment is itself a failure.
+            what you attacked and why each attack failed). That is the ONLY
+            comment you ever post - never post test or placeholder comments;
+            the PR thread is an audit record. Finishing without posting is
+            itself a failure.
           claude_args: '--allowed-tools "Read,Grep,Glob,Write,Edit,Bash(cd:*),Bash(uv:*),Bash(npm:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
