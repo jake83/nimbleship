@@ -185,3 +185,34 @@ class RulebookVersion(Base):
     author: Mapped[str] = mapped_column(String(64))
     data: Mapped[dict[str, object]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CarrierDefinitionVersion(Base):
+    """A versioned Carrier Definition per carrier (ADR 0009 on the ADR 0003
+    rails): immutable rows, draft or published; the highest published
+    version per carrier is live."""
+
+    __tablename__ = "carrier_definition_versions"
+    __table_args__ = (UniqueConstraint("carrier", "version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    carrier: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[int] = mapped_column()
+    status: Mapped[str] = mapped_column(String(16))
+    author: Mapped[str] = mapped_column(String(64))
+    data: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CarrierConfig(Base):
+    """Per-install carrier account facts (credentials, endpoints, account
+    numbers) referenced by definitions as config.* sources. Never part of a
+    definition - a fresh install is a deploy plus configuration."""
+
+    __tablename__ = "carrier_configs"
+
+    carrier: Mapped[str] = mapped_column(String(64), primary_key=True)
+    data: Mapped[dict[str, object]] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )

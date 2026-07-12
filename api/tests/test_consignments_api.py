@@ -508,3 +508,43 @@ def test_forcing_a_banded_service_records_its_banded_cost(
     timeline = client.get(f"/api/consignments/{CONSIGNMENT['order_number']}").json()
     allocated = next(e for e in timeline["events"] if e["stage"] == "allocated")
     assert allocated["detail"]["cost"] == "3.25"
+
+
+def test_labels_flow_through_the_carrier_definition(client: TestClient) -> None:
+    """The walking skeleton's hardcoded Drop Out path is gone: the label is
+    produced because the dropout definition's book operation declares
+    local_render."""
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 201
+    label = client.get("/api/consignments/95000254580/label.pdf")
+    assert label.status_code == 200
+    assert label.content.startswith(b"%PDF")
+
+
+def test_a_carrier_without_a_published_definition_fails_loudly(
+    client: TestClient,
+) -> None:
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "GHOST-STD",
+                "carrier": "ghostcarrier",
+                "name": "No definition exists for this carrier",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 500
+    assert "ghostcarrier" in response.text
+    assert "definition" in response.text

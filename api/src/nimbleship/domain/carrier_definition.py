@@ -105,8 +105,18 @@ class LabelSpec(BaseModel):
 
 
 class Operation(BaseModel):
-    steps: list[Step] = Field(min_length=1)
+    steps: list[Step] = []
     label: LabelSpec | None = None
+
+    @model_validator(mode="after")
+    def _requires_steps_or_local_render(self) -> "Operation":
+        if not self.steps and (
+            self.label is None or self.label.source != "local_render"
+        ):
+            raise ValueError(
+                "an operation needs at least one step or a local_render label"
+            )
+        return self
 
 
 class QueryKeyAuth(BaseModel):
@@ -153,8 +163,8 @@ def _validate_source(
 
 
 class CarrierDefinition(BaseModel):
-    carrier: str
-    name: str
+    carrier: str = Field(max_length=64)
+    name: str = Field(max_length=255)
     auth: Auth
     operations: dict[str, Operation]
 
