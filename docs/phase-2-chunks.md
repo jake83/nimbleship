@@ -25,9 +25,11 @@ Goal: shipping areas as data; area facts on the shipment; area checks.
   `postcode_areas` (postcode prefix -> area code). CRUD API under
   `/api/shipping-areas` (list/create/update), validated, no auth (matches
   existing surfaces).
-- A resolver: destination postcode + country -> list of area codes
-  (longest-prefix matching, port of the old `getBlockedHauliersForPostcode`
-  optimisation: one query with all prefixes).
+- A resolver: destination postcode + country -> list of area codes.
+  EVERY matching prefix counts (old-system parity; a specific prefix never
+  shadows a general one). The longest-prefix trick is only the query
+  optimisation ported from `getBlockedHauliersForPostcode`: one query with
+  all prefixes.
 - `create_consignment` populates `Shipment.shipping_areas` via the resolver.
 - New checks: `area_blocked` (shipment area in service.areas_blocked ->
   block), `area_served` (service.areas_served not None and no overlap ->

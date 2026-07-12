@@ -12,6 +12,7 @@ from nimbleship.carriers.dropout import LabelRequest, LabelSender, render_labels
 from nimbleship.db import get_session
 from nimbleship.domain.allocation import AllocationResult, Shipment, allocate
 from nimbleship.domain.barcodes import parcel_barcodes
+from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import active_rulebook
 from nimbleship.labels.store import LabelStore, get_label_store
 from nimbleship.models import Consignment, OrderEvent, Parcel, Warehouse
@@ -116,6 +117,11 @@ def create_consignment(
 
     rulebook = active_rulebook(session)
     total_weight = sum((p.weight_kg for p in payload.parcels), Decimal("0"))
+    # Area facts are resolved before evaluation so allocate() stays pure
+    # (ADR 0008 addendum): facts in, verdict and trace out.
+    shipping_areas = resolve_shipping_areas(
+        session, payload.postcode, payload.destination_country
+    )
     result = allocate(
         rulebook,
         Shipment(
@@ -123,6 +129,7 @@ def create_consignment(
             destination_country=payload.destination_country,
             total_weight_kg=total_weight,
             parcel_count=len(payload.parcels),
+            shipping_areas=shipping_areas,
         ),
     )
 
