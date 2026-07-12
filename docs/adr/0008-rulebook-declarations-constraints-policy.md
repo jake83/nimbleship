@@ -67,3 +67,38 @@ translation config, so inference hacks never enter the core.
   weight/country/area content) and a short named constraint list (the
   origin/marketplace blocks); the exercise doubles as validation that the
   model expresses current behaviour.
+
+## Addendum (2026-07-12): where a new check goes, and what is code vs data
+
+Added after review questions on the walking skeleton, to give "where does my
+check go?" a permanent answer and to rule out the old system's fate (carrier
+okToShip logic sprawling beside a dynamic rules system, with a per-carrier
+toggle deciding which brain answers).
+
+The three categories grow in three different places:
+
+1. **Declarations** grow in code, bounded and flat: a registry of small
+   evaluators, one per KIND of question (weight band, country, area, girth,
+   proposition...). The registry is the interpreter, like the old system's
+   generic compare(); it is never the place where business values live.
+   `_evaluate_service` stays a loop over the registry; restructure to the
+   registry at the third declaration kind (rule of three).
+2. **Constraints** grow in data only. Business rules ("marketplace orders
+   cannot ship Dachser") are authored rows interpreted by one generic
+   evaluator - by users from the front-end or by the AI builder as drafts,
+   through the ADR 0003 rails. A hundred new rules add zero engine code.
+3. **Carrier dynamic checks** (Furdeco's calendar, PalletForce's postcode
+   lookup) grow in carrier definitions (ADR 0005), executed by the
+   integration engine BEFORE the pure evaluation; their answers arrive as
+   facts. `allocate()` stays a pure function - facts in, verdict and trace
+   out - because dry-run testing of draft rulebooks depends on that purity.
+
+The dividing rule: **code only knows how to ask questions; every answer a
+user could decide is data.** A developer touches code only when a genuinely
+new KIND of question enters the world (a new evaluator class, one test),
+never for a new rule, value, carrier, or service.
+
+There is exactly one path: no hardcoded legacy route, no per-carrier toggle,
+no carrier code that can veto configuration. Consequently the evaluation
+trace is always the whole truth - which is what the explanation page and the
+AI assistant rely on.
