@@ -1,3 +1,8 @@
+"""Versioned rulebook storage and workflow (ADR 0003).
+
+Versions are immutable rows: drafts are created, dry-run tested, and
+published - never edited. The highest published version is live."""
+
 from typing import cast
 
 from sqlalchemy import select
@@ -33,25 +38,95 @@ _DEMO_SERVICES: list[dict[str, object]] = [
 ]
 
 
+def _to_rulebook(row: RulebookVersion) -> Rulebook:
+    declared = cast(list[dict[str, object]], row.data["services"])
+    services = [ServiceDeclaration.model_validate(service) for service in declared]
+    return Rulebook(version=row.version, services=services)
+
+
+def _seed_if_fresh(session: Session) -> None:
+    exists = session.execute(
+        select(RulebookVersion.version).limit(1)
+    ).scalar_one_or_none()
+    if exists is None:
+        session.add(
+            RulebookVersion(
+                status="published",
+                author="seed",
+                data={"services": _DEMO_SERVICES},
+            )
+        )
+        session.flush()
+
+
 def active_rulebook(session: Session) -> Rulebook:
     """The highest published rulebook version; seeds the demo rulebook on a
     fresh install."""
+    _seed_if_fresh(session)
     row = session.execute(
         select(RulebookVersion)
         .where(RulebookVersion.status == "published")
         .order_by(RulebookVersion.version.desc())
         .limit(1)
+    ).scalar_one()
+    return _to_rulebook(row)
+
+
+def list_versions(session: Session) -> list[RulebookVersion]:
+    _seed_if_fresh(session)
+    return list(
+        session.execute(
+            select(RulebookVersion).order_by(RulebookVersion.version)
+        ).scalars()
+    )
+
+
+def get_version(session: Session, version: int) -> RulebookVersion | None:
+    _seed_if_fresh(session)
+    return session.get(RulebookVersion, version)
+
+
+def create_draft(
+    session: Session, services: list[ServiceDeclaration], author: str
+) -> RulebookVersion:
+    """Create an immutable draft version. Validation (unique codes and
+    tie-break orders) happens by constructing the Rulebook model before
+    anything is stored; the version number is only meaningful once saved."""
+    _seed_if_fresh(session)
+    Rulebook(version=0, services=services)
+    row = RulebookVersion(
+        status="draft",
+        author=author,
+        data={"services": [s.model_dump(mode="json") for s in services]},
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def publish(session: Session, row: RulebookVersion) -> RulebookVersion:
+    """Publish a draft. Rows are immutable except for this one transition;
+    the newly published version becomes live because highest-published wins.
+    Publishing a draft older than the live version is refused: it would
+    "succeed" while silently changing nothing. Rolling back means drafting
+    a new version with the old content, keeping history linear."""
+    if row.status != "draft":
+        raise ValueError(f"version {row.version} is {row.status}, not a draft")
+    live = session.execute(
+        select(RulebookVersion.version)
+        .where(RulebookVersion.status == "published")
+        .order_by(RulebookVersion.version.desc())
+        .limit(1)
     ).scalar_one_or_none()
-
-    if row is None:
-        row = RulebookVersion(
-            status="published",
-            author="seed",
-            data={"services": _DEMO_SERVICES},
+    if live is not None and row.version < live:
+        raise ValueError(
+            f"version {row.version} would not become live: "
+            f"version {live} is already published"
         )
-        session.add(row)
-        session.flush()
+    row.status = "published"
+    session.flush()
+    return row
 
-    declared = cast(list[dict[str, object]], row.data["services"])
-    services = [ServiceDeclaration.model_validate(service) for service in declared]
-    return Rulebook(version=row.version, services=services)
+
+def rulebook_for(row: RulebookVersion) -> Rulebook:
+    return _to_rulebook(row)
