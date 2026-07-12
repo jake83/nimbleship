@@ -101,4 +101,8 @@ class AllocationResult(BaseModel):
     rulebook_version: int
     service_results: list[ServiceResult]
     selected: ServiceDeclaration | None
+    # The Delivery Cost the winner was selected on: calculated from its
+    # cost bands when present, else its flat cost. None when nothing was
+    # selected. `selected.cost` alone would misreport banded services.
+    selected_cost: Decimal | None = None
     reason: str
