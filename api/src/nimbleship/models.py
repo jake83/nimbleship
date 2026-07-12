@@ -57,6 +57,18 @@ class OrderEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class DeliveryProposition(Base):
+    """The Delivery Proposition catalogue (CONTEXT.md): the customer-facing
+    delivery promises services may declare they fulfil. The code is the
+    natural key rulebook declarations reference."""
+
+    __tablename__ = "delivery_propositions"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(String(500))
+
+
 class RulebookVersion(Base):
     """A versioned rulebook per ADR 0003: immutable rows, draft or published;
     the highest published version is live."""

@@ -6,6 +6,7 @@ from fastapi import APIRouter, FastAPI
 
 from nimbleship.labels.store import get_label_store
 from nimbleship.routers.consignments import router as consignments_router
+from nimbleship.routers.propositions import router as propositions_router
 from nimbleship.routers.rulebook import router as rulebook_router
 
 # Every route lives under /api: the ingress forwards the prefix unstripped,
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     router.include_router(consignments_router)
+    router.include_router(propositions_router)
     router.include_router(rulebook_router)
     app.include_router(router)
     return app
