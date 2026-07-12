@@ -119,6 +119,7 @@ def _shipment_from(consignment: Consignment) -> Shipment:
             (Decimal(p.weight_kg) for p in consignment.parcels), Decimal("0")
         ),
         parcel_count=len(consignment.parcels),
+        proposition=consignment.proposition,
     )
 
 

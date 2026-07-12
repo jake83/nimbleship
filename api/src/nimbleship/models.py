@@ -19,6 +19,9 @@ class Consignment(Base):
     address_lines: Mapped[list[str]] = mapped_column(JSON)
     postcode: Mapped[str] = mapped_column(String(32))
     destination_country: Mapped[str] = mapped_column(String(3))
+    # The Delivery Proposition the customer bought; kept so dry-run replays
+    # evaluate the same facts dispatch saw (ADR 0003/0007).
+    proposition: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32))
     carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
     service: Mapped[str | None] = mapped_column(String(64), nullable=True)
