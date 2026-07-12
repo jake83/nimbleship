@@ -206,3 +206,106 @@ def test_each_over_an_unresolved_step_output_renders_a_placeholder() -> None:
     assert render_operation(definition, "book", facts)[1].body["images"] == (
         "<steps.manifest.labels>"
     )
+
+
+def test_header_key_auth_is_injected_into_headers() -> None:
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dachser",
+            "name": "Dachser",
+            "auth": {
+                "scheme": "header_key",
+                "header": "X-API-Key",
+                "secret": "config.client_id",
+            },
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "labels",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "order",
+                                        "source": "shipment.order_number",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"base_url": "https://api.d.example", "client_id": "K-1"},
+    }
+
+    [request] = render_operation(definition, "book", facts)
+
+    assert request.headers == {"X-API-Key": "K-1"}
+    assert "X-API-Key" not in request.body
+
+
+def test_transform_over_an_unresolved_step_output_keeps_the_placeholder() -> None:
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "first",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "order",
+                                        "source": "shipment.order_number",
+                                    }
+                                ],
+                            },
+                            "response": {
+                                "format": "json",
+                                "extract": [{"name": "ref", "path": "ref"}],
+                            },
+                        },
+                        {
+                            "name": "second",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "ref_upper",
+                                        "source": "steps.first.ref",
+                                        "transform": {"name": "uppercase"},
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    _, second = render_operation(definition, "book", facts)
+
+    assert second.body["ref_upper"] == "<steps.first.ref>"

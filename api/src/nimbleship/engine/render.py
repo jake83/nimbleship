@@ -27,6 +27,7 @@ class RenderedRequest(BaseModel):
     method: Literal["GET", "POST", "PUT"]
     url: str
     query: dict[str, str]
+    headers: dict[str, str] = {}
     content_type: str
     body: dict[str, Rendered]
 
@@ -67,12 +68,12 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
         return entry.const
     assert entry.source is not None  # schema guarantees exactly one
     value = _resolve(entry.source, facts)
+    # An unresolved step output stays a stable placeholder token - through
+    # each-loops AND transforms alike - so multi-step operations replay
+    # offline deterministically (refuter, PR #26, both rounds).
+    if isinstance(value, str) and value == f"<{entry.source}>":
+        return value
     if entry.each is not None:
-        # An unresolved step output stays a stable placeholder token so
-        # multi-step operations replay offline (refuter, PR #26 - the
-        # PalletForce label loop is the motivating case).
-        if isinstance(value, str) and value == f"<{entry.source}>":
-            return value
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
         return [
@@ -94,9 +95,12 @@ def _render_step(
 ) -> RenderedRequest:
     url = _resolve(step.request.url, facts)
     query = dict(step.request.query)
+    headers: dict[str, str] = {}
     auth = definition.auth
     if auth.scheme == "query_key":
         query[auth.param] = str(_resolve(auth.secret, facts))
+    elif auth.scheme == "header_key":
+        headers[auth.header] = str(_resolve(auth.secret, facts))
     body = {entry.target: _render_entry(entry, facts) for entry in step.request.mapping}
     return RenderedRequest(
         step=step.name,
@@ -104,6 +108,7 @@ def _render_step(
         method=step.request.method,
         url=str(url),
         query=query,
+        headers=headers,
         content_type=step.request.content_type,
         body=body,
     )
