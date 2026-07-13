@@ -705,3 +705,10 @@ def test_a_filename_placeholder_must_resolve_to_a_known_fact() -> None:
         CarrierDefinition.model_validate(
             _ftp_step(filename="{shipment.nope}-{bogus.thing}.csv")
         )
+
+
+def test_an_upload_remote_directory_must_come_from_config() -> None:
+    # The remote directory is per-install config, never shipment data - a
+    # shipment-sourced value could carry `..` and escape the directory.
+    with pytest.raises(ValidationError, match="config"):
+        CarrierDefinition.model_validate(_ftp_step(url="shipment.order_number"))

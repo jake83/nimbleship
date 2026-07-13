@@ -231,6 +231,15 @@ class Step(BaseModel):
                 raise ValueError(
                     f"{where}: an upload step is fire-and-forget and takes no response"
                 )
+            # The remote directory is a per-install account fact, not
+            # shipment data: pinning it to config.* keeps an
+            # attacker/customer-influenced value out of the upload path
+            # (a shipment-sourced directory could carry `..` and escape).
+            if not self.request.url.startswith("config."):
+                raise ValueError(
+                    f"{where}: an upload step's remote directory (url) must be a "
+                    "config.* source"
+                )
         elif self.request.filename is not None:
             raise ValueError(f"{where}: filename is for upload transports, not http")
         return self

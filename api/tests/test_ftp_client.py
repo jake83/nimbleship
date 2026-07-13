@@ -139,3 +139,16 @@ def test_an_out_of_range_port_is_an_upload_error() -> None:
         FtpFileUploader().upload(
             {"ftp_host": "127.0.0.1", "ftp_port": "99999"}, "/", "x.csv", "data\r\n"
         )
+
+
+def test_dotdot_in_the_remote_path_is_rejected(
+    ftp_server: tuple[int, Path],
+) -> None:
+    # A `..` segment would land the file in a sibling carrier's directory;
+    # the uploader refuses it (defence behind the config.* authoring rule).
+    port, root = ftp_server
+    with pytest.raises(UploadError, match="escapes"):
+        FtpFileUploader().upload(
+            _config(port), "incoming/fagans/../other_carrier", "x.csv", "data\r\n"
+        )
+    assert not (root / "incoming" / "other_carrier" / "x.csv").exists()

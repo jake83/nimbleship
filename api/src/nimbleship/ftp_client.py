@@ -62,15 +62,19 @@ class FtpFileUploader:
             raise UploadError(f"carrier config ftp_port is out of range: {port}")
         if not remote_path:
             raise UploadError("upload has no remote directory")
-        # The filename is rendered from facts that are not otherwise
-        # constrained, so guard the path it builds: a control character would
-        # inject a second line onto the FTP control connection, and a slash
-        # or `..` would escape the configured remote directory. Reject either
-        # as a failed upload rather than let it reach the wire.
+        # Guard the path the STOR command builds. The filename and remote
+        # directory both render from facts, so a control character could
+        # inject a second line onto the FTP control connection, and a `..`
+        # segment (or a slash in the filename) could escape the configured
+        # directory. Reject any of these as a failed upload rather than let
+        # it reach the wire. (Authoring also pins the remote directory to a
+        # config.* source; this is the transport's own last line.)
         if any(ord(char) < 0x20 for char in remote_path):
             raise UploadError(
                 f"remote path contains a control character: {remote_path!r}"
             )
+        if ".." in remote_path.split("/"):
+            raise UploadError(f"remote path escapes its directory: {remote_path!r}")
         if (
             any(ord(char) < 0x20 for char in filename)
             or "/" in filename
