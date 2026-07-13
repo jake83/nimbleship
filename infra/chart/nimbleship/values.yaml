@@ -8,6 +8,12 @@ api:
   # pre-install hook first.
   replicas: 1
 
+worker:
+  # Consumes the Postgres-backed job queue (manifest sending, and every
+  # background job after it). Runs the api image with a worker entrypoint.
+  # Safe to scale: jobs are claimed row-by-row in Postgres.
+  replicas: 1
+
 web:
   image: nimbleship-web:dev
   replicas: 1

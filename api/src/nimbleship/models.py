@@ -250,6 +250,41 @@ class CarrierTraffic(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class Manifest(Base):
+    """The per-carrier declaration of consignments that have physically left
+    the warehouse (CONTEXT.md: Manifest), created when the WMS confirms
+    dispatch and sent to the carrier by a queue worker with retries
+    (ADR 0004). One manifest per carrier and warehouse per confirmation."""
+
+    __tablename__ = "manifests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    carrier: Mapped[str] = mapped_column(String(64), index=True)
+    # The Warehouse code the manifested consignments dispatched from; a
+    # denormalised copy, like Consignment.warehouse.
+    warehouse: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # pending -> sent, or -> failed once the send job exhausts its retries.
+    status: Mapped[str] = mapped_column(String(16))
+    # Send attempts so far - the queue owns scheduling; this is the audit.
+    attempts: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ManifestConsignment(Base):
+    """One consignment declared on one Manifest."""
+
+    __tablename__ = "manifest_consignments"
+    __table_args__ = (UniqueConstraint("manifest_id", "consignment_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    manifest_id: Mapped[int] = mapped_column(ForeignKey("manifests.id"), index=True)
+    consignment_id: Mapped[int] = mapped_column(ForeignKey("consignments.id"))
+
+
 class CarrierConfig(Base):
     """Per-install carrier account facts (credentials, endpoints, account
     numbers) referenced by definitions as config.* sources. Never part of a

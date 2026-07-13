@@ -25,6 +25,14 @@ uv run pytest          # tests
 uv run uvicorn nimbleship.main:create_app --factory --reload
 ```
 
+Background jobs (manifest sending) run on a Postgres-backed queue consumed
+by a separate worker process - it needs a `postgresql://` database, so it
+is usually exercised via the k3d stack below:
+
+```sh
+uv run procrastinate --app=nimbleship.queue.queue_app worker
+```
+
 Frontend (requires Node 24+):
 
 ```sh

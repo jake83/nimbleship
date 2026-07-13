@@ -13,6 +13,14 @@ from pydantic import BaseModel, Field, model_validator
 from nimbleship.engine.field_plugins import field_plugin_names
 
 FACT_ROOTS = ("shipment", "warehouse", "config")
+# A manifest declares many consignments at once: its operation renders from
+# manifest.* facts (the consignment list under an each-loop), never from a
+# single shipment.
+MANIFEST_FACT_ROOTS = ("manifest", "warehouse", "config")
+
+
+def operation_fact_roots(operation: str) -> tuple[str, ...]:
+    return MANIFEST_FACT_ROOTS if operation == "manifest" else FACT_ROOTS
 
 
 class JoinTransform(BaseModel):
@@ -227,10 +235,14 @@ type Auth = Annotated[
 
 
 def _validate_source(
-    source: str, known_steps: dict[str, set[str]], in_each: bool, where: str
+    source: str,
+    known_steps: dict[str, set[str]],
+    in_each: bool,
+    where: str,
+    roots: tuple[str, ...] = FACT_ROOTS,
 ) -> None:
     root = source.split(".", 1)[0]
-    if root in FACT_ROOTS:
+    if root in roots:
         return
     if in_each and root == "item":
         return
@@ -263,12 +275,13 @@ class CarrierDefinition(BaseModel):
         if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
             _validate_source(self.auth.secret, {}, False, "auth")
         for op_name, operation in self.operations.items():
+            roots = operation_fact_roots(op_name)
             earlier: dict[str, set[str]] = {}
             for step in operation.steps:
                 where = f"{op_name}.{step.name}"
-                _validate_source(step.request.url, earlier, False, where)
+                _validate_source(step.request.url, earlier, False, where, roots)
                 for entry in step.request.mapping:
-                    self._validate_entry(entry, earlier, False, where)
+                    self._validate_entry(entry, earlier, False, where, roots)
                 self._validate_targets(step.request.mapping, where)
                 earlier[step.name] = (
                     {extraction.name for extraction in step.response.extract}
@@ -295,8 +308,9 @@ class CarrierDefinition(BaseModel):
         known_steps: dict[str, set[str]],
         in_each: bool,
         where: str,
+        roots: tuple[str, ...],
     ) -> None:
         if entry.source is not None:
-            _validate_source(entry.source, known_steps, in_each, where)
+            _validate_source(entry.source, known_steps, in_each, where, roots)
         for inner in entry.each or []:
-            self._validate_entry(inner, known_steps, True, where)
+            self._validate_entry(inner, known_steps, True, where, roots)

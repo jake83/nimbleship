@@ -1,5 +1,6 @@
-"""Postgres-only integration tests: the advisory-lock branch and the
-migrations, exercised against a real server. Skipped unless
+"""Postgres-only integration tests: the advisory-lock branch, the
+migrations, and the job queue's enqueue-with-commit atomicity (ADR 0004),
+exercised against a real server. Skipped unless
 NIMBLESHIP_TEST_POSTGRES_URL is set (CI provides a service container) -
 closing the coverage gap the refuter flagged on PR #9."""
 
@@ -27,6 +28,48 @@ from nimbleship.db import Base
 from nimbleship.domain.allocation import ServiceDeclaration
 from nimbleship.domain.rulebook import active_rulebook, create_draft, publish
 from nimbleship.models import CarrierTraffic, RulebookVersion
+from nimbleship.queue import defer_manifest_send
+
+# The queue's schema objects (tables, functions, types) are Procrastinate's,
+# created by the migration chain, so cleaning a test database means removing
+# them too - they are not in Base.metadata.
+DROP_PROCRASTINATE = """
+DO $$
+DECLARE
+    name text;
+    args text;
+BEGIN
+    FOR name IN
+        SELECT tablename FROM pg_tables
+        WHERE schemaname = current_schema() AND tablename LIKE 'procrastinate_%'
+    LOOP
+        EXECUTE format('DROP TABLE IF EXISTS %I CASCADE', name);
+    END LOOP;
+    FOR name, args IN
+        SELECT p.proname, pg_get_function_identity_arguments(p.oid)
+        FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = current_schema() AND p.proname LIKE 'procrastinate_%'
+    LOOP
+        EXECUTE format('DROP FUNCTION IF EXISTS %I(%s) CASCADE', name, args);
+    END LOOP;
+    FOR name IN
+        SELECT t.typname FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid
+        WHERE n.nspname = current_schema()
+          AND t.typname LIKE 'procrastinate_%' AND t.typtype IN ('e', 'c')
+    LOOP
+        EXECUTE format('DROP TYPE IF EXISTS %I CASCADE', name);
+    END LOOP;
+END
+$$;
+"""
+
+
+def _clean_database(engine: Engine) -> None:
+    Base.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        connection.execute(text(DROP_PROCRASTINATE))
+
 
 POSTGRES_URL = os.environ.get("NIMBLESHIP_TEST_POSTGRES_URL")
 
@@ -55,32 +98,64 @@ SERVICES = [
 def pg_engine() -> "Iterator[Engine]":
     assert POSTGRES_URL is not None
     engine = create_engine(POSTGRES_URL)
-    Base.metadata.drop_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    _clean_database(engine)
     Base.metadata.create_all(engine)
     yield engine
     Base.metadata.drop_all(engine)
     engine.dispose()
 
 
-def test_alembic_upgrade_head_against_postgres() -> None:
+def _alembic_config() -> Config:
     assert POSTGRES_URL is not None
-    engine = create_engine(POSTGRES_URL)
-    Base.metadata.drop_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
-
     config = Config(str(API_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(API_ROOT / "migrations"))
     config.set_main_option("sqlalchemy.url", POSTGRES_URL)
-    command.upgrade(config, "head")
+    return config
 
-    assert set(Base.metadata.tables) <= set(inspect(engine).get_table_names())
-    Base.metadata.drop_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text("DROP TABLE alembic_version"))
+
+@pytest.fixture
+def migrated_engine() -> "Iterator[Engine]":
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL)
+    _clean_database(engine)
+    command.upgrade(_alembic_config(), "head")
+    yield engine
+    _clean_database(engine)
     engine.dispose()
+
+
+def test_alembic_upgrade_head_against_postgres(migrated_engine: Engine) -> None:
+    tables = set(inspect(migrated_engine).get_table_names())
+    assert set(Base.metadata.tables) <= tables
+    # The queue lives in the same database (ADR 0004): the migration chain
+    # owns Procrastinate's schema too.
+    assert "procrastinate_jobs" in tables
+
+
+def test_manifest_jobs_enqueue_in_the_callers_transaction(
+    migrated_engine: Engine,
+) -> None:
+    factory = sessionmaker(bind=migrated_engine)
+
+    def queued_jobs() -> list[tuple[str, dict[str, object], str]]:
+        # A separate connection: only committed jobs are visible to it,
+        # which is exactly what the worker will see.
+        with migrated_engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT task_name, args, status FROM procrastinate_jobs")
+            ).all()
+        return [(row.task_name, row.args, row.status) for row in rows]
+
+    with factory() as session:
+        defer_manifest_send(session, manifest_id=1)
+        assert queued_jobs() == []  # not yet committed: invisible to the worker
+        session.rollback()
+    assert queued_jobs() == []  # rolled back: the job vanished with the writes
+
+    with factory() as session:
+        defer_manifest_send(session, manifest_id=2)
+        session.commit()
+    assert queued_jobs() == [("manifests.send", {"manifest_id": 2}, "todo")]
 
 
 def test_concurrent_publishes_of_same_draft_pick_exactly_one_winner(

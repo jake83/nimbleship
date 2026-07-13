@@ -443,3 +443,83 @@ def test_step_reference_to_a_step_with_no_extractions_is_rejected() -> None:
 
     with pytest.raises(ValidationError, match="unknown output"):
         CarrierDefinition.model_validate(bad)
+
+
+def _manifest_operation(mapping: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "query_key", "param": "key", "secret": "config.api_key"},
+        "operations": {
+            "manifest": {
+                "steps": [
+                    {
+                        "name": "declare",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.manifest_url",
+                            "content_type": "json",
+                            "mapping": mapping,
+                        },
+                    }
+                ]
+            }
+        },
+    }
+
+
+def test_a_manifest_operation_sources_manifest_facts() -> None:
+    definition = CarrierDefinition.model_validate(
+        _manifest_operation(
+            [
+                {"target": "date", "source": "manifest.date"},
+                {
+                    "target": "orders",
+                    "source": "manifest.consignments",
+                    "each": [{"target": "order", "source": "item.order_number"}],
+                },
+                {"target": "account", "source": "config.account_number"},
+                {"target": "depot", "source": "warehouse.code"},
+            ]
+        )
+    )
+
+    assert "manifest" in definition.operations
+
+
+def test_manifest_facts_are_rejected_outside_the_manifest_operation() -> None:
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "query_key", "param": "key", "secret": "config.api_key"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [{"target": "date", "source": "manifest.date"}],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="unknown source root 'manifest'"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_shipment_facts_are_rejected_inside_the_manifest_operation() -> None:
+    # A manifest declares many consignments; there is no single shipment to
+    # source from - individual consignments are item.* inside an each-loop.
+    bad = _manifest_operation([{"target": "order", "source": "shipment.order_number"}])
+
+    with pytest.raises(ValidationError, match="unknown source root 'shipment'"):
+        CarrierDefinition.model_validate(bad)

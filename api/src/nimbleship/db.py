@@ -29,3 +29,9 @@ def get_session() -> Iterator[Session]:
     with Session(_engine(get_settings().database_url)) as session:
         yield session
         session.commit()
+
+
+def open_session() -> Session:
+    """A session outside request scope - queue jobs open and commit their
+    own. FastAPI routes use the get_session dependency instead."""
+    return Session(_engine(get_settings().database_url))
