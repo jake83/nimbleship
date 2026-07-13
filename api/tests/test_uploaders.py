@@ -6,6 +6,7 @@ shared helpers (`_connection`, `_safe_target`) and are tested directly - they
 protect every upload transport. The SFTP adapter's paramiko wiring is
 asserted at its boundary."""
 
+import base64
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -317,6 +318,14 @@ def test_sftp_host_key_refuses_a_missing_or_malformed_pin() -> None:
         _sftp_host_key({"sftp_host_key": "ssh-rsa @@@not-base64@@@"})
     with pytest.raises(UploadError, match="could not be parsed"):
         _sftp_host_key({"sftp_host_key": "ssh-rsa AAAA"})
+    # A well-formed line naming a type paramiko cannot mint (an OpenSSH
+    # certificate/security-key type, or a typo) raises UnknownKeyType, which is
+    # not an SSHException - it must still fail closed, not escape uncaught.
+    cert_blob = base64.b64encode(b"well-formed-base64-but-not-a-key").decode()
+    with pytest.raises(UploadError, match="could not be parsed"):
+        _sftp_host_key(
+            {"sftp_host_key": f"ssh-ed25519-cert-v01@openssh.com {cert_blob}"}
+        )
 
 
 def test_sftp_upload_refuses_without_a_pinned_host_key(

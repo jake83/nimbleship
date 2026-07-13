@@ -17,6 +17,7 @@ import socket
 from typing import Protocol
 
 import paramiko
+from paramiko.pkey import UnknownKeyType
 
 CONNECT_TIMEOUT_SECONDS = 30.0
 
@@ -108,7 +109,16 @@ def _sftp_host_key(config: dict[str, object]) -> paramiko.PKey:
     key_type, blob = parts[0], parts[1]
     try:
         return paramiko.PKey.from_type_string(key_type, base64.b64decode(blob))
-    except (ValueError, binascii.Error, paramiko.SSHException) as error:
+    except (
+        ValueError,
+        binascii.Error,
+        paramiko.SSHException,
+        UnknownKeyType,
+    ) as error:
+        # UnknownKeyType (a bare Exception, not an SSHException) is raised for a
+        # well-formed line naming a type paramiko cannot mint - an OpenSSH
+        # certificate or security-key type, or a typo. It must fail closed like
+        # any other bad pin, not escape as an uncaught error.
         raise UploadError(f"sftp_host_key could not be parsed: {error}") from error
 
 
