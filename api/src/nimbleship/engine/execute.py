@@ -26,10 +26,12 @@ from nimbleship.engine.auth_plugins import AUTH_PLUGINS
 from nimbleship.engine.render import (
     Facts,
     RenderedRequest,
-    UnresolvedStepOutput,
+    RenderedStep,
+    RenderedUpload,
     apply_transform,
     render_step,
 )
+from nimbleship.ftp_client import FileUploader, UploadError
 
 # Recorded response bodies are capped so one label-laden response cannot
 # bloat the traffic table; parsing always sees the full body.
@@ -40,7 +42,7 @@ type _Format = Literal["json", "xml"]
 
 class StepRecord(BaseModel):
     step: str
-    request: RenderedRequest
+    request: RenderedStep
     response_status: int | None
     response_body: str
     success: bool
@@ -174,30 +176,6 @@ def _failure_reason(
     return None
 
 
-def assert_no_placeholders(request: RenderedRequest) -> None:
-    """Defence in depth behind authoring validation: a request carrying an
-    unresolved step-output token must never reach a carrier (refuter,
-    PR #30). Placeholders exist for offline replay only."""
-
-    def scan(value: object, where: str) -> None:
-        if isinstance(value, UnresolvedStepOutput):
-            raise ValueError(
-                f"unresolved step output {value} at {where} must not be "
-                "sent to a carrier"
-            )
-        if isinstance(value, dict):
-            for key, inner in value.items():
-                scan(inner, f"{where}.{key}")
-        elif isinstance(value, list):
-            for index, inner in enumerate(value):
-                scan(inner, f"{where}[{index}]")
-
-    scan(request.url, "url")
-    scan(dict(request.query), "query")
-    scan(dict(request.headers), "headers")
-    scan(dict(request.body), "body")
-
-
 def _extract(
     step: Step, spec: ResponseSpec, parsed: object, fmt: _Format
 ) -> dict[str, object]:
@@ -223,11 +201,13 @@ class _Execution:
         facts: Facts,
         client: httpx.Client,
         record: Recorder | None,
+        uploader: FileUploader | None,
     ) -> None:
         self._definition = definition
         self._facts = facts
         self._client = client
         self._record = record
+        self._uploader = uploader
         self.records: list[StepRecord] = []
         self.step_outputs: dict[str, object] = {}
         self.outputs: dict[str, object] = {}
@@ -235,7 +215,7 @@ class _Execution:
     def _recorded(
         self,
         step: Step,
-        request: RenderedRequest,
+        request: RenderedStep,
         status: int | None,
         body: str,
         success: bool,
@@ -255,16 +235,55 @@ class _Execution:
         return CarrierCallError(message, self.records)
 
     def run_step(self, step: Step) -> None:
-        if step.transport != "http":
+        # for_execution: an unresolved step-output reference raises at render
+        # rather than reaching the carrier as literal placeholder text.
+        rendered = render_step(
+            self._definition,
+            step,
+            {**self._facts, "steps": dict(self.step_outputs)},
+            for_execution=True,
+        )
+        if isinstance(rendered, RenderedUpload):
+            self._run_upload(step, rendered)
+            return
+        self._run_http(step, rendered)
+
+    def _run_upload(self, step: Step, rendered: RenderedUpload) -> None:
+        if step.transport != "ftp_upload":
             raise NotImplementedError(
                 f"transport '{step.transport}' cannot execute yet; "
-                "only http steps run today"
+                "only http and ftp_upload steps run today"
             )
-        rendered = render_step(
-            self._definition, step, {**self._facts, "steps": dict(self.step_outputs)}
-        )
+        if self._uploader is None:
+            raise RuntimeError(
+                f"step '{step.name}' is an upload but no uploader was provided"
+            )
+        config = self._facts.get("config", {})
+        assert isinstance(config, dict)
+        try:
+            self._uploader.upload(
+                config, rendered.remote_path, rendered.filename, rendered.content
+            )
+        except UploadError as error:
+            # Fire-and-forget with no status: record the failed attempt (the
+            # failure is traffic too) and surface it as a carrier call error.
+            self._recorded(step, rendered, None, str(error), False)
+            raise self._fail(
+                f"step '{step.name}' could not upload to the carrier: {error}"
+            ) from error
+        # No response comes back: nothing extracted, no outputs to merge.
+        self._recorded(step, rendered, None, "", True)
+
+    def _run_http(self, step: Step, rendered: RenderedRequest) -> None:
+        if step.transport != "http":
+            # local_render is a label source, not a wire transport; a step
+            # declaring it renders like an http request but must never be
+            # sent. Only http and the upload transports execute.
+            raise NotImplementedError(
+                f"transport '{step.transport}' cannot execute yet; "
+                "only http and ftp_upload steps run today"
+            )
         rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
-        assert_no_placeholders(rendered)
         try:
             response = self._client.request(
                 rendered.method,
@@ -323,10 +342,11 @@ def execute_operation(
     facts: Facts,
     client: httpx.Client,
     record: Recorder | None = None,
+    uploader: FileUploader | None = None,
 ) -> ExecutionResult:
     if operation not in definition.operations:
         raise ValueError(f"definition has no operation '{operation}'")
-    execution = _Execution(definition, facts, client, record)
+    execution = _Execution(definition, facts, client, record, uploader)
     for step in definition.operations[operation].steps:
         execution.run_step(step)
     return ExecutionResult(outputs=execution.outputs, records=execution.records)

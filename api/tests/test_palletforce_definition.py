@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
-from nimbleship.engine.render import render_operation
+from render_support import http_renders
 
 DEFINITION_PATH = (
     Path(__file__).parent.parent / "examples" / "palletforce.definition.json"
@@ -69,7 +69,7 @@ def test_the_example_definition_validates() -> None:
 
 
 def test_the_manifest_step_renders_the_nested_consignment() -> None:
-    manifest, _ = render_operation(definition(), "book", facts())
+    manifest, _ = http_renders(definition(), "book", facts())
 
     assert manifest.url == "https://api.pf.example/ExternalScanning/UploadManifest"
     assert manifest.body["uniqueTransactionNumber"] == "95000254580"
@@ -89,7 +89,7 @@ def test_the_manifest_step_renders_the_nested_consignment() -> None:
 
 
 def test_auth_is_a_client_id_header_and_the_access_key_is_also_in_the_body() -> None:
-    manifest, label = render_operation(definition(), "book", facts())
+    manifest, label = http_renders(definition(), "book", facts())
 
     for request in (manifest, label):
         assert request.headers == {"x-ibm-client-id": "PF-ACCESS-KEY"}
@@ -97,7 +97,7 @@ def test_auth_is_a_client_id_header_and_the_access_key_is_also_in_the_body() -> 
 
 
 def test_the_consignment_number_renders_from_the_allocated_fact() -> None:
-    manifest, _ = render_operation(definition(), "book", facts())
+    manifest, _ = http_renders(definition(), "book", facts())
 
     consignments = manifest.body["consignments"]
     assert isinstance(consignments, list)
@@ -108,7 +108,7 @@ def test_the_consignment_number_renders_from_the_allocated_fact() -> None:
 
 def test_service_and_surcharge_follow_the_proposition_lookups() -> None:
     def consignment_for(proposition: str) -> dict[str, object]:
-        manifest, _ = render_operation(definition(), "book", facts(proposition))
+        manifest, _ = http_renders(definition(), "book", facts(proposition))
         consignments = manifest.body["consignments"]
         assert isinstance(consignments, list)
         consignment = consignments[0]
@@ -129,7 +129,7 @@ def test_service_and_surcharge_follow_the_proposition_lookups() -> None:
 
 
 def test_the_label_step_renders_a_placeholder_until_the_manifest_answers() -> None:
-    _, label = render_operation(definition(), "book", facts())
+    _, label = http_renders(definition(), "book", facts())
 
     assert label.url == "https://api.pf.example/ExternalScanning/DownloadLabel"
     assert label.body["trackingNumber"] == "<steps.manifest.tracking_codes.0>"
@@ -143,13 +143,13 @@ def test_the_label_step_uses_the_first_extracted_tracking_code() -> None:
         "steps": {"manifest": {"tracking_codes": ["UMB0000042", "UMB0000043"]}},
     }
 
-    _, label = render_operation(definition(), "book", executed)
+    _, label = http_renders(definition(), "book", executed)
 
     assert label.body["trackingNumber"] == "UMB0000042"
 
 
 def test_renders_are_deterministic() -> None:
-    first = render_operation(definition(), "book", facts())
-    second = render_operation(definition(), "book", facts())
+    first = http_renders(definition(), "book", facts())
+    second = http_renders(definition(), "book", facts())
 
     assert [r.model_dump() for r in first] == [r.model_dump() for r in second]

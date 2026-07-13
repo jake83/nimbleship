@@ -125,6 +125,7 @@ def test_every_step_is_recorded_with_status_and_body() -> None:
     assert record.success is True
     assert record.response_status == 200
     assert record.response_body == XML_OK
+    assert isinstance(record.request, RenderedRequest)
     assert record.request.body["OrderNumber"] == "95000254580"
     assert result.records == records
 
@@ -318,20 +319,23 @@ def test_success_when_equals_mismatch_uses_the_declared_error_path() -> None:
         execute_operation(JSON_DEFINITION, "book", facts, client)
 
 
-def test_non_http_transports_are_named_not_implemented() -> None:
+def test_an_upload_transport_without_a_backend_is_named_not_implemented() -> None:
+    # sftp_upload renders like ftp_upload (a RenderedUpload) but has no
+    # execution backend yet, so running it fails loudly and by name.
     definition = CarrierDefinition.model_validate(
         {
-            "carrier": "fagans",
-            "name": "Fagans",
+            "carrier": "dachser",
+            "name": "Dachser",
             "auth": {"scheme": "none"},
             "operations": {
                 "book": {
                     "steps": [
                         {
                             "name": "upload",
-                            "transport": "ftp_upload",
+                            "transport": "sftp_upload",
                             "request": {
-                                "url": "config.ftp_path",
+                                "url": "config.sftp_path",
+                                "filename": "{shipment.order_number}.csv",
                                 "content_type": "csv",
                                 "mapping": [
                                     {
@@ -342,20 +346,72 @@ def test_non_http_transports_are_named_not_implemented() -> None:
                             },
                         }
                     ],
+                    "label": {"source": "local_render"},
                 }
             },
         }
     )
     facts: dict[str, object] = {
         "shipment": {"order_number": "95000254580"},
-        "config": {"ftp_path": "/outbound"},
+        "config": {"sftp_path": "/outbound"},
     }
 
     with (
         _client(httpx.MockTransport(lambda request: httpx.Response(200))) as client,
-        pytest.raises(NotImplementedError, match="ftp_upload"),
+        pytest.raises(NotImplementedError, match="sftp_upload"),
+    ):
+        execute_operation(definition, "book", facts, client, uploader=_FakeUploader())
+
+
+def test_a_local_render_step_transport_is_never_sent_to_the_wire() -> None:
+    # local_render is a label source; a step declaring it renders like an
+    # http request but must fail loudly rather than be HTTP-executed.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dropout",
+            "name": "Drop Out",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "render",
+                            "transport": "local_render",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "order",
+                                        "source": "shipment.order_number",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render"},
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"base_url": "https://api.example/x"},
+    }
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    with (
+        _client(httpx.MockTransport(handle)) as client,
+        pytest.raises(NotImplementedError, match="local_render"),
     ):
         execute_operation(definition, "book", facts, client)
+    # It never reached the carrier client.
+    assert seen == []
 
 
 @pytest.fixture
@@ -487,23 +543,184 @@ def test_form_step_with_a_collection_field_is_rejected() -> None:
         execute_operation(definition, "book", facts, client)
 
 
-def test_the_transmit_guard_refuses_placeholder_tokens() -> None:
-    """Defence in depth behind the authoring validation: a rendered request
-    still carrying an unresolved step output must never reach a carrier
-    (refuter, PR #30)."""
-    from nimbleship.engine.execute import assert_no_placeholders
-    from nimbleship.engine.render import RenderedRequest, UnresolvedStepOutput
+def test_an_unresolved_step_output_at_execution_raises_not_transmits() -> None:
+    """A step-output reference still unresolved during execution is a real
+    failure: it must raise at render, not travel to the carrier as literal
+    placeholder text (pydantic coerces the placeholder type back to plain
+    str, so a post-render type check cannot catch it - refuter, PR #30/#26)."""
+    from nimbleship.engine.render import RenderedRequest, render_step
 
-    request = RenderedRequest(
-        step="label",
-        transport="http",
-        method="POST",
-        url="https://api.example",
-        query={},
-        headers={},
-        content_type="json",
-        body={"codes": [{"code": UnresolvedStepOutput("<steps.manifest.tracking>")}]},
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "first",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.u",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "o", "source": "shipment.order_number"}
+                                ],
+                            },
+                            "response": {
+                                "format": "json",
+                                "extract": [{"name": "tracking", "path": "t"}],
+                            },
+                        },
+                        {
+                            "name": "second",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.u",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "ref", "source": "steps.first.tracking"}
+                                ],
+                            },
+                        },
+                    ]
+                }
+            },
+        }
     )
+    second = definition.operations["book"].steps[1]
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "1"},
+        "config": {"u": "https://x"},
+        "steps": {},  # first's output is absent
+    }
 
-    with pytest.raises(ValueError, match=r"steps\.manifest\.tracking"):
-        assert_no_placeholders(request)
+    # Offline replay tolerates the placeholder; execution must not.
+    replay = render_step(definition, second, facts)
+    assert isinstance(replay, RenderedRequest)
+    assert replay.body["ref"] == "<steps.first.tracking>"
+
+    with pytest.raises(ValueError, match=r"steps\.first\.tracking"):
+        render_step(definition, second, facts, for_execution=True)
+
+
+FTP_DEFINITION = CarrierDefinition.model_validate(
+    {
+        "carrier": "fagans",
+        "name": "Fagans",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "upload",
+                        "transport": "ftp_upload",
+                        "request": {
+                            "url": "config.ftp_remote_dir",
+                            "filename": "DMC{shipment.order_number}.csv",
+                            "content_type": "csv",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"},
+                                {"target": "account", "source": "config.account_code"},
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render", "template": "standard_a6"},
+            }
+        },
+    }
+)
+
+FTP_FACTS: dict[str, object] = {
+    "shipment": {"order_number": "95000254580"},
+    "config": {
+        "account_code": "LIM2",
+        "ftp_remote_dir": "/outbound",
+        "ftp_host": "ftp.fagans.example",
+        "ftp_username": "nimbleship",
+        "ftp_password": "SECRET-PW",
+    },
+}
+
+
+class _FakeUploader:
+    """Records what the executor hands the transport; never touches FTP."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[dict[str, object], str, str, str]] = []
+        self.fail_with: str | None = None
+
+    def upload(
+        self,
+        config: dict[str, object],
+        remote_path: str,
+        filename: str,
+        content: str,
+    ) -> None:
+        from nimbleship.ftp_client import UploadError
+
+        self.calls.append((config, remote_path, filename, content))
+        if self.fail_with is not None:
+            raise UploadError(self.fail_with)
+
+
+def test_ftp_upload_step_uploads_the_rendered_file_and_records_traffic() -> None:
+    uploader = _FakeUploader()
+    records: list[StepRecord] = []
+
+    with _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client:
+        result = execute_operation(
+            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+        )
+
+    [(config, remote_path, filename, content)] = uploader.calls
+    assert remote_path == "/outbound"
+    assert filename == "DMC95000254580.csv"
+    assert content == "95000254580,LIM2\r\n"
+    # The uploader gets config to connect with; the host/creds live there.
+    assert config["ftp_host"] == "ftp.fagans.example"
+    # Fire-and-forget: nothing extracted, no tracking reference.
+    assert result.outputs == {}
+    # Recorded as carrier traffic with no HTTP status, marked successful.
+    [record] = records
+    assert record.step == "upload"
+    assert record.success is True
+    assert record.response_status is None
+
+
+def test_ftp_upload_records_the_file_but_never_the_credentials() -> None:
+    uploader = _FakeUploader()
+    records: list[StepRecord] = []
+
+    with _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client:
+        execute_operation(
+            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+        )
+
+    # The golden corpus records the rendered file, not the connection secret.
+    dumped = str(records[0].request.model_dump())
+    assert "SECRET-PW" not in dumped
+    assert "ftp_host" not in dumped
+
+
+def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None:
+    uploader = _FakeUploader()
+    uploader.fail_with = "530 Login incorrect"
+    records: list[StepRecord] = []
+
+    with (
+        _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client,
+        pytest.raises(CarrierCallError, match="530 Login incorrect"),
+    ):
+        execute_operation(
+            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+        )
+
+    [record] = records
+    assert record.success is False
+    assert record.response_status is None
+    assert "530 Login incorrect" in record.response_body

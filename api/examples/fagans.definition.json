@@ -1,0 +1,45 @@
+{
+  "carrier": "fagans",
+  "name": "Fagans",
+  "auth": { "scheme": "none" },
+  "operations": {
+    "book": {
+      "steps": [
+        {
+          "name": "upload",
+          "transport": "ftp_upload",
+          "request": {
+            "url": "config.ftp_remote_dir",
+            "filename": "DMC{shipment.order_number}.csv",
+            "content_type": "csv",
+            "mapping": [
+              { "target": "account_code", "source": "config.account_code" },
+              {
+                "target": "load_number",
+                "source": "shipment.order_number",
+                "transform": { "name": "format", "template": "DMC{}" }
+              },
+              { "target": "docket_number", "source": "shipment.order_number" },
+              { "target": "recipient", "source": "shipment.recipient_name" },
+              {
+                "target": "delivery_address",
+                "source": "shipment.address_lines",
+                "transform": { "name": "join", "with": ", " }
+              },
+              {
+                "target": "delivery_postcode",
+                "source": "shipment.postcode",
+                "transform": { "name": "uppercase" }
+              },
+              {
+                "target": "delivery_country",
+                "source": "shipment.destination_country"
+              }
+            ]
+          }
+        }
+      ],
+      "label": { "source": "local_render", "template": "standard_a6" }
+    }
+  }
+}

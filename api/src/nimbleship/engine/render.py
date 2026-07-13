@@ -6,11 +6,16 @@ Unresolvable step outputs (facts the carrier has not answered yet) render
 as stable placeholder tokens so multi-step operations still replay
 deterministically offline."""
 
+import csv
+import io
+import re
 from typing import Literal, cast
 
 from pydantic import BaseModel
 
 from nimbleship.domain.carrier_definition import (
+    FILENAME_PLACEHOLDER,
+    UPLOAD_TRANSPORTS,
     CarrierDefinition,
     MappingEntry,
     Step,
@@ -43,7 +48,24 @@ class RenderedRequest(BaseModel):
     body: dict[str, Rendered]
 
 
-def _resolve(path: str, facts: Facts) -> object:
+class RenderedUpload(BaseModel):
+    """A file rendered for an upload transport: the body is a flat file
+    (`content`), dropped at `remote_path/filename`. Connection secrets are
+    not here - the uploader reads them from config at execution, keeping the
+    Golden Replay corpus secret-free (as http auth already is)."""
+
+    step: str
+    transport: str
+    content_type: str
+    remote_path: str
+    filename: str
+    content: str
+
+
+type RenderedStep = RenderedRequest | RenderedUpload
+
+
+def _resolve(path: str, facts: Facts, for_execution: bool = False) -> object:
     node: object = facts
     for part in path.split("."):
         if isinstance(node, dict) and part in node:
@@ -51,7 +73,13 @@ def _resolve(path: str, facts: Facts) -> object:
         elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
             node = node[int(part)]
         else:
-            if path.startswith("steps."):
+            # A prior step's output that is not yet answered renders as a
+            # placeholder for offline replay - but during live execution a
+            # step reference must resolve, so an unresolved one raises here,
+            # at the source, rather than travel to a carrier as literal token
+            # text (pydantic coerces the placeholder subclass back to plain
+            # str, so a post-render type check cannot catch it).
+            if path.startswith("steps.") and not for_execution:
                 return UnresolvedStepOutput(f"<{path}>")
             raise ValueError(f"no fact at '{path}'")
     return node
@@ -77,20 +105,26 @@ def apply_transform(transform: Transform, value: object) -> object:
             if key not in transform.table:
                 raise ValueError(f"lookup has no entry for '{key}'")
             return transform.table[key]
+        case "format":
+            # The template is validated to hold exactly one '{}', so a plain
+            # replace substitutes the value without str.format's brace rules.
+            return transform.template.replace("{}", str(value))
 
 
-def _render_mapping(entries: list[MappingEntry], facts: Facts) -> dict[str, Rendered]:
+def _render_mapping(
+    entries: list[MappingEntry], facts: Facts, for_execution: bool
+) -> dict[str, Rendered]:
     """One canonical nesting implementation lives in the schema module
     (insert_at_target) so authoring-time target validation and rendering
     can never drift apart."""
     body: dict[str, object] = {}
     for entry in entries:
-        insert_at_target(body, entry.target, _render_entry(entry, facts))
+        insert_at_target(body, entry.target, _render_entry(entry, facts, for_execution))
     # insert_at_target only stores Rendered values and containers of them.
     return cast("dict[str, Rendered]", body)
 
 
-def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
+def _render_entry(entry: MappingEntry, facts: Facts, for_execution: bool) -> Rendered:
     if entry.const is not None:
         return entry.const
     if entry.plugin is not None:
@@ -102,16 +136,19 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
             return value
         return str(value)
     assert entry.source is not None  # schema guarantees exactly one
-    value = _resolve(entry.source, facts)
-    # An unresolved step output stays a stable placeholder token - through
-    # each-loops AND transforms alike - so multi-step operations replay
-    # offline deterministically (refuter, PR #26, both rounds).
+    value = _resolve(entry.source, facts, for_execution)
+    # An unresolved step output (offline replay only) stays a stable
+    # placeholder token - through each-loops AND transforms alike - so
+    # multi-step operations replay deterministically (refuter, PR #26).
     if isinstance(value, UnresolvedStepOutput):
         return str(value)
     if entry.each is not None:
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
-        return [_render_mapping(entry.each, {**facts, "item": item}) for item in value]
+        return [
+            _render_mapping(entry.each, {**facts, "item": item}, for_execution)
+            for item in value
+        ]
     if entry.transform is not None:
         value = apply_transform(entry.transform, value)
     if isinstance(value, str | list | dict) or value is None:
@@ -119,13 +156,68 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     return str(value)
 
 
+def _render_filename(template: str, facts: Facts, for_execution: bool) -> str:
+    """Substitute `{fact.path}` placeholders in a filename template. Pure
+    fact substitution - no expressions - so a filename stays data, readable
+    and validatable, not a template language (ADR 0009). The placeholder
+    grammar is owned by the schema so authoring validation and rendering
+    cannot diverge."""
+
+    def _substitute(match: "re.Match[str]") -> str:
+        return str(_resolve(match.group(1), facts, for_execution))
+
+    return FILENAME_PLACEHOLDER.sub(_substitute, template)
+
+
+def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) -> str:
+    """One RFC 4180 row: comma-delimited, minimal quoting, CRLF-terminated -
+    the format the receiving carriers require. Rendered from the mapping
+    entries in order; targets name columns for readability, the row is
+    positional."""
+    row: list[str] = []
+    for entry in entries:
+        value = _render_entry(entry, facts, for_execution)
+        if isinstance(value, list | dict):
+            raise ValueError(
+                f"csv field '{entry.target}' rendered a {type(value).__name__}, "
+                "not a scalar"
+            )
+        row.append("" if value is None else str(value))
+    buffer = io.StringIO()
+    csv.writer(buffer).writerow(row)
+    return buffer.getvalue()
+
+
+def _render_upload(step: Step, facts: Facts, for_execution: bool) -> RenderedUpload:
+    remote_path = str(_resolve(step.request.url, facts, for_execution))
+    # The schema requires a filename and content_type csv for upload steps.
+    assert step.request.filename is not None
+    return RenderedUpload(
+        step=step.name,
+        transport=step.transport,
+        content_type=step.request.content_type,
+        remote_path=remote_path,
+        filename=_render_filename(step.request.filename, facts, for_execution),
+        content=_render_csv(step.request.mapping, facts, for_execution),
+    )
+
+
 def render_step(
-    definition: CarrierDefinition, step: Step, facts: Facts
-) -> RenderedRequest:
+    definition: CarrierDefinition,
+    step: Step,
+    facts: Facts,
+    for_execution: bool = False,
+) -> RenderedStep:
     """Render one step. The executor renders step-by-step so each step sees
     the extractions of the steps before it; render_operation renders them
-    all at once for offline replay."""
-    url = _resolve(step.request.url, facts)
+    all at once for offline replay.
+
+    `for_execution` is set by the executor: a step-output reference that is
+    still unresolved then is a real failure (the carrier would receive token
+    text), so it raises rather than rendering a replay placeholder."""
+    if step.transport in UPLOAD_TRANSPORTS:
+        return _render_upload(step, facts, for_execution)
+    url = _resolve(step.request.url, facts, for_execution)
     query = dict(step.request.query)
     headers: dict[str, str] = {}
     auth = definition.auth
@@ -134,10 +226,10 @@ def render_step(
     # for steps that never transmit them (refuter, PR #26 round 3).
     if step.transport == "http":
         if auth.scheme == "query_key":
-            query[auth.param] = str(_resolve(auth.secret, facts))
+            query[auth.param] = str(_resolve(auth.secret, facts, for_execution))
         elif auth.scheme == "header_key":
-            headers[auth.header] = str(_resolve(auth.secret, facts))
-    body = _render_mapping(step.request.mapping, facts)
+            headers[auth.header] = str(_resolve(auth.secret, facts, for_execution))
+    body = _render_mapping(step.request.mapping, facts, for_execution)
     return RenderedRequest(
         step=step.name,
         transport=step.transport,
@@ -152,7 +244,7 @@ def render_step(
 
 def render_operation(
     definition: CarrierDefinition, operation: str, facts: Facts
-) -> list[RenderedRequest]:
+) -> list[RenderedStep]:
     if operation not in definition.operations:
         raise ValueError(f"definition has no operation '{operation}'")
     return [

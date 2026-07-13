@@ -3,10 +3,12 @@ requests. Pure by design - Golden Replay diffs renders without touching a
 carrier (ADR 0009)."""
 
 import pytest
+from pydantic import ValidationError
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
 from nimbleship.engine.field_plugins import FIELD_PLUGINS
-from nimbleship.engine.render import render_operation
+from nimbleship.engine.render import RenderedUpload, render_operation
+from render_support import http_renders
 
 DEFINITION = CarrierDefinition.model_validate(
     {
@@ -98,8 +100,97 @@ FACTS = {
 }
 
 
+UPLOAD_DEFINITION = CarrierDefinition.model_validate(
+    {
+        "carrier": "fagans",
+        "name": "Fagans",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "upload",
+                        "transport": "ftp_upload",
+                        "request": {
+                            "url": "config.ftp_remote_dir",
+                            "filename": "{warehouse.code}-{shipment.order_number}.csv",
+                            "content_type": "csv",
+                            "mapping": [
+                                {"target": "account", "source": "config.account_code"},
+                                {
+                                    "target": "load_number",
+                                    "source": "shipment.order_number",
+                                    "transform": {
+                                        "name": "format",
+                                        "template": "DMC{}",
+                                    },
+                                },
+                                {
+                                    "target": "recipient",
+                                    "source": "shipment.recipient_name",
+                                },
+                                {
+                                    "target": "address",
+                                    "source": "shipment.address_lines",
+                                    "transform": {"name": "join", "with": ", "},
+                                },
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render", "template": "standard_a6"},
+            }
+        },
+    }
+)
+
+UPLOAD_FACTS = {
+    "shipment": {
+        "order_number": "95000254580",
+        "recipient_name": "John Doe",
+        "address_lines": ["10 Downing Street", "London"],
+    },
+    "warehouse": {"code": "L2"},
+    "config": {"account_code": "LIM2", "ftp_remote_dir": "/outbound"},
+}
+
+
+def test_an_upload_step_renders_to_a_file_not_an_http_request() -> None:
+    [rendered] = render_operation(UPLOAD_DEFINITION, "book", UPLOAD_FACTS)
+
+    assert isinstance(rendered, RenderedUpload)
+    assert rendered.step == "upload"
+    assert rendered.transport == "ftp_upload"
+    assert rendered.content_type == "csv"
+    # The url source resolves to the remote directory; the filename template
+    # substitutes facts (and the format transform built the DMC reference).
+    assert rendered.remote_path == "/outbound"
+    assert rendered.filename == "L2-95000254580.csv"
+
+
+def test_csv_content_is_one_ordered_row_rfc4180_quoted() -> None:
+    [rendered] = render_operation(UPLOAD_DEFINITION, "book", UPLOAD_FACTS)
+
+    assert isinstance(rendered, RenderedUpload)
+    # Ordered by the mapping; a field containing the delimiter is quoted;
+    # a trailing CRLF per RFC 4180 (what the legacy fputcsv produced).
+    assert rendered.content == (
+        'LIM2,DMC95000254580,John Doe,"10 Downing Street, London"\r\n'
+    )
+
+
+def test_upload_render_is_deterministic_and_secret_free() -> None:
+    first = render_operation(UPLOAD_DEFINITION, "book", UPLOAD_FACTS)
+    second = render_operation(UPLOAD_DEFINITION, "book", UPLOAD_FACTS)
+    assert [r.model_dump() for r in first] == [r.model_dump() for r in second]
+    # Connection secrets are used by the uploader at execution, never
+    # rendered - nothing here should carry a host/username/password.
+    dumped = str(first[0].model_dump())
+    assert "password" not in dumped and "ftp_host" not in dumped
+
+
 def test_renders_mapped_transformed_and_constant_fields() -> None:
-    [request] = render_operation(DEFINITION, "book", FACTS)
+    [request] = http_renders(DEFINITION, "book", FACTS)
 
     assert request.step == "save"
     assert request.method == "POST"
@@ -111,8 +202,97 @@ def test_renders_mapped_transformed_and_constant_fields() -> None:
     assert request.body["service_level"] == "2 Man"
 
 
+def test_format_transform_prefixes_a_scalar() -> None:
+    # A `format` transform substitutes the value into a template's single
+    # `{}` placeholder - the engine-owned way to build the DMC-prefixed
+    # consignment reference (DMC + order number) a carrier like Fagans needs.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "fagans",
+            "name": "Fagans",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "save",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "form",
+                                "mapping": [
+                                    {
+                                        "target": "consignment",
+                                        "source": "shipment.order_number",
+                                        "transform": {
+                                            "name": "format",
+                                            "template": "DMC{}",
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render"},
+                }
+            },
+        }
+    )
+
+    [request] = http_renders(
+        definition,
+        "book",
+        {"config": {"base_url": "x"}, "shipment": {"order_number": "95000254580"}},
+    )
+
+    assert request.body["consignment"] == "DMC95000254580"
+
+
+def test_format_transform_requires_a_single_placeholder() -> None:
+    def _entry(template: str) -> dict[str, object]:
+        return {
+            "carrier": "fagans",
+            "name": "Fagans",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "save",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "form",
+                                "mapping": [
+                                    {
+                                        "target": "ref",
+                                        "source": "shipment.order_number",
+                                        "transform": {
+                                            "name": "format",
+                                            "template": template,
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render"},
+                }
+            },
+        }
+
+    # No placeholder silently drops the fact; more than one is ambiguous; a
+    # stray unbalanced brace would survive the substitution. All fail at
+    # authoring.
+    for bad in ("DMC", "{}{}", "}{}", "a}b{}", "{}x{"):
+        with pytest.raises(ValidationError, match="placeholder"):
+            CarrierDefinition.model_validate(_entry(bad))
+
+
 def test_renders_each_loops_over_collections() -> None:
-    [request] = render_operation(DEFINITION, "book", FACTS)
+    [request] = http_renders(DEFINITION, "book", FACTS)
 
     assert request.body["items"] == [
         {"weight_kg": "4.2"},
@@ -121,7 +301,7 @@ def test_renders_each_loops_over_collections() -> None:
 
 
 def test_auth_query_key_lands_in_query_not_body() -> None:
-    [request] = render_operation(DEFINITION, "book", FACTS)
+    [request] = http_renders(DEFINITION, "book", FACTS)
 
     assert request.query == {"action": "save", "key": "SECRET-KEY"}
     assert "key" not in request.body
@@ -131,12 +311,12 @@ def test_missing_fact_fails_loudly_with_the_path_named() -> None:
     facts = {**FACTS, "shipment": {"order_number": "X"}}
 
     with pytest.raises(ValueError, match=r"shipment\.postcode"):
-        render_operation(DEFINITION, "book", facts)
+        http_renders(DEFINITION, "book", facts)
 
 
 def test_renders_are_deterministic() -> None:
-    first = render_operation(DEFINITION, "book", FACTS)
-    second = render_operation(DEFINITION, "book", FACTS)
+    first = http_renders(DEFINITION, "book", FACTS)
+    second = http_renders(DEFINITION, "book", FACTS)
 
     assert [r.model_dump() for r in first] == [r.model_dump() for r in second]
 
@@ -200,11 +380,11 @@ def test_each_over_an_unresolved_step_output_renders_a_placeholder() -> None:
         "config": {"base_url": "https://api.pf.example"},
     }
 
-    _, second = render_operation(definition, "book", facts)
+    _, second = http_renders(definition, "book", facts)
 
     assert second.body["images"] == "<steps.manifest.labels>"
     # Deterministic across renders - the placeholder is stable.
-    assert render_operation(definition, "book", facts)[1].body["images"] == (
+    assert http_renders(definition, "book", facts)[1].body["images"] == (
         "<steps.manifest.labels>"
     )
 
@@ -247,7 +427,7 @@ def test_header_key_auth_is_injected_into_headers() -> None:
         "config": {"base_url": "https://api.d.example", "client_id": "K-1"},
     }
 
-    [request] = render_operation(definition, "book", facts)
+    [request] = http_renders(definition, "book", facts)
 
     assert request.headers == {"X-API-Key": "K-1"}
     assert "X-API-Key" not in request.body
@@ -307,7 +487,7 @@ def test_transform_over_an_unresolved_step_output_keeps_the_placeholder() -> Non
         "config": {"base_url": "https://api.x.example"},
     }
 
-    _, second = render_operation(definition, "book", facts)
+    _, second = http_renders(definition, "book", facts)
 
     assert second.body["ref_upper"] == "<steps.first.ref>"
 
@@ -349,7 +529,7 @@ def test_a_real_value_shaped_like_a_placeholder_is_still_transformed() -> None:
         "config": {"base_url": "https://api.x.example"},
     }
 
-    [request] = render_operation(definition, "book", facts)
+    [request] = http_renders(definition, "book", facts)
 
     assert request.body["ref"] == "<STEPS.ONLY.REF>"
 
@@ -406,7 +586,7 @@ def test_plugin_entries_render_by_calling_the_registered_plugin(
         "config": {"base_url": "https://api.x.example"},
     }
 
-    [request] = render_operation(definition, "book", facts)
+    [request] = http_renders(definition, "book", facts)
 
     assert request.body["reference"] == "computed:95000254580"
 
@@ -454,7 +634,7 @@ def test_dotted_targets_render_nested_objects_and_lists() -> None:
         "config": {"base_url": "https://api.x.example"},
     }
 
-    [request] = render_operation(definition, "book", facts)
+    [request] = http_renders(definition, "book", facts)
 
     assert request.body == {
         "deliveryAddress": {"name": "John Doe", "postcode": "IV1 2AB"},
@@ -523,7 +703,7 @@ def test_source_paths_index_into_extracted_lists() -> None:
     }
 
     # Before the manifest step has answered: a stable placeholder.
-    _, before = render_operation(definition, "book", base_facts)
+    _, before = http_renders(definition, "book", base_facts)
     assert before.body["trackingNumber"] == "<steps.manifest.tracking_codes.0>"
 
     # After execution injects the extracted outputs: the first code.
@@ -531,7 +711,7 @@ def test_source_paths_index_into_extracted_lists() -> None:
         **base_facts,
         "steps": {"manifest": {"tracking_codes": ["UMB0000042", "UMB0000043"]}},
     }
-    _, after = render_operation(definition, "book", facts)
+    _, after = http_renders(definition, "book", facts)
     assert after.body["trackingNumber"] == "UMB0000042"
 
 
@@ -557,7 +737,7 @@ def test_dotted_targets_render_as_nested_objects() -> None:
         ]
     )
 
-    [request] = render_operation(definition, "book", NESTING_FACTS)
+    [request] = http_renders(definition, "book", NESTING_FACTS)
 
     assert request.body == {
         "accountNumber": {"value": "802255209"},
@@ -579,7 +759,7 @@ def test_numeric_target_segments_render_as_list_positions() -> None:
         ]
     )
 
-    [request] = render_operation(definition, "book", NESTING_FACTS)
+    [request] = http_renders(definition, "book", NESTING_FACTS)
 
     assert request.body == {
         "recipients": [
@@ -605,7 +785,7 @@ def test_dotted_targets_nest_inside_each_loops() -> None:
         ]
     )
 
-    [request] = render_operation(definition, "book", NESTING_FACTS)
+    [request] = http_renders(definition, "book", NESTING_FACTS)
 
     assert request.body == {
         "requestedPackageLineItems": [
@@ -662,8 +842,8 @@ def test_auth_is_not_injected_into_non_http_steps() -> None:
                             "name": "csv",
                             "transport": "ftp_upload",
                             "request": {
-                                "method": "POST",
                                 "url": "config.ftp_path",
+                                "filename": "{shipment.order_number}.csv",
                                 "content_type": "csv",
                                 "mapping": [
                                     {
@@ -674,6 +854,7 @@ def test_auth_is_not_injected_into_non_http_steps() -> None:
                             },
                         }
                     ],
+                    "label": {"source": "local_render"},
                 }
             },
         }
@@ -683,7 +864,9 @@ def test_auth_is_not_injected_into_non_http_steps() -> None:
         "config": {"api_key": "SECRET", "ftp_path": "/outbound"},
     }
 
-    [request] = render_operation(definition, "book", facts)
+    [rendered] = render_operation(definition, "book", facts)
 
-    assert request.headers == {}
-    assert "SECRET" not in repr(request.model_dump())
+    # An upload render structurally carries no auth channel (no headers or
+    # query), and the auth secret is never resolved into it.
+    assert isinstance(rendered, RenderedUpload)
+    assert "SECRET" not in repr(rendered.model_dump())

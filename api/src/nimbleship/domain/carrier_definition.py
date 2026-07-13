@@ -6,6 +6,7 @@ definition referencing an unknown fact root, transform, or step fails at
 authoring time - never at booking time.
 """
 
+import re
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -17,6 +18,14 @@ FACT_ROOTS = ("shipment", "warehouse", "config")
 # manifest.* facts (the consignment list under an each-loop), never from a
 # single shipment.
 MANIFEST_FACT_ROOTS = ("manifest", "warehouse", "config")
+
+# Transports whose step renders a file dropped on a server (a filename +
+# content) rather than an HTTP request. They are fire-and-forget: no
+# response comes back to extract from.
+UPLOAD_TRANSPORTS = ("ftp_upload", "sftp_upload")
+
+# Placeholder in a filename template, e.g. {shipment.order_number}.
+FILENAME_PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
 
 
 def operation_fact_roots(operation: str) -> tuple[str, ...]:
@@ -46,12 +55,29 @@ class LookupTransform(BaseModel):
     table: dict[str, str]
 
 
+class FormatTransform(BaseModel):
+    name: Literal["format"]
+    # A template with exactly one `{}`, where the value is substituted -
+    # e.g. "REF{}" prefixes an order number with a fixed reference code.
+    template: str
+
+    @model_validator(mode="after")
+    def _single_placeholder(self) -> "FormatTransform":
+        # Exactly one `{}` and no other brace: no placeholder would silently
+        # drop the fact, more than one is ambiguous, and a stray brace would
+        # survive the plain .replace into the rendered value.
+        if not re.fullmatch(r"[^{}]*\{\}[^{}]*", self.template):
+            raise ValueError("format template needs exactly one '{}' placeholder")
+        return self
+
+
 type Transform = Annotated[
     JoinTransform
     | UppercaseTransform
     | LowercaseTransform
     | SplitTransform
-    | LookupTransform,
+    | LookupTransform
+    | FormatTransform,
     Field(discriminator="name"),
 ]
 
@@ -145,11 +171,16 @@ class MappingEntry(BaseModel):
 
 class RequestSpec(BaseModel):
     method: Literal["GET", "POST", "PUT"] = "POST"
-    # A source path (usually config.*) resolved at render time.
+    # A source path (usually config.*) resolved at render time. For an
+    # upload transport this is the remote directory rather than a URL.
     url: str
     query: dict[str, str] = {}
     content_type: Literal["form", "json", "csv"]
     mapping: list[MappingEntry]
+    # Upload transports only: the remote filename, a template whose
+    # `{fact.path}` placeholders are substituted at render time (e.g.
+    # "{warehouse.code}-{shipment.order_number}.csv").
+    filename: str | None = None
 
 
 class Extraction(BaseModel):
@@ -184,6 +215,34 @@ class Step(BaseModel):
     transport: Literal["http", "ftp_upload", "sftp_upload", "local_render"]
     request: RequestSpec
     response: ResponseSpec | None = None
+
+    @model_validator(mode="after")
+    def _transport_shape(self) -> "Step":
+        where = f"step '{self.name}'"
+        if self.transport in UPLOAD_TRANSPORTS:
+            # An upload renders a file to a named remote path and hears
+            # nothing back, so it needs a filename, must be CSV (the only
+            # file rendering the engine owns), and declares no response.
+            if self.request.filename is None:
+                raise ValueError(f"{where}: an upload step needs a filename")
+            if self.request.content_type != "csv":
+                raise ValueError(f"{where}: an upload step must be content_type csv")
+            if self.response is not None:
+                raise ValueError(
+                    f"{where}: an upload step is fire-and-forget and takes no response"
+                )
+            # The remote directory is a per-install account fact, not
+            # shipment data: pinning it to config.* keeps an
+            # attacker/customer-influenced value out of the upload path
+            # (a shipment-sourced directory could carry `..` and escape).
+            if not self.request.url.startswith("config."):
+                raise ValueError(
+                    f"{where}: an upload step's remote directory (url) must be a "
+                    "config.* source"
+                )
+        elif self.request.filename is not None:
+            raise ValueError(f"{where}: filename is for upload transports, not http")
+        return self
 
 
 class LabelSpec(BaseModel):
@@ -291,6 +350,17 @@ class CarrierDefinition(BaseModel):
             for step in operation.steps:
                 where = f"{op_name}.{step.name}"
                 _validate_source(step.request.url, earlier, False, where, roots)
+                if step.request.filename is not None:
+                    # A filename placeholder is a source too: a typo must
+                    # fail at authoring, not name a phantom file at upload.
+                    for match in FILENAME_PLACEHOLDER.finditer(step.request.filename):
+                        _validate_source(
+                            match.group(1),
+                            earlier,
+                            False,
+                            f"{where}: filename",
+                            roots,
+                        )
                 for entry in step.request.mapping:
                     self._validate_entry(entry, earlier, False, where, roots)
                 self._validate_targets(step.request.mapping, where)

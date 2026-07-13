@@ -23,7 +23,11 @@ from nimbleship.domain.definitions import (
     upsert_carrier_config,
 )
 from nimbleship.domain.facts import shipment_facts
-from nimbleship.engine.render import RenderedRequest, render_operation
+from nimbleship.engine.render import (
+    RenderedStep,
+    RenderedUpload,
+    render_operation,
+)
 from nimbleship.models import Consignment
 
 router = APIRouter(prefix="/carriers/{carrier}", tags=["definitions"])
@@ -184,23 +188,33 @@ def publish_version(carrier: str, version: int, session: SessionDep) -> VersionO
     )
 
 
-def _flatten(request: RenderedRequest) -> dict[str, str]:
+def _flatten(rendered: RenderedStep) -> dict[str, str]:
+    if isinstance(rendered, RenderedUpload):
+        # An upload diffs by where it lands and what it contains.
+        return {
+            "content_type": rendered.content_type,
+            "remote_path": rendered.remote_path,
+            "filename": rendered.filename,
+            "content": rendered.content,
+        }
     flat: dict[str, str] = {
-        "method": request.method,
-        "url": request.url,
-        "content_type": request.content_type,
+        "method": rendered.method,
+        "url": rendered.url,
+        "content_type": rendered.content_type,
     }
-    for key, value in request.query.items():
+    for key, value in rendered.query.items():
         flat[f"query.{key}"] = value
-    for key, value in request.headers.items():
+    for key, value in rendered.headers.items():
         flat[f"headers.{key}"] = value
-    for key, rendered in request.body.items():
-        flat[f"body.{key}"] = rendered if isinstance(rendered, str) else repr(rendered)
+    for key, body_value in rendered.body.items():
+        flat[f"body.{key}"] = (
+            body_value if isinstance(body_value, str) else repr(body_value)
+        )
     return flat
 
 
 def _diff_renders(
-    active_renders: list[RenderedRequest], draft_renders: list[RenderedRequest]
+    active_renders: list[RenderedStep], draft_renders: list[RenderedStep]
 ) -> list[Difference]:
     differences: list[Difference] = []
     active_by_step = {r.step: r for r in active_renders}
