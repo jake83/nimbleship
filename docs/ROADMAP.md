@@ -163,6 +163,27 @@ Carried forward (manifests + job queue, PR #34):
   alarm. Wire stalled-job requeue (heartbeat + periodic reset); production
   hardening, naturally Phase 7.
 
+Carried forward (ftp_upload + Fagans, PR #36):
+
+- CSV/formula injection defence: the CSV renderer writes unconstrained
+  fields (recipient name, address) raw, so a value starting with `=`/`+`/
+  `-`/`@` would evaluate if a human opened the file in a spreadsheet. Fagans
+  machine-parses its file, so a blanket prefix-with-quote in the shared
+  renderer would corrupt real deliveries - the mitigation must be
+  per-carrier/opt-in (a definition flag for a human-opened CSV carrier) or
+  input-level, decided when the first such carrier lands.
+- Unexecutable upload transports rejected at authoring: `sftp_upload`
+  renders (the shape is shared) but has no execution backend, so a
+  definition using it publishes and then fails at trailer-close. Select the
+  backend from a transport->uploader registry (matching the auth/field
+  plugin pattern) so an unbacked transport is refused at authoring; the
+  backend itself arrives with Dachser.
+- Carrier-config completeness at save/publish: config is saved as an
+  unvalidated dict, so missing FTP credentials (or any carrier's required
+  config) only surface at first booking. Validate config against the
+  transports/sources the active definition references, at save or publish -
+  a system-wide onboarding gap, not ftp-specific.
+
 ## Phase 4 - Legacy edge and shadow mode
 
 Goal: drop-in credibility.
