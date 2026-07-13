@@ -26,6 +26,7 @@ from nimbleship.engine.auth_plugins import AUTH_PLUGINS
 from nimbleship.engine.render import (
     Facts,
     RenderedRequest,
+    UnresolvedStepOutput,
     apply_transform,
     render_step,
 )
@@ -173,6 +174,30 @@ def _failure_reason(
     return None
 
 
+def assert_no_placeholders(request: RenderedRequest) -> None:
+    """Defence in depth behind authoring validation: a request carrying an
+    unresolved step-output token must never reach a carrier (refuter,
+    PR #30). Placeholders exist for offline replay only."""
+
+    def scan(value: object, where: str) -> None:
+        if isinstance(value, UnresolvedStepOutput):
+            raise ValueError(
+                f"unresolved step output {value} at {where} must not be "
+                "sent to a carrier"
+            )
+        if isinstance(value, dict):
+            for key, inner in value.items():
+                scan(inner, f"{where}.{key}")
+        elif isinstance(value, list):
+            for index, inner in enumerate(value):
+                scan(inner, f"{where}[{index}]")
+
+    scan(request.url, "url")
+    scan(dict(request.query), "query")
+    scan(dict(request.headers), "headers")
+    scan(dict(request.body), "body")
+
+
 def _extract(
     step: Step, spec: ResponseSpec, parsed: object, fmt: _Format
 ) -> dict[str, object]:
@@ -239,6 +264,7 @@ class _Execution:
             self._definition, step, {**self._facts, "steps": dict(self.step_outputs)}
         )
         rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
+        assert_no_placeholders(rendered)
         try:
             response = self._client.request(
                 rendered.method,

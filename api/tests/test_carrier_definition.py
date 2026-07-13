@@ -258,3 +258,97 @@ def test_error_message_without_a_path_is_rejected_at_authoring() -> None:
 
     with pytest.raises(ValidationError, match="path"):
         CarrierDefinition.model_validate(malformed)
+
+
+def test_step_output_names_are_validated_at_authoring() -> None:
+    """A typo'd OUTPUT name (valid step, wrong extraction) must fail at
+    authoring - at execution it would render a placeholder token and send
+    it to a live carrier (refuter, PR #30)."""
+    bad = {
+        **MINIMAL,
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "manifest",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {
+                                    "target": "order",
+                                    "source": "shipment.order_number",
+                                }
+                            ],
+                        },
+                        "response": {
+                            "format": "json",
+                            "extract": [{"name": "tracking", "path": "codes"}],
+                        },
+                    },
+                    {
+                        "name": "label",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {
+                                    "target": "code",
+                                    "source": "steps.manifest.trackign",
+                                }
+                            ],
+                        },
+                    },
+                ],
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="unknown output"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_step_reference_to_a_step_with_no_extractions_is_rejected() -> None:
+    bad = {
+        **MINIMAL,
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "fire",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {
+                                    "target": "order",
+                                    "source": "shipment.order_number",
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "name": "second",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "x", "source": "steps.fire.anything"}
+                            ],
+                        },
+                    },
+                ],
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="unknown output"):
+        CarrierDefinition.model_validate(bad)

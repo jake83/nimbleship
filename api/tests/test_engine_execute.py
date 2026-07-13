@@ -485,3 +485,25 @@ def test_form_step_with_a_collection_field_is_rejected() -> None:
         pytest.raises(ValueError, match=r"step 'save'.*'items'"),
     ):
         execute_operation(definition, "book", facts, client)
+
+
+def test_the_transmit_guard_refuses_placeholder_tokens() -> None:
+    """Defence in depth behind the authoring validation: a rendered request
+    still carrying an unresolved step output must never reach a carrier
+    (refuter, PR #30)."""
+    from nimbleship.engine.execute import assert_no_placeholders
+    from nimbleship.engine.render import RenderedRequest, UnresolvedStepOutput
+
+    request = RenderedRequest(
+        step="label",
+        transport="http",
+        method="POST",
+        url="https://api.example",
+        query={},
+        headers={},
+        content_type="json",
+        body={"codes": [{"code": UnresolvedStepOutput("<steps.manifest.tracking>")}]},
+    )
+
+    with pytest.raises(ValueError, match=r"steps\.manifest\.tracking"):
+        assert_no_placeholders(request)
