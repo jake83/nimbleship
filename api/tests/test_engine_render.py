@@ -283,10 +283,21 @@ def test_xml_upload_renders_prolog_root_attributes_nesting_and_repeats() -> None
     ET.fromstring(rendered.content)
 
 
-def test_xml_refuses_a_control_character_in_a_rendered_value() -> None:
-    # A control character XML 1.0 forbids (here a vertical tab) can arrive in
-    # ordinary free-text shipment data; it must fail loudly at render, never
-    # ship as a broken EDI file no parser can read.
+@pytest.mark.parametrize(
+    "note",
+    [
+        "line1\x0bline2",  # a C0 control (vertical tab)
+        "before\ud800after",  # a lone surrogate (cannot even be UTF-8 encoded)
+        "x\ufffey",  # a U+FFFE noncharacter (encodes cleanly, still illegal)
+    ],
+    ids=["control", "surrogate", "noncharacter"],
+)
+def test_xml_refuses_a_character_not_permitted_in_xml(note: str) -> None:
+    # Anything outside XML 1.0's Char production can arrive in ordinary
+    # free-text shipment data (or mis-decoded input crossing the legacy edge);
+    # it must fail loudly at render, never ship as a broken EDI file - the
+    # noncharacter case even encodes to valid UTF-8, so nothing downstream
+    # would catch it.
     definition = CarrierDefinition.model_validate(
         {
             "carrier": "dachser",
@@ -315,11 +326,11 @@ def test_xml_refuses_a_control_character_in_a_rendered_value() -> None:
         }
     )
     facts: dict[str, object] = {
-        "shipment": {"order_number": "1", "notes": "line1\x0bline2"},
+        "shipment": {"order_number": "1", "notes": note},
         "config": {"sftp_remote_dir": "/inbox"},
     }
 
-    with pytest.raises(ValueError, match="control character"):
+    with pytest.raises(ValueError, match="not permitted in XML"):
         render_operation(definition, "book", facts)
 
 

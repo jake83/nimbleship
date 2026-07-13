@@ -191,17 +191,20 @@ def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) 
 
 XML_PROLOG = '<?xml version="1.0" encoding="UTF-8"?>'
 
-# Characters XML 1.0 forbids even escaped (tab, LF, CR are the only control
-# characters it allows). A rendered value carrying one - e.g. a stray control
-# character in a free-text shipment field - would make the document
-# non-well-formed, so it is refused rather than shipped as a broken EDI file.
-_ILLEGAL_XML_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# Code points outside XML 1.0's `Char` production, which no document may
+# contain even escaped: the C0 controls except tab/LF/CR, the surrogate range
+# (a lone surrogate cannot even be UTF-8 encoded, so it would crash the
+# uploader), and the U+FFFE/U+FFFF noncharacters (these encode cleanly and
+# would otherwise ship as a broken EDI file). A rendered value carrying one -
+# e.g. a stray character in a free-text shipment field, or mis-decoded input
+# crossing the legacy edge - is refused rather than shipped non-well-formed.
+_ILLEGAL_XML_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 
 def _xml_value(value: object, where: str) -> str:
     text = "" if value is None else str(value)
     if _ILLEGAL_XML_CHARS.search(text):
-        raise ValueError(f"{where} contains a control character not permitted in XML")
+        raise ValueError(f"{where} contains a character not permitted in XML")
     return text
 
 
