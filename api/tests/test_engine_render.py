@@ -213,6 +213,10 @@ XML_DEFINITION = CarrierDefinition.model_validate(
                                 },
                                 {
                                     "target": "ShipmentAddress.@AddressType",
+                                    "const": "Consignee",
+                                },
+                                {
+                                    "target": "ShipmentAddress.@Country",
                                     "const": "CZ",
                                 },
                                 {
@@ -260,13 +264,15 @@ def test_xml_upload_renders_prolog_root_attributes_nesting_and_repeats() -> None
     assert rendered.content_type == "xml"
     assert rendered.filename == "95000254580.xml"
     # A fixed UTF-8 prolog; @-targets become attributes of their element
-    # (@Version on the root, @AddressType/@Sequence on their parents); dot
-    # targets nest elements; an each-loop becomes repeated same-name elements.
+    # (@Version on the root, @AddressType/@Country/@Sequence on their parents);
+    # two attributes on one element keep mapping order; dot targets nest
+    # elements; an each-loop becomes repeated same-name elements.
     assert rendered.content == (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<ForwardingOrderInformation Version="2.0">'
         "<Order><OrderNumber>95000254580</OrderNumber></Order>"
-        '<ShipmentAddress AddressType="CZ"><City>Praha</City></ShipmentAddress>'
+        '<ShipmentAddress AddressType="Consignee" Country="CZ">'
+        "<City>Praha</City></ShipmentAddress>"
         '<ShipmentLine Sequence="1"><Weight>4.2</Weight></ShipmentLine>'
         '<ShipmentLine Sequence="2"><Weight>3.1</Weight></ShipmentLine>'
         "</ForwardingOrderInformation>"
@@ -315,10 +321,15 @@ def test_xml_escapes_special_characters_in_text_and_attributes() -> None:
     assert "<Notes>x &lt; y &amp; z</Notes>" in rendered.content
 
 
-def test_xml_upload_render_is_deterministic() -> None:
+def test_xml_upload_render_is_deterministic_and_secret_free() -> None:
     first = render_operation(XML_DEFINITION, "book", XML_FACTS)
     second = render_operation(XML_DEFINITION, "book", XML_FACTS)
     assert [r.model_dump() for r in first] == [r.model_dump() for r in second]
+    # Connection secrets are read by the uploader at execution, never rendered -
+    # nothing here should carry a host/username/password (as the csv path also
+    # guarantees).
+    dumped = str(first[0].model_dump())
+    assert "password" not in dumped and "sftp_host" not in dumped
 
 
 def test_renders_mapped_transformed_and_constant_fields() -> None:

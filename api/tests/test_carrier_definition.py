@@ -758,6 +758,19 @@ def test_an_xml_attribute_must_be_the_terminal_segment() -> None:
         )
 
 
+def test_an_xml_attribute_needs_a_name_after_the_at_sign() -> None:
+    # A bare "@" would strip to an empty attribute name and render malformed
+    # XML (`<Root ="v"/>`), so it is refused at authoring.
+    with pytest.raises(ValidationError, match="needs a name"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Root",
+                mapping=[{"target": "@", "const": "v"}],
+            )
+        )
+
+
 def test_an_xml_attribute_cannot_be_a_repeated_element() -> None:
     with pytest.raises(ValidationError, match="repeated element"):
         CarrierDefinition.model_validate(

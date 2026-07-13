@@ -184,11 +184,17 @@ def _validate_xml_targets(entries: list[MappingEntry]) -> None:
                     f"mapping '{entry.target}': an @attribute must be the last "
                     "segment of its target"
                 )
-        if segments[-1].startswith("@") and entry.each is not None:
-            raise ValueError(
-                f"mapping '{entry.target}': an @attribute cannot be a repeated "
-                "element (each)"
-            )
+        terminal = segments[-1]
+        if terminal.startswith("@"):
+            if terminal == "@":
+                raise ValueError(
+                    f"mapping '{entry.target}': an @attribute needs a name after the @"
+                )
+            if entry.each is not None:
+                raise ValueError(
+                    f"mapping '{entry.target}': an @attribute cannot be a repeated "
+                    "element (each)"
+                )
         if entry.each is not None:
             _validate_xml_targets(entry.each)
 
@@ -205,7 +211,7 @@ class RequestSpec(BaseModel):
     # `{fact.path}` placeholders are substituted at render time (e.g.
     # "{warehouse.code}-{shipment.order_number}.csv").
     filename: str | None = None
-    # Content_type xml only: the single document wrapper element. The renderer
+    # content_type xml only: the single document wrapper element. The renderer
     # emits a fixed prolog and wraps the mapping in this element.
     root_element: str | None = None
 
