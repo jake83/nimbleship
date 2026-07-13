@@ -145,6 +145,24 @@ Goal: the spec language demonstrably expresses reality.
 - Tracking Events: generic store and ingestion, Voila webhook as the first
   source adapter, direct-carrier sources later.
 
+Carried forward (manifests + job queue, PR #34):
+
+- Publish render-gate coverage for manifest operations: the gate renders
+  every shipment-context operation against recent consignments but skips
+  manifest operations, which render from a synthesized manifest, not one
+  shipment. Until covered, a broken manifest mapping publishes green and
+  first fails at trailer-close. (Also correct the `_render_gate` docstring,
+  which still claims every-operation coverage.)
+- Warehouse-local manifest date semantics: the manifest date is the UTC
+  date of manifest creation, so a scan-out near local midnight declares the
+  wrong day. Needs a Warehouse timezone (a domain decision), and covers the
+  related silent omission of warehouse facts when a referenced Warehouse row
+  is absent at send time.
+- Stalled send-job recovery: a worker killed mid-send leaves the job in
+  Procrastinate's `doing` state forever and the Manifest `pending` with no
+  alarm. Wire stalled-job requeue (heartbeat + periodic reset); production
+  hardening, naturally Phase 7.
+
 ## Phase 4 - Legacy edge and shadow mode
 
 Goal: drop-in credibility.
