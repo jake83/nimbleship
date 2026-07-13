@@ -9,7 +9,7 @@ FileUploader implementation, not a new engine branch."""
 
 import ftplib
 import io
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 CONNECT_TIMEOUT_SECONDS = 30.0
 
@@ -24,7 +24,6 @@ class UploadError(Exception):
     specifics (ftplib errors, socket errors) are translated here."""
 
 
-@runtime_checkable
 class FileUploader(Protocol):
     def upload(
         self,
@@ -59,15 +58,25 @@ class FtpFileUploader:
             raise UploadError(
                 f"carrier config has a non-numeric ftp_port: {config.get('ftp_port')!r}"
             ) from error
+        if not 0 <= port <= 65535:
+            raise UploadError(f"carrier config ftp_port is out of range: {port}")
         if not remote_path:
             raise UploadError("upload has no remote directory")
-        # A control character in a path component would inject a second line
-        # onto the FTP control connection (the filename is rendered from
-        # facts, which are not otherwise constrained). Reject it as a failed
-        # upload rather than let it reach the wire.
-        for label, part in (("filename", filename), ("remote path", remote_path)):
-            if any(ord(char) < 0x20 for char in part):
-                raise UploadError(f"{label} contains a control character: {part!r}")
+        # The filename is rendered from facts that are not otherwise
+        # constrained, so guard the path it builds: a control character would
+        # inject a second line onto the FTP control connection, and a slash
+        # or `..` would escape the configured remote directory. Reject either
+        # as a failed upload rather than let it reach the wire.
+        if any(ord(char) < 0x20 for char in remote_path):
+            raise UploadError(
+                f"remote path contains a control character: {remote_path!r}"
+            )
+        if (
+            any(ord(char) < 0x20 for char in filename)
+            or "/" in filename
+            or "\\" in filename
+        ):
+            raise UploadError(f"filename is not a bare filename: {filename!r}")
         username = str(config.get("ftp_username", ""))
         password = str(config.get("ftp_password", ""))
         target = f"{remote_path.rstrip('/')}/{filename}"

@@ -90,13 +90,21 @@ def test_missing_host_raises_upload_error() -> None:
 def test_a_control_character_in_the_filename_is_rejected(
     ftp_server: tuple[int, Path],
 ) -> None:
-    # A CRLF in a path component would inject a second FTP command; the
-    # uploader rejects it as a failed upload rather than let it reach the wire.
+    # A CRLF in a filename would inject a second FTP command; the uploader
+    # rejects it as a failed upload rather than let it reach the wire.
     port, _ = ftp_server
-    with pytest.raises(UploadError, match="control character"):
+    with pytest.raises(UploadError, match="bare filename"):
         FtpFileUploader().upload(
             _config(port), "/", "evil\r\nDELE other.csv", "data\r\n"
         )
+
+
+def test_a_control_character_in_the_remote_path_is_rejected(
+    ftp_server: tuple[int, Path],
+) -> None:
+    port, _ = ftp_server
+    with pytest.raises(UploadError, match="control character"):
+        FtpFileUploader().upload(_config(port), "/out\r\nDELE x", "x.csv", "data\r\n")
 
 
 def test_a_non_numeric_port_is_an_upload_error_not_a_raw_valueerror() -> None:
@@ -112,3 +120,22 @@ def test_a_non_numeric_port_is_an_upload_error_not_a_raw_valueerror() -> None:
 def test_an_empty_remote_directory_is_rejected() -> None:
     with pytest.raises(UploadError, match="remote directory"):
         FtpFileUploader().upload({"ftp_host": "127.0.0.1"}, "", "x.csv", "data\r\n")
+
+
+def test_a_path_separator_in_the_filename_is_rejected(
+    ftp_server: tuple[int, Path],
+) -> None:
+    # A rendered filename that carries a slash (e.g. "../escaped.csv") would
+    # write outside the configured remote directory; only a bare filename is
+    # allowed.
+    port, root = ftp_server
+    with pytest.raises(UploadError, match="bare filename"):
+        FtpFileUploader().upload(_config(port), "/", "../escaped.csv", "data\r\n")
+    assert not (root.parent / "escaped.csv").exists()
+
+
+def test_an_out_of_range_port_is_an_upload_error() -> None:
+    with pytest.raises(UploadError, match="out of range"):
+        FtpFileUploader().upload(
+            {"ftp_host": "127.0.0.1", "ftp_port": "99999"}, "/", "x.csv", "data\r\n"
+        )

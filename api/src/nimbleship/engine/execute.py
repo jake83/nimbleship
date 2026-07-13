@@ -28,7 +28,6 @@ from nimbleship.engine.render import (
     RenderedRequest,
     RenderedStep,
     RenderedUpload,
-    UnresolvedStepOutput,
     apply_transform,
     render_step,
 )
@@ -177,35 +176,6 @@ def _failure_reason(
     return None
 
 
-def assert_no_placeholders(rendered: RenderedStep) -> None:
-    """Defence in depth behind authoring validation: a request carrying an
-    unresolved step-output token must never reach a carrier (refuter,
-    PR #30). Placeholders exist for offline replay only."""
-
-    def scan(value: object, where: str) -> None:
-        if isinstance(value, UnresolvedStepOutput):
-            raise ValueError(
-                f"unresolved step output {value} at {where} must not be "
-                "sent to a carrier"
-            )
-        if isinstance(value, dict):
-            for key, inner in value.items():
-                scan(inner, f"{where}.{key}")
-        elif isinstance(value, list):
-            for index, inner in enumerate(value):
-                scan(inner, f"{where}[{index}]")
-
-    if isinstance(rendered, RenderedUpload):
-        scan(rendered.remote_path, "remote_path")
-        scan(rendered.filename, "filename")
-        scan(rendered.content, "content")
-        return
-    scan(rendered.url, "url")
-    scan(dict(rendered.query), "query")
-    scan(dict(rendered.headers), "headers")
-    scan(dict(rendered.body), "body")
-
-
 def _extract(
     step: Step, spec: ResponseSpec, parsed: object, fmt: _Format
 ) -> dict[str, object]:
@@ -265,8 +235,13 @@ class _Execution:
         return CarrierCallError(message, self.records)
 
     def run_step(self, step: Step) -> None:
+        # for_execution: an unresolved step-output reference raises at render
+        # rather than reaching the carrier as literal placeholder text.
         rendered = render_step(
-            self._definition, step, {**self._facts, "steps": dict(self.step_outputs)}
+            self._definition,
+            step,
+            {**self._facts, "steps": dict(self.step_outputs)},
+            for_execution=True,
         )
         if isinstance(rendered, RenderedUpload):
             self._run_upload(step, rendered)
@@ -283,7 +258,6 @@ class _Execution:
             raise RuntimeError(
                 f"step '{step.name}' is an upload but no uploader was provided"
             )
-        assert_no_placeholders(rendered)
         config = self._facts.get("config", {})
         assert isinstance(config, dict)
         try:
@@ -310,7 +284,6 @@ class _Execution:
                 "only http and ftp_upload steps run today"
             )
         rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
-        assert_no_placeholders(rendered)
         try:
             response = self._client.request(
                 rendered.method,

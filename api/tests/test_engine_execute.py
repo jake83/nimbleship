@@ -543,26 +543,68 @@ def test_form_step_with_a_collection_field_is_rejected() -> None:
         execute_operation(definition, "book", facts, client)
 
 
-def test_the_transmit_guard_refuses_placeholder_tokens() -> None:
-    """Defence in depth behind the authoring validation: a rendered request
-    still carrying an unresolved step output must never reach a carrier
-    (refuter, PR #30)."""
-    from nimbleship.engine.execute import assert_no_placeholders
-    from nimbleship.engine.render import RenderedRequest, UnresolvedStepOutput
+def test_an_unresolved_step_output_at_execution_raises_not_transmits() -> None:
+    """A step-output reference still unresolved during execution is a real
+    failure: it must raise at render, not travel to the carrier as literal
+    placeholder text (pydantic coerces the placeholder type back to plain
+    str, so a post-render type check cannot catch it - refuter, PR #30/#26)."""
+    from nimbleship.engine.render import RenderedRequest, render_step
 
-    request = RenderedRequest(
-        step="label",
-        transport="http",
-        method="POST",
-        url="https://api.example",
-        query={},
-        headers={},
-        content_type="json",
-        body={"codes": [{"code": UnresolvedStepOutput("<steps.manifest.tracking>")}]},
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "first",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.u",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "o", "source": "shipment.order_number"}
+                                ],
+                            },
+                            "response": {
+                                "format": "json",
+                                "extract": [{"name": "tracking", "path": "t"}],
+                            },
+                        },
+                        {
+                            "name": "second",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.u",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "ref", "source": "steps.first.tracking"}
+                                ],
+                            },
+                        },
+                    ]
+                }
+            },
+        }
     )
+    second = definition.operations["book"].steps[1]
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "1"},
+        "config": {"u": "https://x"},
+        "steps": {},  # first's output is absent
+    }
 
-    with pytest.raises(ValueError, match=r"steps\.manifest\.tracking"):
-        assert_no_placeholders(request)
+    # Offline replay tolerates the placeholder; execution must not.
+    replay = render_step(definition, second, facts)
+    assert isinstance(replay, RenderedRequest)
+    assert replay.body["ref"] == "<steps.first.tracking>"
+
+    with pytest.raises(ValueError, match=r"steps\.first\.tracking"):
+        render_step(definition, second, facts, for_execution=True)
 
 
 FTP_DEFINITION = CarrierDefinition.model_validate(
