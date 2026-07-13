@@ -289,3 +289,17 @@ def test_sftp_upload_rejects_a_traversal_before_connecting(
         SftpFileUploader().upload(SFTP_CONFIG, "inbox/../other", "x.xml", "<x/>")
     # No connection was opened - the guard runs before paramiko.
     assert fake_paramiko.instances == []
+
+
+def test_sftp_upload_translates_a_socket_failure_on_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Transport((host, port)) opens the socket in its constructor; a refused
+    # connection or DNS failure there must surface as UploadError, not escape
+    # as a raw OSError that crashes the booking.
+    def _refuse(address: tuple[str, int]) -> _FakeTransport:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("nimbleship.uploaders.paramiko.Transport", _refuse)
+    with pytest.raises(UploadError, match="connection refused"):
+        SftpFileUploader().upload(SFTP_CONFIG, "/inbox", "order.xml", "<x/>")

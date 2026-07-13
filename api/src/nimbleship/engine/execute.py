@@ -279,7 +279,7 @@ class _Execution:
             # sent. Only http and the upload transports execute.
             raise NotImplementedError(
                 f"transport '{step.transport}' cannot execute yet; "
-                "only http and ftp_upload steps run today"
+                "only http requests and the upload transports run"
             )
         rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
         try:

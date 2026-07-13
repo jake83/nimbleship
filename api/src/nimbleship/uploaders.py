@@ -131,8 +131,12 @@ class SftpFileUploader:
     ) -> None:
         host, port, username, password = _connection(config, "sftp", 22)
         target = _safe_target(remote_path, filename)
-        transport = paramiko.Transport((host, port))
+        # Transport((host, port)) opens the socket in its constructor, so it
+        # must sit inside the try: a refused connection or DNS failure has to
+        # translate to UploadError, not escape as a raw OSError.
+        transport: paramiko.Transport | None = None
         try:
+            transport = paramiko.Transport((host, port))
             transport.connect(username=username, password=password)
             sftp = paramiko.SFTPClient.from_transport(transport)
             if sftp is None:
@@ -141,7 +145,8 @@ class SftpFileUploader:
         except (OSError, paramiko.SSHException) as error:
             raise UploadError(f"SFTP upload to {target} failed: {error}") from error
         finally:
-            transport.close()
+            if transport is not None:
+                transport.close()
 
 
 def carrier_uploaders() -> dict[str, FileUploader]:
