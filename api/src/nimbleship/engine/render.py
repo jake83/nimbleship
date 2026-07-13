@@ -191,6 +191,19 @@ def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) 
 
 XML_PROLOG = '<?xml version="1.0" encoding="UTF-8"?>'
 
+# Characters XML 1.0 forbids even escaped (tab, LF, CR are the only control
+# characters it allows). A rendered value carrying one - e.g. a stray control
+# character in a free-text shipment field - would make the document
+# non-well-formed, so it is refused rather than shipped as a broken EDI file.
+_ILLEGAL_XML_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _xml_value(value: object, where: str) -> str:
+    text = "" if value is None else str(value)
+    if _ILLEGAL_XML_CHARS.search(text):
+        raise ValueError(f"{where} contains a control character not permitted in XML")
+    return text
+
 
 def _append_xml(parent: ET.Element, name: str, value: object) -> None:
     """Attach `value` to `parent` as one or more `<name>` child elements: a
@@ -205,7 +218,7 @@ def _append_xml(parent: ET.Element, name: str, value: object) -> None:
     else:
         child = ET.SubElement(parent, name)
         if value is not None:
-            child.text = str(value)
+            child.text = _xml_value(value, f"element '{name}'")
 
 
 def _build_xml(parent: ET.Element, mapping: dict[str, Rendered]) -> None:
@@ -220,7 +233,7 @@ def _build_xml(parent: ET.Element, mapping: dict[str, Rendered]) -> None:
                     f"xml attribute '{key}' rendered a {type(value).__name__}, "
                     "not a scalar"
                 )
-            parent.set(key[1:], "" if value is None else str(value))
+            parent.set(key[1:], _xml_value(value, f"attribute '{key}'"))
         else:
             _append_xml(parent, key, value)
 

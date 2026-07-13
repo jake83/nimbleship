@@ -771,6 +771,26 @@ def test_an_xml_attribute_needs_a_name_after_the_at_sign() -> None:
         )
 
 
+def test_an_xml_element_name_must_be_a_legal_xml_name() -> None:
+    # A target segment with a space (or an @ mid-name, etc.) would render a
+    # tag no XML parser can read; it is refused at authoring.
+    with pytest.raises(ValidationError, match="legal XML name"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Order",
+                mapping=[{"target": "Ship To", "source": "shipment.order_number"}],
+            )
+        )
+
+
+def test_an_xml_root_element_must_be_a_legal_xml_name() -> None:
+    with pytest.raises(ValidationError, match="legal XML name"):
+        CarrierDefinition.model_validate(
+            _ftp_step(content_type="xml", root_element="Bad Root")
+        )
+
+
 def test_an_xml_attribute_cannot_be_a_repeated_element() -> None:
     with pytest.raises(ValidationError, match="repeated element"):
         CarrierDefinition.model_validate(

@@ -2,6 +2,8 @@
 requests. Pure by design - Golden Replay diffs renders without touching a
 carrier (ADR 0009)."""
 
+import xml.etree.ElementTree as ET
+
 import pytest
 from pydantic import ValidationError
 
@@ -277,6 +279,48 @@ def test_xml_upload_renders_prolog_root_attributes_nesting_and_repeats() -> None
         '<ShipmentLine Sequence="2"><Weight>3.1</Weight></ShipmentLine>'
         "</ForwardingOrderInformation>"
     )
+    # And the document is well-formed - it round-trips through a parser.
+    ET.fromstring(rendered.content)
+
+
+def test_xml_refuses_a_control_character_in_a_rendered_value() -> None:
+    # A control character XML 1.0 forbids (here a vertical tab) can arrive in
+    # ordinary free-text shipment data; it must fail loudly at render, never
+    # ship as a broken EDI file no parser can read.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dachser",
+            "name": "Dachser",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "edi",
+                            "transport": "sftp_upload",
+                            "request": {
+                                "url": "config.sftp_remote_dir",
+                                "filename": "{shipment.order_number}.xml",
+                                "content_type": "xml",
+                                "root_element": "Order",
+                                "mapping": [
+                                    {"target": "Notes", "source": "shipment.notes"}
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render", "template": "a6"},
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "1", "notes": "line1\x0bline2"},
+        "config": {"sftp_remote_dir": "/inbox"},
+    }
+
+    with pytest.raises(ValueError, match="control character"):
+        render_operation(definition, "book", facts)
 
 
 def test_xml_escapes_special_characters_in_text_and_attributes() -> None:
