@@ -111,8 +111,12 @@ onboarding a carrier must obtain its host key; that is the right cost.
 
 Obtaining `sftp_host_key` at onboarding: it is not a credential the carrier
 issues but the public key the carrier's SFTP server presents, captured once
-and pinned. `ssh-keyscan -t ed25519,ecdsa,rsa <sftp_host>` prints the exact
-OpenSSH lines the field takes; pick one and store it. The trust step is
+and pinned. The field takes a two-field public-key line, `<type> <base64>`.
+`ssh-keyscan -t ed25519,ecdsa,rsa <sftp_host>` prints the server's keys in
+`known_hosts` format, `<host> <type> <base64>`, so drop the leading host
+field before storing - e.g. `ssh-keyscan ... | cut -d' ' -f2,3` - then pick
+one line. (The pin fails closed, so pasting the raw hostname-prefixed line is
+rejected as unparseable rather than silently mis-stored.) The trust step is
 verifying that captured key is really the carrier's, out of band, before
 pinning: compare its fingerprint (`ssh-keygen -lf`) against a fingerprint the
 carrier publishes in its onboarding pack, or confirm it with the carrier's
