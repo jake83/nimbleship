@@ -301,6 +301,14 @@ class _Execution:
         self._recorded(step, rendered, None, "", True)
 
     def _run_http(self, step: Step, rendered: RenderedRequest) -> None:
+        if step.transport != "http":
+            # local_render is a label source, not a wire transport; a step
+            # declaring it renders like an http request but must never be
+            # sent. Only http and the upload transports execute.
+            raise NotImplementedError(
+                f"transport '{step.transport}' cannot execute yet; "
+                "only http and ftp_upload steps run today"
+            )
         rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
         assert_no_placeholders(rendered)
         try:

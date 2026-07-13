@@ -53,7 +53,21 @@ class FtpFileUploader:
         host = config.get("ftp_host")
         if not isinstance(host, str) or not host:
             raise UploadError("carrier config has no ftp_host")
-        port = int(str(config.get("ftp_port", 21)))
+        try:
+            port = int(str(config.get("ftp_port", 21)))
+        except ValueError as error:
+            raise UploadError(
+                f"carrier config has a non-numeric ftp_port: {config.get('ftp_port')!r}"
+            ) from error
+        if not remote_path:
+            raise UploadError("upload has no remote directory")
+        # A control character in a path component would inject a second line
+        # onto the FTP control connection (the filename is rendered from
+        # facts, which are not otherwise constrained). Reject it as a failed
+        # upload rather than let it reach the wire.
+        for label, part in (("filename", filename), ("remote path", remote_path)):
+            if any(ord(char) < 0x20 for char in part):
+                raise UploadError(f"{label} contains a control character: {part!r}")
         username = str(config.get("ftp_username", ""))
         password = str(config.get("ftp_password", ""))
         target = f"{remote_path.rstrip('/')}/{filename}"

@@ -25,7 +25,7 @@ MANIFEST_FACT_ROOTS = ("manifest", "warehouse", "config")
 UPLOAD_TRANSPORTS = ("ftp_upload", "sftp_upload")
 
 # Placeholder in a filename template, e.g. {shipment.order_number}.
-_FILENAME_PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
+FILENAME_PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
 
 
 def operation_fact_roots(operation: str) -> tuple[str, ...]:
@@ -58,15 +58,15 @@ class LookupTransform(BaseModel):
 class FormatTransform(BaseModel):
     name: Literal["format"]
     # A template with exactly one `{}`, where the value is substituted -
-    # e.g. "DMC{}" builds a DMC-prefixed reference from an order number.
+    # e.g. "REF{}" prefixes an order number with a fixed reference code.
     template: str
 
     @model_validator(mode="after")
     def _single_placeholder(self) -> "FormatTransform":
-        # No placeholder would silently drop the fact; more than one is
-        # ambiguous. (Guarding on '{' and '}' too keeps str.format from
-        # choking on stray braces or interpreting anything else.)
-        if self.template.count("{}") != 1 or self.template.count("{") != 1:
+        # Exactly one `{}` and no other brace: no placeholder would silently
+        # drop the fact, more than one is ambiguous, and a stray brace would
+        # survive the plain .replace into the rendered value.
+        if not re.fullmatch(r"[^{}]*\{\}[^{}]*", self.template):
             raise ValueError("format template needs exactly one '{}' placeholder")
         return self
 
@@ -179,7 +179,7 @@ class RequestSpec(BaseModel):
     mapping: list[MappingEntry]
     # Upload transports only: the remote filename, a template whose
     # `{fact.path}` placeholders are substituted at render time (e.g.
-    # "{warehouse.code}-DMC{shipment.order_number}.csv").
+    # "{warehouse.code}-{shipment.order_number}.csv").
     filename: str | None = None
 
 
@@ -344,7 +344,7 @@ class CarrierDefinition(BaseModel):
                 if step.request.filename is not None:
                     # A filename placeholder is a source too: a typo must
                     # fail at authoring, not name a phantom file at upload.
-                    for match in _FILENAME_PLACEHOLDER.finditer(step.request.filename):
+                    for match in FILENAME_PLACEHOLDER.finditer(step.request.filename):
                         _validate_source(
                             match.group(1),
                             earlier,

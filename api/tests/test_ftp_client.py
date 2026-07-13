@@ -85,3 +85,30 @@ def test_bad_credentials_raise_upload_error(ftp_server: tuple[int, Path]) -> Non
 def test_missing_host_raises_upload_error() -> None:
     with pytest.raises(UploadError, match="ftp_host"):
         FtpFileUploader().upload({}, "/", "x.csv", "data\r\n")
+
+
+def test_a_control_character_in_the_filename_is_rejected(
+    ftp_server: tuple[int, Path],
+) -> None:
+    # A CRLF in a path component would inject a second FTP command; the
+    # uploader rejects it as a failed upload rather than let it reach the wire.
+    port, _ = ftp_server
+    with pytest.raises(UploadError, match="control character"):
+        FtpFileUploader().upload(
+            _config(port), "/", "evil\r\nDELE other.csv", "data\r\n"
+        )
+
+
+def test_a_non_numeric_port_is_an_upload_error_not_a_raw_valueerror() -> None:
+    with pytest.raises(UploadError, match="ftp_port"):
+        FtpFileUploader().upload(
+            {"ftp_host": "127.0.0.1", "ftp_port": "not-a-number"},
+            "/",
+            "x.csv",
+            "data\r\n",
+        )
+
+
+def test_an_empty_remote_directory_is_rejected() -> None:
+    with pytest.raises(UploadError, match="remote directory"):
+        FtpFileUploader().upload({"ftp_host": "127.0.0.1"}, "", "x.csv", "data\r\n")

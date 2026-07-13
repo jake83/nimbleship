@@ -283,9 +283,10 @@ def test_format_transform_requires_a_single_placeholder() -> None:
             },
         }
 
-    # A template with no placeholder would silently drop the fact; more than
-    # one would be ambiguous. Both fail at authoring.
-    for bad in ("DMC", "{}{}"):
+    # No placeholder silently drops the fact; more than one is ambiguous; a
+    # stray unbalanced brace would survive the substitution. All fail at
+    # authoring.
+    for bad in ("DMC", "{}{}", "}{}", "a}b{}", "{}x{"):
         with pytest.raises(ValidationError, match="placeholder"):
             CarrierDefinition.model_validate(_entry(bad))
 

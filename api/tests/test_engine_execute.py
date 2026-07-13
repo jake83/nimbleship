@@ -363,6 +363,57 @@ def test_an_upload_transport_without_a_backend_is_named_not_implemented() -> Non
         execute_operation(definition, "book", facts, client, uploader=_FakeUploader())
 
 
+def test_a_local_render_step_transport_is_never_sent_to_the_wire() -> None:
+    # local_render is a label source; a step declaring it renders like an
+    # http request but must fail loudly rather than be HTTP-executed.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dropout",
+            "name": "Drop Out",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "render",
+                            "transport": "local_render",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "order",
+                                        "source": "shipment.order_number",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render"},
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"base_url": "https://api.example/x"},
+    }
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    with (
+        _client(httpx.MockTransport(handle)) as client,
+        pytest.raises(NotImplementedError, match="local_render"),
+    ):
+        execute_operation(definition, "book", facts, client)
+    # It never reached the carrier client.
+    assert seen == []
+
+
 @pytest.fixture
 def stamp_plugin() -> Iterator[None]:
     class StampPlugin:

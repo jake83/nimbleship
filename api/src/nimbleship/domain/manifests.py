@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from nimbleship.domain.definitions import active_definition, carrier_config
 from nimbleship.domain.facts import manifest_facts, warehouse_facts
 from nimbleship.engine.execute import StepRecord, execute_operation
+from nimbleship.ftp_client import FileUploader
 from nimbleship.models import (
     CarrierTraffic,
     Consignment,
@@ -107,7 +108,10 @@ def manifest_consignments(session: Session, manifest: Manifest) -> list[Consignm
 
 
 def send_manifest(
-    session: Session, manifest: Manifest, http_client: httpx.Client
+    session: Session,
+    manifest: Manifest,
+    http_client: httpx.Client,
+    uploader: FileUploader,
 ) -> None:
     """Execute the carrier's manifest operation for this Manifest, recording
     the traffic (the golden corpus grows from manifests too). Success marks
@@ -148,7 +152,9 @@ def send_manifest(
             )
         )
 
-    result = execute_operation(definition, "manifest", facts, http_client, record)
+    result = execute_operation(
+        definition, "manifest", facts, http_client, record, uploader
+    )
 
     manifest.status = "sent"
     manifest.sent_at = datetime.now(UTC)

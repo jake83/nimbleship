@@ -14,10 +14,10 @@ from typing import Literal, cast
 from pydantic import BaseModel
 
 from nimbleship.domain.carrier_definition import (
+    FILENAME_PLACEHOLDER,
     UPLOAD_TRANSPORTS,
     CarrierDefinition,
     MappingEntry,
-    RequestSpec,
     Step,
     Transform,
     insert_at_target,
@@ -148,18 +148,21 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
 def _render_filename(template: str, facts: Facts) -> str:
     """Substitute `{fact.path}` placeholders in a filename template. Pure
     fact substitution - no expressions - so a filename stays data, readable
-    and validatable, not a template language (ADR 0009)."""
+    and validatable, not a template language (ADR 0009). The placeholder
+    grammar is owned by the schema so authoring validation and rendering
+    cannot diverge."""
 
     def _substitute(match: "re.Match[str]") -> str:
         return str(_resolve(match.group(1), facts))
 
-    return re.sub(r"\{([^{}]+)\}", _substitute, template)
+    return FILENAME_PLACEHOLDER.sub(_substitute, template)
 
 
 def _render_csv(entries: list[MappingEntry], facts: Facts) -> str:
-    """One RFC 4180 row (comma-delimited, CRLF, minimal quoting - what the
-    carriers' legacy CSV writers produced) from the mapping entries in order.
-    Targets name columns for readability; the row is positional."""
+    """One RFC 4180 row: comma-delimited, minimal quoting, CRLF-terminated -
+    the format the receiving carriers require. Rendered from the mapping
+    entries in order; targets name columns for readability, the row is
+    positional."""
     row: list[str] = []
     for entry in entries:
         value = _render_entry(entry, facts)
@@ -174,17 +177,9 @@ def _render_csv(entries: list[MappingEntry], facts: Facts) -> str:
     return buffer.getvalue()
 
 
-def _render_content(request: RequestSpec, facts: Facts) -> str:
-    if request.content_type == "csv":
-        return _render_csv(request.mapping, facts)
-    raise ValueError(
-        f"upload content_type '{request.content_type}' has no file rendering yet"
-    )
-
-
 def _render_upload(step: Step, facts: Facts) -> RenderedUpload:
     remote_path = str(_resolve(step.request.url, facts))
-    # The schema requires a filename for upload steps.
+    # The schema requires a filename and content_type csv for upload steps.
     assert step.request.filename is not None
     return RenderedUpload(
         step=step.name,
@@ -192,7 +187,7 @@ def _render_upload(step: Step, facts: Facts) -> RenderedUpload:
         content_type=step.request.content_type,
         remote_path=remote_path,
         filename=_render_filename(step.request.filename, facts),
-        content=_render_content(step.request, facts),
+        content=_render_csv(step.request.mapping, facts),
     )
 
 

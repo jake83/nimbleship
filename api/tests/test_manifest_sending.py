@@ -29,6 +29,20 @@ from nimbleship.models import (
 )
 from nimbleship.queue import MANIFEST_RETRY, queue_app, run_manifest_send
 
+
+class _NoUploader:
+    """The manifest tests use http operations; an upload here is a bug."""
+
+    def upload(
+        self,
+        config: dict[str, object],
+        remote_path: str,
+        filename: str,
+        content: str,
+    ) -> None:
+        raise AssertionError("an http manifest step must not upload")
+
+
 DEFINITION: dict[str, object] = {
     "carrier": "brightpost",
     "name": "Bright Post",
@@ -108,6 +122,7 @@ def _seed_manifest(session: Session, definition: dict[str, object]) -> Manifest:
             data={
                 "api_key": "SECRET-KEY",
                 "manifest_url": "https://api.brightpost.example/manifests",
+                "ftp_remote_dir": "/outbound",
             },
         )
     )
@@ -159,7 +174,7 @@ def test_sending_declares_the_consignments_and_marks_the_manifest_sent(
         return httpx.Response(200, json=SUCCESS)
 
     with _client(handler) as http_client:
-        send_manifest(session, manifest, http_client)
+        send_manifest(session, manifest, http_client, _NoUploader())
 
     [request] = requests
     assert request.headers["X-Api-Key"] == "SECRET-KEY"
@@ -188,11 +203,67 @@ def test_sending_declares_the_consignments_and_marks_the_manifest_sent(
         assert event.detail["manifest_id"] == manifest.id
 
 
+FTP_MANIFEST_DEFINITION: dict[str, object] = {
+    "carrier": "brightpost",
+    "name": "Bright Post",
+    "auth": {"scheme": "none"},
+    "operations": {
+        "manifest": {
+            "steps": [
+                {
+                    "name": "drop",
+                    "transport": "ftp_upload",
+                    "request": {
+                        "url": "config.ftp_remote_dir",
+                        "filename": "manifest-{manifest.date}.csv",
+                        "content_type": "csv",
+                        "mapping": [
+                            {"target": "date", "source": "manifest.date"},
+                            {"target": "count", "source": "manifest.consignment_count"},
+                        ],
+                    },
+                }
+            ]
+        }
+    },
+}
+
+
+class _RecordingUploader:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def upload(
+        self,
+        config: dict[str, object],
+        remote_path: str,
+        filename: str,
+        content: str,
+    ) -> None:
+        self.calls.append((remote_path, filename, content))
+
+
+def test_a_manifest_over_ftp_is_routed_to_the_uploader(session: Session) -> None:
+    # A carrier whose manifest is a file drop must reach the uploader, not
+    # RuntimeError for a missing one (the queue path wires it in).
+    manifest = _seed_manifest(session, FTP_MANIFEST_DEFINITION)
+    uploader = _RecordingUploader()
+
+    with _client(lambda request: httpx.Response(500)) as http_client:
+        send_manifest(session, manifest, http_client, uploader)
+
+    [(remote_path, filename, content)] = uploader.calls
+    assert remote_path == "/outbound"
+    assert filename == f"manifest-{manifest.created_at.date().isoformat()}.csv"
+    assert content == f"{manifest.created_at.date().isoformat()},2\r\n"
+    assert manifest.status == "sent"
+
+
 def test_sending_records_the_traffic_for_golden_replay(session: Session) -> None:
     manifest = _seed_manifest(session, DEFINITION)
 
     with _client(lambda request: httpx.Response(200, json=SUCCESS)) as http_client:
-        send_manifest(session, manifest, http_client)
+        send_manifest(session, manifest, http_client, _NoUploader())
 
     [row] = session.execute(select(CarrierTraffic)).scalars().all()
     assert row.carrier == "brightpost"
@@ -212,7 +283,7 @@ def test_a_carrier_error_raises_and_still_records_the_traffic(
         _client(lambda request: httpx.Response(200, json=error)) as http_client,
         pytest.raises(CarrierCallError, match="manifest window closed"),
     ):
-        send_manifest(session, manifest, http_client)
+        send_manifest(session, manifest, http_client, _NoUploader())
 
     assert manifest.status == "pending"
     assert manifest.sent_at is None
@@ -228,7 +299,7 @@ def test_an_already_sent_manifest_is_not_sent_again(session: Session) -> None:
         raise AssertionError("a sent manifest must never reach the carrier again")
 
     with _client(handler) as http_client:
-        send_manifest(session, manifest, http_client)
+        send_manifest(session, manifest, http_client, _NoUploader())
 
     assert manifest.status == "sent"
 
@@ -250,7 +321,7 @@ def test_a_definition_without_a_manifest_operation_fails_loudly(
         _client(lambda request: httpx.Response(200)) as http_client,
         pytest.raises(ValueError, match="manifest"),
     ):
-        send_manifest(session, manifest, http_client)
+        send_manifest(session, manifest, http_client, _NoUploader())
 
 
 def test_the_job_runner_marks_a_deterministic_error_failed_not_stuck_pending(
