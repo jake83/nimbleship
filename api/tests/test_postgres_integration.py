@@ -256,3 +256,109 @@ def test_booking_traffic_survives_losing_the_duplicate_order_race(
         assert [
             (t.carrier, t.order_number, t.step, t.response_status) for t in traffic
         ] == [("furdeco", ORDER, "save", 200)]
+
+
+# A carrier that manifests, for the dispatch-confirmation race test below.
+MANIFEST_DEFINITION = {
+    "carrier": "brightpost",
+    "name": "Bright Post",
+    "auth": {"scheme": "header_key", "header": "X-Api-Key", "secret": "config.api_key"},
+    "operations": {
+        "manifest": {
+            "steps": [
+                {
+                    "name": "declare",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.manifest_url",
+                        "content_type": "json",
+                        "mapping": [{"target": "date", "source": "manifest.date"}],
+                    },
+                }
+            ]
+        }
+    },
+}
+
+
+def test_concurrent_dispatch_confirmations_dispatch_a_consignment_once(
+    migrated_engine: Engine,
+) -> None:
+    """Two overlapping confirmations for the same order must not both
+    dispatch it and declare it on two manifests. The row lock in
+    confirm_dispatch (with_for_update) is a no-op on SQLite, so only a real
+    Postgres run under contention proves it: exactly one confirmation
+    dispatches, the other is rejected, and exactly one Manifest exists.
+    Uses the threading.Barrier pattern the publish-race test established."""
+    from fastapi import HTTPException
+
+    from nimbleship.models import (
+        CarrierConfig,
+        CarrierDefinitionVersion,
+        Consignment,
+        Manifest,
+        Parcel,
+    )
+    from nimbleship.routers.manifests import DispatchConfirmationIn, confirm_dispatch
+
+    factory = sessionmaker(bind=migrated_engine)
+    with factory() as setup:
+        setup.add(
+            CarrierDefinitionVersion(
+                carrier="brightpost",
+                version=1,
+                status="published",
+                author="pg-test",
+                data=MANIFEST_DEFINITION,
+            )
+        )
+        setup.add(
+            CarrierConfig(
+                carrier="brightpost",
+                data={"api_key": "K", "manifest_url": "https://api.brightpost/m"},
+            )
+        )
+        consignment = Consignment(
+            order_number="RACE-1",
+            recipient_name="John Doe",
+            address_lines=["10 Downing Street"],
+            postcode="SW1A 2AA",
+            destination_country="GB",
+            status="allocated",
+            carrier="brightpost",
+            service="BP-STD",
+            allocation={},
+        )
+        consignment.parcels = [Parcel(sequence=1, weight_kg="1", barcode="RACE-1-1")]
+        setup.add(consignment)
+        setup.commit()
+
+    barrier = threading.Barrier(2, timeout=15)
+    outcomes: list[str] = []
+    lock = threading.Lock()
+
+    def attempt(session: Session) -> None:
+        try:
+            barrier.wait()
+            confirm_dispatch(DispatchConfirmationIn(order_numbers=["RACE-1"]), session)
+            session.commit()
+            outcome = "dispatched"
+        except HTTPException:
+            session.rollback()
+            outcome = "rejected"
+        finally:
+            session.close()
+        with lock:
+            outcomes.append(outcome)
+
+    threads = [threading.Thread(target=attempt, args=(factory(),)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(outcomes) == ["dispatched", "rejected"]
+    with factory() as check:
+        manifests = check.execute(select(Manifest)).scalars().all()
+        assert len(manifests) == 1

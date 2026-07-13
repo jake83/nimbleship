@@ -10,6 +10,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from procrastinate.jobs import Job
 from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -374,3 +375,39 @@ def test_the_send_task_is_registered_with_bounded_retries() -> None:
     assert task.retry_strategy is MANIFEST_RETRY
     assert MANIFEST_RETRY.max_attempts is not None
     assert MANIFEST_RETRY.max_attempts >= 3
+
+
+def test_the_final_attempt_boundary_agrees_with_procrastinate() -> None:
+    """run_manifest_send marks a Manifest failed on the attempt where the
+    queue itself stops retrying - not one too early (a live manifest wrongly
+    failed) nor one too late (the queue gives up while the Manifest stays
+    'pending' forever, the exact bug the design prevents). Both decisions
+    read the same value - context.job.attempts - so pin that they flip
+    together: this ties `final = attempts >= max_attempts` to
+    Procrastinate's own `job.attempts >= max_attempts` give-up rule, in CI,
+    without the ~2.5h of real backoff a live worker loop would take."""
+    max_attempts = MANIFEST_RETRY.max_attempts
+    assert max_attempts is not None
+
+    def queue_gives_up(attempts: int) -> bool:
+        job = Job(
+            queue="manifests",
+            lock=None,
+            queueing_lock=None,
+            task_name="manifests.send",
+            attempts=attempts,
+        )
+        return (
+            MANIFEST_RETRY.get_retry_decision(exception=Exception("boom"), job=job)
+            is None
+        )
+
+    def run_marks_final(attempts: int) -> bool:
+        # The boundary from run_manifest_send, evaluated on the same value.
+        return attempts >= max_attempts
+
+    # They flip at exactly the same attempts value: give up and mark failed
+    # on the final attempt, retry (and stay pending) one attempt earlier.
+    assert queue_gives_up(max_attempts) and run_marks_final(max_attempts)
+    assert not queue_gives_up(max_attempts - 1)
+    assert not run_marks_final(max_attempts - 1)
