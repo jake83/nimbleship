@@ -27,7 +27,8 @@ _DROPOUT_DEFINITION: dict[str, object] = {
     },
 }
 
-_DEFINITIONS_LOCK_KEY = 815_004
+# Key registered in the advisory-lock list in nimbleship/db.py.
+_DEFINITIONS_LOCK_KEY = 815_005
 
 
 def _serialise_definition_writes(session: Session) -> None:

@@ -32,6 +32,9 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
             session.commit()
 
     application = create_app()
+    # Tests that assert on rows the API does not expose (e.g. recorded
+    # carrier traffic) open their own sessions from here.
+    application.state.session_factory = factory
     application.dependency_overrides[get_session] = session_override
     application.dependency_overrides[get_label_store] = lambda: LabelStore(
         tmp_path / "labels"

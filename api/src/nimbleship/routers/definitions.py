@@ -18,6 +18,7 @@ from nimbleship.domain.definitions import (
     publish,
     upsert_carrier_config,
 )
+from nimbleship.domain.facts import shipment_facts
 from nimbleship.engine.render import RenderedRequest, render_operation
 from nimbleship.models import Consignment
 
@@ -133,7 +134,7 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
     )
     for consignment in recent:
         facts: dict[str, object] = {
-            "shipment": _shipment_facts(consignment),
+            "shipment": shipment_facts(consignment),
             "config": config,
         }
         try:
@@ -162,20 +163,6 @@ def publish_version(carrier: str, version: int, session: SessionDep) -> VersionO
         status=row.status,
         author=row.author,
     )
-
-
-def _shipment_facts(consignment: Consignment) -> dict[str, object]:
-    return {
-        "order_number": consignment.order_number,
-        "recipient_name": consignment.recipient_name,
-        "address_lines": consignment.address_lines,
-        "postcode": consignment.postcode,
-        "destination_country": consignment.destination_country,
-        "parcels": [
-            {"weight_kg": parcel.weight_kg, "barcode": parcel.barcode}
-            for parcel in consignment.parcels
-        ],
-    }
 
 
 def _flatten(request: RenderedRequest) -> dict[str, str]:
@@ -250,7 +237,7 @@ def golden_replay(
     results: list[ReplayResultOut] = []
     for consignment in session.execute(query).scalars():
         facts: dict[str, object] = {
-            "shipment": _shipment_facts(consignment),
+            "shipment": shipment_facts(consignment),
             "config": config,
         }
         try:

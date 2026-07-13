@@ -6,7 +6,7 @@ Unresolvable step outputs (facts the carrier has not answered yet) render
 as stable placeholder tokens so multi-step operations still replay
 deterministically offline."""
 
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel
 
@@ -40,7 +40,7 @@ class RenderedRequest(BaseModel):
     query: dict[str, str]
     headers: dict[str, str] = {}
     content_type: str
-    body: dict[str, object]
+    body: dict[str, Rendered]
 
 
 def _resolve(path: str, facts: Facts) -> object:
@@ -57,7 +57,10 @@ def _resolve(path: str, facts: Facts) -> object:
     return node
 
 
-def _apply(transform: Transform, value: object) -> object:
+def apply_transform(transform: Transform, value: object) -> object:
+    """The closed transform vocabulary (ADR 0009). Shared with response
+    extraction: an Extraction's transform means exactly what a mapping's
+    does."""
     match transform.name:
         case "join":
             if not isinstance(value, list):
@@ -76,10 +79,15 @@ def _apply(transform: Transform, value: object) -> object:
             return transform.table[key]
 
 
-def _coerce(value: object) -> Rendered:
-    if isinstance(value, str | list | dict) or value is None:
-        return value
-    return str(value)
+def _render_mapping(entries: list[MappingEntry], facts: Facts) -> dict[str, Rendered]:
+    """One canonical nesting implementation lives in the schema module
+    (insert_at_target) so authoring-time target validation and rendering
+    can never drift apart."""
+    body: dict[str, object] = {}
+    for entry in entries:
+        insert_at_target(body, entry.target, _render_entry(entry, facts))
+    # insert_at_target only stores Rendered values and containers of them.
+    return cast("dict[str, Rendered]", body)
 
 
 def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
@@ -87,9 +95,12 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
         return entry.const
     if entry.plugin is not None:
         # Plugins compute from the facts alone - the render stays pure.
-        # Stateful inputs (allocated numbers, tokens) are injected as facts
-        # before render (see nimbleship.engine.field_plugins).
-        return _coerce(field_plugin(entry.plugin).compute(facts))
+        # Stateful inputs (allocated numbers) are injected as facts before
+        # render (see nimbleship.engine.field_plugins).
+        value = field_plugin(entry.plugin).compute(facts)
+        if isinstance(value, str | list | dict) or value is None:
+            return value
+        return str(value)
     assert entry.source is not None  # schema guarantees exactly one
     value = _resolve(entry.source, facts)
     # An unresolved step output stays a stable placeholder token - through
@@ -100,25 +111,20 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     if entry.each is not None:
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
-        items: list[object] = []
-        for item in value:
-            rendered: dict[str, object] = {}
-            for inner in entry.each:
-                insert_at_target(
-                    rendered,
-                    inner.target,
-                    _render_entry(inner, {**facts, "item": item}),
-                )
-            items.append(rendered)
-        return items
+        return [_render_mapping(entry.each, {**facts, "item": item}) for item in value]
     if entry.transform is not None:
-        value = _apply(entry.transform, value)
-    return _coerce(value)
+        value = apply_transform(entry.transform, value)
+    if isinstance(value, str | list | dict) or value is None:
+        return value
+    return str(value)
 
 
-def _render_step(
+def render_step(
     definition: CarrierDefinition, step: Step, facts: Facts
 ) -> RenderedRequest:
+    """Render one step. The executor renders step-by-step so each step sees
+    the extractions of the steps before it; render_operation renders them
+    all at once for offline replay."""
     url = _resolve(step.request.url, facts)
     query = dict(step.request.query)
     headers: dict[str, str] = {}
@@ -131,9 +137,7 @@ def _render_step(
             query[auth.param] = str(_resolve(auth.secret, facts))
         elif auth.scheme == "header_key":
             headers[auth.header] = str(_resolve(auth.secret, facts))
-    body: dict[str, object] = {}
-    for entry in step.request.mapping:
-        insert_at_target(body, entry.target, _render_entry(entry, facts))
+    body = _render_mapping(step.request.mapping, facts)
     return RenderedRequest(
         step=step.name,
         transport=step.transport,
@@ -152,6 +156,6 @@ def render_operation(
     if operation not in definition.operations:
         raise ValueError(f"definition has no operation '{operation}'")
     return [
-        _render_step(definition, step, facts)
+        render_step(definition, step, facts)
         for step in definition.operations[operation].steps
     ]

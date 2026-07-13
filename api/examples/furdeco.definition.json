@@ -1,0 +1,67 @@
+{
+  "carrier": "furdeco",
+  "name": "Furdeco",
+  "auth": {
+    "scheme": "query_key",
+    "param": "key",
+    "secret": "config.api_key"
+  },
+  "operations": {
+    "book": {
+      "steps": [
+        {
+          "name": "save",
+          "transport": "http",
+          "request": {
+            "method": "POST",
+            "url": "config.base_url",
+            "query": { "action": "save" },
+            "content_type": "form",
+            "mapping": [
+              { "target": "TradingName", "source": "config.trading_name" },
+              { "target": "OrderNumber", "source": "shipment.order_number" },
+              { "target": "OrderReference", "source": "shipment.order_number" },
+              { "target": "Recipient", "source": "shipment.recipient_name" },
+              {
+                "target": "Address",
+                "source": "shipment.address_lines",
+                "transform": { "name": "join", "with": ", " }
+              },
+              {
+                "target": "Postcode",
+                "source": "shipment.postcode",
+                "transform": { "name": "uppercase" }
+              },
+              { "target": "TimedService", "const": "All Day" },
+              { "target": "ServiceType", "const": "Standard" },
+              { "target": "ServiceLevel", "const": "2 Man" },
+              { "target": "DeliveryPoint", "const": "Hallway" },
+              { "target": "UnpackItems", "const": "No" },
+              { "target": "TakePackagingAway", "const": "No" },
+              { "target": "Assemble", "const": "No" },
+              { "target": "Disassemble", "const": "No" },
+              { "target": "CollectDisposal", "const": "No" }
+            ]
+          },
+          "response": {
+            "format": "xml",
+            "success_when": { "path": "/response/carrier_reference" },
+            "error_message": { "path": "/response/error" },
+            "extract": [
+              {
+                "name": "tracking_reference",
+                "path": "/response/carrier_reference"
+              },
+              {
+                "name": "barcodes",
+                "path": "/response/barcodes",
+                "transform": { "name": "split", "on": ", " }
+              }
+            ]
+          }
+        }
+      ],
+      "label": { "source": "local_render", "template": "standard_a6" }
+    }
+  }
+}

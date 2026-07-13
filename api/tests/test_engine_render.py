@@ -365,6 +365,10 @@ class _EchoOrderPlugin:
 
 
 def _single_entry_definition(entry: dict[str, object]) -> CarrierDefinition:
+    return _single_step_definition([entry])
+
+
+def _single_step_definition(mapping: list[dict[str, object]]) -> CarrierDefinition:
     return CarrierDefinition.model_validate(
         {
             "carrier": "x",
@@ -380,7 +384,7 @@ def _single_entry_definition(entry: dict[str, object]) -> CarrierDefinition:
                                 "method": "POST",
                                 "url": "config.base_url",
                                 "content_type": "json",
-                                "mapping": [entry],
+                                "mapping": mapping,
                             },
                         }
                     ],
@@ -529,6 +533,116 @@ def test_source_paths_index_into_extracted_lists() -> None:
     }
     _, after = render_operation(definition, "book", facts)
     assert after.body["trackingNumber"] == "UMB0000042"
+
+
+NESTING_FACTS: dict[str, object] = {
+    "shipment": {
+        "order_number": "95000254580",
+        "recipient_name": "John Doe",
+        "parcels": [{"weight_kg": "4.20"}, {"weight_kg": "3.10"}],
+    },
+    "config": {"base_url": "https://api.x.example", "account_number": "802255209"},
+}
+
+
+def test_dotted_targets_render_as_nested_objects() -> None:
+    definition = _single_step_definition(
+        [
+            {"target": "accountNumber.value", "source": "config.account_number"},
+            {"target": "requestedShipment.pickupType", "const": "USE_SCHEDULED_PICKUP"},
+            {
+                "target": "requestedShipment.labelSpecification.imageType",
+                "const": "PNG",
+            },
+        ]
+    )
+
+    [request] = render_operation(definition, "book", NESTING_FACTS)
+
+    assert request.body == {
+        "accountNumber": {"value": "802255209"},
+        "requestedShipment": {
+            "pickupType": "USE_SCHEDULED_PICKUP",
+            "labelSpecification": {"imageType": "PNG"},
+        },
+    }
+
+
+def test_numeric_target_segments_render_as_list_positions() -> None:
+    definition = _single_step_definition(
+        [
+            {
+                "target": "recipients.0.contact.personName",
+                "source": "shipment.recipient_name",
+            },
+            {"target": "recipients.0.address.streetLines.0", "const": "10 High St"},
+        ]
+    )
+
+    [request] = render_operation(definition, "book", NESTING_FACTS)
+
+    assert request.body == {
+        "recipients": [
+            {
+                "contact": {"personName": "John Doe"},
+                "address": {"streetLines": ["10 High St"]},
+            }
+        ]
+    }
+
+
+def test_dotted_targets_nest_inside_each_loops() -> None:
+    definition = _single_step_definition(
+        [
+            {
+                "target": "requestedPackageLineItems",
+                "source": "shipment.parcels",
+                "each": [
+                    {"target": "weight.units", "const": "KG"},
+                    {"target": "weight.value", "source": "item.weight_kg"},
+                ],
+            }
+        ]
+    )
+
+    [request] = render_operation(definition, "book", NESTING_FACTS)
+
+    assert request.body == {
+        "requestedPackageLineItems": [
+            {"weight": {"units": "KG", "value": "4.20"}},
+            {"weight": {"units": "KG", "value": "3.10"}},
+        ]
+    }
+
+
+def test_a_target_colliding_with_a_nested_value_fails_at_authoring() -> None:
+    """Target collisions die at draft time now (the schema dry-runs its
+    targets), which is strictly earlier than the render-time failure this
+    test originally pinned."""
+    import pytest
+
+    with pytest.raises(ValueError, match="accountNumber"):
+        _single_step_definition(
+            [
+                {
+                    "target": "accountNumber.value",
+                    "source": "config.account_number",
+                },
+                {"target": "accountNumber", "source": "shipment.order_number"},
+            ]
+        )
+
+
+def test_a_list_index_that_skips_a_position_fails_at_authoring() -> None:
+    """Skipped list positions die at draft time (the schema dry-runs its
+    targets) - strictly earlier than the render-time failure originally
+    pinned here."""
+    import pytest
+
+    with pytest.raises(ValueError, match=r"recipients\.1\.name"):
+        _single_step_definition(
+            [{"target": "recipients.1.name", "source": "shipment.recipient_name"}]
+        )
 
 
 def test_auth_is_not_injected_into_non_http_steps() -> None:
