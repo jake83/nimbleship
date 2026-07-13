@@ -345,12 +345,14 @@ def test_sftp_upload_translates_a_host_key_mismatch(
     fake_paramiko: _FakeParamiko,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A server presenting a key other than the pinned one makes paramiko raise
-    # BadHostKeyException (an SSHException); it must surface as UploadError.
+    # The low-level Transport.connect(hostkey=...) this code uses raises a plain
+    # SSHException("Bad host key from server") on a mismatch - not the high-level
+    # SSHClient's BadHostKeyException. Pin the real exception so a future narrow
+    # to `except BadHostKeyException` can't silently break fail-closed.
     def _mismatch(
         self: _FakeTransport, hostkey: paramiko.PKey, username: str, password: str
     ) -> None:
-        raise paramiko.BadHostKeyException("sftp.dachser.example", hostkey, hostkey)
+        raise paramiko.SSHException("Bad host key from server")
 
     monkeypatch.setattr(_FakeTransport, "connect", _mismatch)
     with pytest.raises(UploadError, match="failed"):
