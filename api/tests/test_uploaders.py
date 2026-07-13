@@ -23,6 +23,7 @@ from nimbleship.uploaders import (
     UploadError,
     _connection,
     _safe_target,
+    _sftp_host_key,
 )
 
 USERNAME = "nimbleship"
@@ -211,6 +212,10 @@ def test_connection_reads_prefixed_config_and_validates_the_port() -> None:
 # --- SFTP adapter (paramiko boundary) ---------------------------------------
 
 
+class _FakeSocket:
+    """The sentinel `socket.create_connection` hands to `paramiko.Transport`."""
+
+
 class _FakeSftp:
     def __init__(self) -> None:
         self.puts: list[tuple[bytes, str]] = []
@@ -222,54 +227,131 @@ class _FakeSftp:
 class _FakeTransport:
     instances: ClassVar[list["_FakeTransport"]] = []
 
-    def __init__(self, address: tuple[str, int]) -> None:
-        self.address = address
+    def __init__(self, sock: object) -> None:
+        self.sock = sock
         self.connected_as: tuple[str, str] | None = None
+        self.pinned_key: paramiko.PKey | None = None
         self.closed = False
         self.sftp = _FakeSftp()
         _FakeTransport.instances.append(self)
 
-    def connect(self, username: str, password: str) -> None:
+    def connect(self, hostkey: paramiko.PKey, username: str, password: str) -> None:
+        self.pinned_key = hostkey
         self.connected_as = (username, password)
 
     def close(self) -> None:
         self.closed = True
 
 
+# A real key generated once, serialised to the OpenSSH public-key line that a
+# carrier would put in `sftp_host_key`, so parsing is exercised for real.
+HOST_KEY = paramiko.ECDSAKey.generate()
+HOST_KEY_LINE = f"{HOST_KEY.get_name()} {HOST_KEY.get_base64()}"
+
 SFTP_CONFIG = {
     "sftp_host": "sftp.dachser.example",
     "sftp_port": 22,
     "sftp_username": "nimbleship",
     "sftp_password": "SECRET-PW",
+    "sftp_host_key": HOST_KEY_LINE,
 }
 
 
+class _FakeParamiko:
+    """The patched paramiko boundary plus the socket call that precedes it."""
+
+    def __init__(self) -> None:
+        self.transports: list[_FakeTransport] = []
+        self.connects: list[tuple[tuple[str, int], float | None]] = []
+
+    def create_connection(
+        self, address: tuple[str, int], timeout: float | None = None
+    ) -> _FakeSocket:
+        self.connects.append((address, timeout))
+        return _FakeSocket()
+
+
 @pytest.fixture
-def fake_paramiko(monkeypatch: pytest.MonkeyPatch) -> Iterator[type[_FakeTransport]]:
-    _FakeTransport.instances = []
+def fake_paramiko(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeParamiko]:
+    fake = _FakeParamiko()
+    _FakeTransport.instances = fake.transports
+    monkeypatch.setattr(
+        "nimbleship.uploaders.socket.create_connection", fake.create_connection
+    )
     monkeypatch.setattr("nimbleship.uploaders.paramiko.Transport", _FakeTransport)
     monkeypatch.setattr(
         "nimbleship.uploaders.paramiko.SFTPClient.from_transport",
         lambda transport: transport.sftp,
     )
-    yield _FakeTransport
+    yield fake
 
 
-def test_sftp_upload_connects_and_writes_the_file(
-    fake_paramiko: type[_FakeTransport],
-) -> None:
+def test_sftp_upload_connects_and_writes_the_file(fake_paramiko: _FakeParamiko) -> None:
     SftpFileUploader().upload(SFTP_CONFIG, "/inbox", "order.xml", "<x/>\r\n")
 
-    [transport] = fake_paramiko.instances
-    assert transport.address == ("sftp.dachser.example", 22)
+    # The socket is opened with the module's bounded connect timeout, and the
+    # transport is built from that socket rather than a bare (host, port).
+    assert fake_paramiko.connects == [(("sftp.dachser.example", 22), 30.0)]
+    [transport] = fake_paramiko.transports
+    assert isinstance(transport.sock, _FakeSocket)
     assert transport.connected_as == ("nimbleship", "SECRET-PW")
+    # The carrier's pinned host key is passed to connect() for verification.
+    assert transport.pinned_key == HOST_KEY
     assert transport.sftp.puts == [(b"<x/>\r\n", "/inbox/order.xml")]
     # The transport is always closed, even on the happy path.
     assert transport.closed is True
 
 
+def test_sftp_host_key_parses_an_openssh_public_key_line() -> None:
+    assert _sftp_host_key({"sftp_host_key": HOST_KEY_LINE}) == HOST_KEY
+
+
+def test_sftp_host_key_refuses_a_missing_or_malformed_pin() -> None:
+    with pytest.raises(UploadError, match="no sftp_host_key"):
+        _sftp_host_key({})
+    with pytest.raises(UploadError, match="no sftp_host_key"):
+        _sftp_host_key({"sftp_host_key": "   "})
+    with pytest.raises(UploadError, match="OpenSSH key line"):
+        _sftp_host_key({"sftp_host_key": "one-token-only"})
+    with pytest.raises(UploadError, match="could not be parsed"):
+        _sftp_host_key({"sftp_host_key": "ssh-rsa @@@not-base64@@@"})
+    with pytest.raises(UploadError, match="could not be parsed"):
+        _sftp_host_key({"sftp_host_key": "ssh-rsa AAAA"})
+
+
+def test_sftp_upload_refuses_without_a_pinned_host_key(
+    fake_paramiko: _FakeParamiko,
+) -> None:
+    config = {
+        key: value for key, value in SFTP_CONFIG.items() if key != "sftp_host_key"
+    }
+    with pytest.raises(UploadError, match="no sftp_host_key"):
+        SftpFileUploader().upload(config, "/inbox", "order.xml", "<x/>")
+    # Fail-closed: the pin is checked before any socket is opened.
+    assert fake_paramiko.connects == []
+    assert fake_paramiko.transports == []
+
+
+def test_sftp_upload_translates_a_host_key_mismatch(
+    fake_paramiko: _FakeParamiko,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A server presenting a key other than the pinned one makes paramiko raise
+    # BadHostKeyException (an SSHException); it must surface as UploadError.
+    def _mismatch(
+        self: _FakeTransport, hostkey: paramiko.PKey, username: str, password: str
+    ) -> None:
+        raise paramiko.BadHostKeyException("sftp.dachser.example", hostkey, hostkey)
+
+    monkeypatch.setattr(_FakeTransport, "connect", _mismatch)
+    with pytest.raises(UploadError, match="failed"):
+        SftpFileUploader().upload(SFTP_CONFIG, "/inbox", "order.xml", "<x/>")
+    # The transport is still closed after the rejected connection.
+    assert fake_paramiko.transports[-1].closed is True
+
+
 def test_sftp_upload_translates_a_paramiko_failure_to_upload_error(
-    fake_paramiko: type[_FakeTransport],
+    fake_paramiko: _FakeParamiko,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _boom(self: _FakeSftp, buffer: Any, target: str) -> None:
@@ -279,27 +361,28 @@ def test_sftp_upload_translates_a_paramiko_failure_to_upload_error(
     with pytest.raises(UploadError, match="permission denied"):
         SftpFileUploader().upload(SFTP_CONFIG, "/inbox", "order.xml", "<x/>")
     # The transport is still closed in the finally, even when the put fails.
-    assert fake_paramiko.instances[-1].closed is True
+    assert fake_paramiko.transports[-1].closed is True
 
 
 def test_sftp_upload_rejects_a_traversal_before_connecting(
-    fake_paramiko: type[_FakeTransport],
+    fake_paramiko: _FakeParamiko,
 ) -> None:
     with pytest.raises(UploadError, match="escapes"):
         SftpFileUploader().upload(SFTP_CONFIG, "inbox/../other", "x.xml", "<x/>")
-    # No connection was opened - the guard runs before paramiko.
-    assert fake_paramiko.instances == []
+    # No connection was opened - the guard runs before the socket.
+    assert fake_paramiko.connects == []
+    assert fake_paramiko.transports == []
 
 
 def test_sftp_upload_translates_a_socket_failure_on_connect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Transport((host, port)) opens the socket in its constructor; a refused
-    # connection or DNS failure there must surface as UploadError, not escape
-    # as a raw OSError that crashes the booking.
-    def _refuse(address: tuple[str, int]) -> _FakeTransport:
+    # The socket is opened with a bounded timeout before paramiko; a refused
+    # connection, DNS failure, or timeout there must surface as UploadError,
+    # not escape as a raw OSError that crashes the booking or hangs a worker.
+    def _refuse(address: tuple[str, int], timeout: float | None = None) -> _FakeSocket:
         raise OSError("connection refused")
 
-    monkeypatch.setattr("nimbleship.uploaders.paramiko.Transport", _refuse)
+    monkeypatch.setattr("nimbleship.uploaders.socket.create_connection", _refuse)
     with pytest.raises(UploadError, match="connection refused"):
         SftpFileUploader().upload(SFTP_CONFIG, "/inbox", "order.xml", "<x/>")

@@ -9,8 +9,11 @@ Connection details (host, port, credentials) come from the carrier's config
 at execution, never from the rendered request, so the Golden Replay corpus
 stays secret-free."""
 
+import base64
+import binascii
 import ftplib
 import io
+import socket
 from typing import Protocol
 
 import paramiko
@@ -89,6 +92,26 @@ def _safe_target(remote_path: str, filename: str) -> str:
     return f"{remote_path.rstrip('/')}/{filename}"
 
 
+def _sftp_host_key(config: dict[str, object]) -> paramiko.PKey:
+    """Parse the carrier's pinned SFTP host key from `sftp_host_key` (one
+    OpenSSH public-key line, `<type> <base64>`). SFTP is pinned fail-closed:
+    without a valid pinned key there is nothing to authenticate the server
+    against, so a missing or malformed value is refused rather than connecting
+    unverified - an unverified connection would hand the credentials and the
+    EDI to whatever host answers."""
+    raw = config.get("sftp_host_key")
+    if not isinstance(raw, str) or not raw.strip():
+        raise UploadError("carrier config has no sftp_host_key to pin")
+    parts = raw.split()
+    if len(parts) < 2:
+        raise UploadError(f"sftp_host_key is not an OpenSSH key line: {raw!r}")
+    key_type, blob = parts[0], parts[1]
+    try:
+        return paramiko.PKey.from_type_string(key_type, base64.b64decode(blob))
+    except (ValueError, binascii.Error, paramiko.SSHException) as error:
+        raise UploadError(f"sftp_host_key could not be parsed: {error}") from error
+
+
 class FtpFileUploader:
     """Plain FTP over the standard library. Passive mode, binary transfer of
     the already-rendered bytes (the renderer emits the carrier's CRLF line
@@ -120,7 +143,9 @@ class FtpFileUploader:
 
 class SftpFileUploader:
     """SFTP over paramiko: password auth, binary write of the rendered bytes.
-    Credentials come from the carrier's `sftp_*` config."""
+    Credentials come from the carrier's `sftp_*` config, and the server is
+    pinned against the carrier's `sftp_host_key` - a mismatched or absent key
+    refuses the upload rather than trusting whatever host answers."""
 
     def upload(
         self,
@@ -131,13 +156,24 @@ class SftpFileUploader:
     ) -> None:
         host, port, username, password = _connection(config, "sftp", 22)
         target = _safe_target(remote_path, filename)
-        # Transport((host, port)) opens the socket in its constructor, so it
-        # must sit inside the try: a refused connection or DNS failure has to
-        # translate to UploadError, not escape as a raw OSError.
+        # Parse the pinned host key before touching the network: no valid pin
+        # means there is nothing to verify the server against, so refuse.
+        host_key = _sftp_host_key(config)
+        # Open the socket with an explicit connect timeout and hand it to the
+        # transport: given a bare (host, port), paramiko connects with no
+        # timeout, so a carrier host that black-holes packets would hang the
+        # worker for the OS TCP window instead of failing into retry. The
+        # socket also sits inside the try so a refused connection or DNS
+        # failure translates to UploadError, not a raw OSError.
         transport: paramiko.Transport | None = None
         try:
-            transport = paramiko.Transport((host, port))
-            transport.connect(username=username, password=password)
+            sock = socket.create_connection(
+                (host, port), timeout=CONNECT_TIMEOUT_SECONDS
+            )
+            transport = paramiko.Transport(sock)
+            # A server presenting a different key raises BadHostKeyException
+            # (an SSHException), caught below and surfaced as UploadError.
+            transport.connect(hostkey=host_key, username=username, password=password)
             sftp = paramiko.SFTPClient.from_transport(transport)
             if sftp is None:
                 raise UploadError(f"SFTP to {host} could not open a session")

@@ -93,6 +93,22 @@ declaration of what physically left, at scan-out; only its emission shape
 (N documents vs one) is per-carrier, as CONTEXT.md's Manifest entry already
 allows.
 
+### 4. SFTP host-key pinning, fail-closed
+
+SFTP authenticates the client to the server (password) and the server to the
+client (host key). Skipping the second half leaves the credentials and the
+EDI exposed to anyone who can answer on the carrier's host:port - the exact
+MITM that host keys exist to stop, and a regression the FTP transport never
+had anything to lose to. So the server is pinned: the carrier's expected host
+key lives in Carrier Config as `sftp_host_key` (one OpenSSH public-key line),
+is passed to the connection, and a server presenting a different key is
+refused. Pinning is **fail-closed**: a missing or unparseable pin refuses the
+upload rather than connecting unverified, because an unverified connection is
+the very failure being prevented. The alternative, trust-on-first-use, is
+rejected - it trusts whatever answers the first time, which on a fresh install
+is precisely when an attacker would substitute a host. The cost is that
+onboarding a carrier must obtain its host key; that is the right cost.
+
 ## Consequences
 
 - The upload vocabulary now spans two file formats behind one closed set of
@@ -120,9 +136,15 @@ allows.
 Each chunk is a bounded PR; 1-4 are reusable engine capabilities, 5
 assembles Dachser:
 
-1. `sftp_upload` transport backend (paramiko) + a transport->uploader
-   registry (closes the ADR-0009 follow-up: unbacked transports refused at
-   authoring).
+1. `sftp_upload` transport backend (paramiko, fail-closed host-key pinning
+   per decision 4) + a transport->uploader registry: the executor selects a
+   backend by transport name, and a completeness test pins every
+   schema-admitted upload transport to a backend - so an unbacked upload
+   transport cannot enter the closed vocabulary at all, and any transport
+   reaching the executor without one is refused there. (This is the ADR-0009
+   follow-up; the closure is at build/execution time, not a publish-gate
+   check - the closed, fully backed vocabulary leaves a publish gate nothing
+   to catch.)
 2. XML upload rendering: `content_type: "xml"`, `root_element`, the
    `@`-attribute convention, repeated elements via `each`.
 3. SSCC: the `halt` allocator policy, prefix-keyed sequences, the GS1
