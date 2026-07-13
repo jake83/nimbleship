@@ -6,12 +6,12 @@ become facts under `steps.<name>.*` for later steps. Every attempted step
 yields a StepRecord - success or failure - because the records are the
 golden corpus ADR 0009 replays against.
 
-Only the http transport executes today; the others raise
-NotImplementedError naming the transport."""
+The http transport and the file-upload transports (ftp, sftp) execute; a
+transport with no registered uploader raises NotImplementedError by name."""
 
 import json
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Literal
 
 import httpx
@@ -31,7 +31,7 @@ from nimbleship.engine.render import (
     apply_transform,
     render_step,
 )
-from nimbleship.ftp_client import FileUploader, UploadError
+from nimbleship.uploaders import FileUploader, UploadError
 
 # Recorded response bodies are capped so one label-laden response cannot
 # bloat the traffic table; parsing always sees the full body.
@@ -201,13 +201,13 @@ class _Execution:
         facts: Facts,
         client: httpx.Client,
         record: Recorder | None,
-        uploader: FileUploader | None,
+        uploaders: Mapping[str, FileUploader] | None,
     ) -> None:
         self._definition = definition
         self._facts = facts
         self._client = client
         self._record = record
-        self._uploader = uploader
+        self._uploaders = dict(uploaders or {})
         self.records: list[StepRecord] = []
         self.step_outputs: dict[str, object] = {}
         self.outputs: dict[str, object] = {}
@@ -249,19 +249,17 @@ class _Execution:
         self._run_http(step, rendered)
 
     def _run_upload(self, step: Step, rendered: RenderedUpload) -> None:
-        if step.transport != "ftp_upload":
+        uploader = self._uploaders.get(step.transport)
+        if uploader is None:
+            # The transport has no registered backend: fail loudly rather
+            # than reach a carrier over a protocol the engine cannot speak.
             raise NotImplementedError(
-                f"transport '{step.transport}' cannot execute yet; "
-                "only http and ftp_upload steps run today"
-            )
-        if self._uploader is None:
-            raise RuntimeError(
-                f"step '{step.name}' is an upload but no uploader was provided"
+                f"transport '{step.transport}' has no registered uploader"
             )
         config = self._facts.get("config", {})
         assert isinstance(config, dict)
         try:
-            self._uploader.upload(
+            uploader.upload(
                 config, rendered.remote_path, rendered.filename, rendered.content
             )
         except UploadError as error:
@@ -281,7 +279,7 @@ class _Execution:
             # sent. Only http and the upload transports execute.
             raise NotImplementedError(
                 f"transport '{step.transport}' cannot execute yet; "
-                "only http and ftp_upload steps run today"
+                "only http requests and the upload transports run"
             )
         rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
         try:
@@ -342,11 +340,11 @@ def execute_operation(
     facts: Facts,
     client: httpx.Client,
     record: Recorder | None = None,
-    uploader: FileUploader | None = None,
+    uploaders: Mapping[str, FileUploader] | None = None,
 ) -> ExecutionResult:
     if operation not in definition.operations:
         raise ValueError(f"definition has no operation '{operation}'")
-    execution = _Execution(definition, facts, client, record, uploader)
+    execution = _Execution(definition, facts, client, record, uploaders)
     for step in definition.operations[operation].steps:
         execution.run_step(step)
     return ExecutionResult(outputs=execution.outputs, records=execution.records)

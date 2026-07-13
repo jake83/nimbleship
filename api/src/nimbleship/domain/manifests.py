@@ -3,6 +3,7 @@ consignments that have physically left the warehouse. Creation happens in
 the dispatch-confirmation transaction; sending happens later, on a queue
 worker, through the same integration engine as booking."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import httpx
@@ -12,7 +13,6 @@ from sqlalchemy.orm import Session
 from nimbleship.domain.definitions import active_definition, carrier_config
 from nimbleship.domain.facts import manifest_facts, warehouse_facts
 from nimbleship.engine.execute import StepRecord, execute_operation
-from nimbleship.ftp_client import FileUploader
 from nimbleship.models import (
     CarrierTraffic,
     Consignment,
@@ -21,6 +21,7 @@ from nimbleship.models import (
     OrderEvent,
     Warehouse,
 )
+from nimbleship.uploaders import FileUploader
 
 
 def create_manifests(
@@ -111,7 +112,7 @@ def send_manifest(
     session: Session,
     manifest: Manifest,
     http_client: httpx.Client,
-    uploader: FileUploader,
+    uploaders: Mapping[str, FileUploader],
 ) -> None:
     """Execute the carrier's manifest operation for this Manifest, recording
     the traffic (the golden corpus grows from manifests too). Success marks
@@ -153,7 +154,7 @@ def send_manifest(
         )
 
     result = execute_operation(
-        definition, "manifest", facts, http_client, record, uploader
+        definition, "manifest", facts, http_client, record, uploaders
     )
 
     manifest.status = "sent"

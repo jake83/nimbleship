@@ -11,6 +11,7 @@ dependencies = [
     "alembic>=1.18.5",
     "fastapi>=0.139.0",
     "httpx>=0.28.1",
+    "paramiko>=5.0.0",
     "procrastinate>=3.9.0",
     "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.14.2",
@@ -30,6 +31,7 @@ dev = [
     "pypdf>=6.14.2",
     "pytest>=9.1.1",
     "ruff>=0.15.21",
+    "types-paramiko>=5.0.0.20260617",
 ]
 
 [tool.ruff]

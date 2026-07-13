@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
@@ -29,17 +30,17 @@ from nimbleship.engine.execute import (
     StepRecord,
     execute_operation,
 )
-from nimbleship.ftp_client import FileUploader, get_file_uploader
 from nimbleship.http_client import get_http_client
 from nimbleship.labels.store import LabelStore, get_label_store
 from nimbleship.models import CarrierTraffic, Consignment, OrderEvent, Parcel, Warehouse
+from nimbleship.uploaders import FileUploader, get_carrier_uploaders
 
 router = APIRouter(prefix="/consignments", tags=["consignments"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
 LabelStoreDep = Annotated[LabelStore, Depends(get_label_store)]
 HttpClientDep = Annotated[httpx.Client, Depends(get_http_client)]
-UploaderDep = Annotated[FileUploader, Depends(get_file_uploader)]
+UploaderDep = Annotated[Mapping[str, FileUploader], Depends(get_carrier_uploaders)]
 
 
 class ParcelIn(BaseModel):
@@ -140,7 +141,7 @@ def _book_with_carrier(
     consignment: Consignment,
     warehouse: Warehouse | None,
     http_client: httpx.Client,
-    uploader: FileUploader,
+    uploaders: Mapping[str, FileUploader],
 ) -> None:
     """Execute the book operation's http steps, recording every step as
     carrier traffic (ADR 0009's golden corpus grows from real calls). On
@@ -184,7 +185,7 @@ def _book_with_carrier(
 
     try:
         result = execute_operation(
-            definition, "book", facts, http_client, record, uploader
+            definition, "book", facts, http_client, record, uploaders
         )
     except CarrierCallError as error:
         consignment.status = "booking_failed"
@@ -240,7 +241,7 @@ def create_consignment(
     session: SessionDep,
     store: LabelStoreDep,
     http_client: HttpClientDep,
-    uploader: UploaderDep,
+    uploaders: UploaderDep,
 ) -> ConsignmentOut:
     if _order_exists(session, payload.order_number):
         raise HTTPException(409, "a consignment already exists for this order")
@@ -372,7 +373,7 @@ def create_consignment(
             )
         if book.steps:
             _book_with_carrier(
-                session, definition, consignment, warehouse, http_client, uploader
+                session, definition, consignment, warehouse, http_client, uploaders
             )
         pdf = render_labels(
             LabelRequest(

@@ -172,12 +172,14 @@ Carried forward (ftp_upload + Fagans, PR #36):
   renderer would corrupt real deliveries - the mitigation must be
   per-carrier/opt-in (a definition flag for a human-opened CSV carrier) or
   input-level, decided when the first such carrier lands.
-- Unexecutable upload transports rejected at authoring: `sftp_upload`
-  renders (the shape is shared) but has no execution backend, so a
-  definition using it publishes and then fails at trailer-close. Select the
-  backend from a transport->uploader registry (matching the auth/field
-  plugin pattern) so an unbacked transport is refused at authoring; the
-  backend itself arrives with Dachser.
+- Unexecutable upload transports (resolved, PR #39): `sftp_upload` now has a
+  paramiko backend, and the executor selects backends from a
+  transport->uploader registry (matching the auth/field plugin pattern). A
+  completeness test pins every schema-admitted upload transport to a
+  backend, so an unbacked upload transport cannot enter the closed
+  vocabulary in the first place - the "publishes then fails at trailer-close"
+  gap is closed at build time. No publish-gate check was added: the closed,
+  fully backed vocabulary leaves it nothing to catch.
 - Carrier-config completeness at save/publish: config is saved as an
   unvalidated dict, so missing FTP credentials (or any carrier's required
   config) only surface at first booking. Validate config against the

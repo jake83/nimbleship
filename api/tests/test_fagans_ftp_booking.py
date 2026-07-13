@@ -12,8 +12,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from nimbleship.ftp_client import UploadError, get_file_uploader
 from nimbleship.models import CarrierTraffic, Consignment
+from nimbleship.uploaders import UploadError, get_carrier_uploaders
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "fagans.definition.json"
 
@@ -90,7 +90,7 @@ def _publish_fagans(client: TestClient) -> None:
 @pytest.fixture
 def uploader(app: FastAPI) -> _FakeUploader:
     fake = _FakeUploader()
-    app.dependency_overrides[get_file_uploader] = lambda: fake
+    app.dependency_overrides[get_carrier_uploaders] = lambda: {"ftp_upload": fake}
     return fake
 
 
