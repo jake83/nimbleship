@@ -6,7 +6,7 @@ Unresolvable step outputs (facts the carrier has not answered yet) render
 as stable placeholder tokens so multi-step operations still replay
 deterministically offline."""
 
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel
 
@@ -72,6 +72,56 @@ def _apply(transform: Transform, value: object) -> object:
             return transform.table[key]
 
 
+# A dotted target nests: `accountNumber.value` builds an object member,
+# a numeric segment (`recipients.0.city`) a list position. List positions
+# must arrive in order - an index past the next free slot is a definition
+# mistake and fails loudly rather than padding silently.
+
+
+def _place(
+    node: dict[str, object] | list[object], parts: list[str], value: object, target: str
+) -> None:
+    head, rest = parts[0], parts[1:]
+    if isinstance(node, list):
+        if not head.isdigit():
+            raise ValueError(f"mapping '{target}': '{head}' indexes into a list")
+        index = int(head)
+        if index > len(node):
+            raise ValueError(f"mapping '{target}': index {index} skips a position")
+        if not rest:
+            if index < len(node):
+                raise ValueError(f"mapping '{target}': already mapped")
+            node.append(value)
+            return
+        if index == len(node):
+            node.append([] if rest[0].isdigit() else {})
+        child = node[index]
+        if not isinstance(child, dict | list):
+            raise ValueError(f"mapping '{target}': collides with an earlier mapping")
+        _place(child, rest, value, target)
+        return
+    if not rest:
+        if head in node:
+            raise ValueError(f"mapping '{target}': already mapped")
+        node[head] = value
+        return
+    if head not in node:
+        node[head] = [] if rest[0].isdigit() else {}
+    child = node[head]
+    if not isinstance(child, dict | list):
+        raise ValueError(f"mapping '{target}': collides with an earlier mapping")
+    _place(child, rest, value, target)
+
+
+def _render_mapping(entries: list[MappingEntry], facts: Facts) -> dict[str, Rendered]:
+    body: dict[str, object] = {}
+    for entry in entries:
+        _place(body, entry.target.split("."), _render_entry(entry, facts), entry.target)
+    # _place only ever stores Rendered values and containers of them; the
+    # cast spares every nesting level an invariant-dict re-shuffle.
+    return cast("dict[str, Rendered]", body)
+
+
 def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     if entry.const is not None:
         return entry.const
@@ -85,13 +135,7 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     if entry.each is not None:
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
-        return [
-            {
-                inner.target: _render_entry(inner, {**facts, "item": item})
-                for inner in entry.each
-            }
-            for item in value
-        ]
+        return [_render_mapping(entry.each, {**facts, "item": item}) for item in value]
     if entry.transform is not None:
         value = _apply(entry.transform, value)
     if isinstance(value, str | list | dict) or value is None:
@@ -114,7 +158,7 @@ def _render_step(
             query[auth.param] = str(_resolve(auth.secret, facts))
         elif auth.scheme == "header_key":
             headers[auth.header] = str(_resolve(auth.secret, facts))
-    body = {entry.target: _render_entry(entry, facts) for entry in step.request.mapping}
+    body = _render_mapping(step.request.mapping, facts)
     return RenderedRequest(
         step=step.name,
         transport=step.transport,
