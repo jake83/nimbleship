@@ -16,9 +16,9 @@ from nimbleship.config import get_settings
 from nimbleship.db import open_session
 from nimbleship.domain.manifests import manifest_consignments, send_manifest
 from nimbleship.engine.execute import CarrierCallError
-from nimbleship.ftp_client import carrier_file_uploader
 from nimbleship.http_client import carrier_http_client
 from nimbleship.models import Manifest, OrderEvent
+from nimbleship.uploaders import carrier_uploaders
 
 # Retries back off exponentially (6^n seconds: 6s, 36s, ~4m, ~22m, ~2h10m),
 # long enough to ride out a carrier outage on the evening the trailer
@@ -75,7 +75,7 @@ def run_manifest_send(manifest_id: int, attempts: int) -> None:
         manifest.attempts = attempts + 1
         try:
             with carrier_http_client() as http_client:
-                send_manifest(session, manifest, http_client, carrier_file_uploader())
+                send_manifest(session, manifest, http_client, carrier_uploaders())
         # Carrier failures (CarrierCallError) and deterministic manifest
         # errors (a ValueError: a render fact missing, or the manifest
         # operation gone from the definition between enqueue and run) are

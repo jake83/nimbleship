@@ -319,48 +319,75 @@ def test_success_when_equals_mismatch_uses_the_declared_error_path() -> None:
         execute_operation(JSON_DEFINITION, "book", facts, client)
 
 
-def test_an_upload_transport_without_a_backend_is_named_not_implemented() -> None:
-    # sftp_upload renders like ftp_upload (a RenderedUpload) but has no
-    # execution backend yet, so running it fails loudly and by name.
-    definition = CarrierDefinition.model_validate(
-        {
-            "carrier": "dachser",
-            "name": "Dachser",
-            "auth": {"scheme": "none"},
-            "operations": {
-                "book": {
-                    "steps": [
-                        {
-                            "name": "upload",
-                            "transport": "sftp_upload",
-                            "request": {
-                                "url": "config.sftp_path",
-                                "filename": "{shipment.order_number}.csv",
-                                "content_type": "csv",
-                                "mapping": [
-                                    {
-                                        "target": "order",
-                                        "source": "shipment.order_number",
-                                    }
-                                ],
-                            },
-                        }
-                    ],
-                    "label": {"source": "local_render"},
-                }
-            },
-        }
-    )
-    facts: dict[str, object] = {
-        "shipment": {"order_number": "95000254580"},
-        "config": {"sftp_path": "/outbound"},
+SFTP_DEFINITION = CarrierDefinition.model_validate(
+    {
+        "carrier": "dachser",
+        "name": "Dachser",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "upload",
+                        "transport": "sftp_upload",
+                        "request": {
+                            "url": "config.sftp_remote_dir",
+                            "filename": "{shipment.order_number}.xml",
+                            "content_type": "csv",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
     }
+)
 
+SFTP_FACTS: dict[str, object] = {
+    "shipment": {"order_number": "95000254580"},
+    "config": {"sftp_remote_dir": "/inbox"},
+}
+
+
+def test_sftp_upload_routes_to_its_backend_via_the_registry() -> None:
+    uploader = _FakeUploader()
+    records: list[StepRecord] = []
+
+    with _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client:
+        execute_operation(
+            SFTP_DEFINITION,
+            "book",
+            SFTP_FACTS,
+            client,
+            records.append,
+            {"sftp_upload": uploader},
+        )
+
+    [(_config, remote_path, filename, _content)] = uploader.calls
+    assert (remote_path, filename) == ("/inbox", "95000254580.xml")
+    [record] = records
+    assert record.success is True and record.response_status is None
+
+
+def test_an_upload_transport_absent_from_the_registry_is_not_implemented() -> None:
+    # A transport with no registered backend must fail loudly by name, never
+    # reach a carrier over a protocol the engine cannot speak.
     with (
-        _client(httpx.MockTransport(lambda request: httpx.Response(200))) as client,
+        _client(httpx.MockTransport(lambda r: httpx.Response(200))) as client,
         pytest.raises(NotImplementedError, match="sftp_upload"),
     ):
-        execute_operation(definition, "book", facts, client, uploader=_FakeUploader())
+        execute_operation(SFTP_DEFINITION, "book", SFTP_FACTS, client, uploaders={})
+
+
+def test_the_registry_backs_every_upload_transport() -> None:
+    # No publishable upload transport may reach execution without a backend.
+    from nimbleship.domain.carrier_definition import UPLOAD_TRANSPORTS
+    from nimbleship.uploaders import carrier_uploaders
+
+    assert set(UPLOAD_TRANSPORTS) <= set(carrier_uploaders())
 
 
 def test_a_local_render_step_transport_is_never_sent_to_the_wire() -> None:
@@ -661,7 +688,7 @@ class _FakeUploader:
         filename: str,
         content: str,
     ) -> None:
-        from nimbleship.ftp_client import UploadError
+        from nimbleship.uploaders import UploadError
 
         self.calls.append((config, remote_path, filename, content))
         if self.fail_with is not None:
@@ -674,7 +701,12 @@ def test_ftp_upload_step_uploads_the_rendered_file_and_records_traffic() -> None
 
     with _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client:
         result = execute_operation(
-            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+            FTP_DEFINITION,
+            "book",
+            FTP_FACTS,
+            client,
+            records.append,
+            {"ftp_upload": uploader},
         )
 
     [(config, remote_path, filename, content)] = uploader.calls
@@ -698,7 +730,12 @@ def test_ftp_upload_records_the_file_but_never_the_credentials() -> None:
 
     with _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client:
         execute_operation(
-            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+            FTP_DEFINITION,
+            "book",
+            FTP_FACTS,
+            client,
+            records.append,
+            {"ftp_upload": uploader},
         )
 
     # The golden corpus records the rendered file, not the connection secret.
@@ -717,7 +754,12 @@ def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None
         pytest.raises(CarrierCallError, match="530 Login incorrect"),
     ):
         execute_operation(
-            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+            FTP_DEFINITION,
+            "book",
+            FTP_FACTS,
+            client,
+            records.append,
+            {"ftp_upload": uploader},
         )
 
     [record] = records
