@@ -53,6 +53,11 @@ class ActiveOut(BaseModel):
 class ReplayIn(BaseModel):
     order_numbers: list[str] | None = Field(default=None, max_length=500)
     limit: int = Field(default=REPLAY_DEFAULT_LIMIT, ge=1, le=500)
+    # When true, replay only consignments dispatched with this
+    # definition's carrier. The default replays every recent consignment:
+    # any historical shipment is a valid render input, whichever carrier
+    # happened to dispatch it.
+    only_this_carrier: bool = False
 
 
 class Difference(BaseModel):
@@ -116,10 +121,11 @@ def create_draft_version(
 
 def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) -> None:
     """ADR 0009's publish gate: renders must succeed (diffs are the
-    author's business; render errors are not) against recent consignments.
-    Zero history passes trivially - there is nothing to render."""
-    book = definition.operations.get("book")
-    if book is None:
+    author's business; render errors are not) against recent consignments,
+    for every declared operation - a broken track or cancel mapping must
+    not publish behind a healthy book. Zero history passes trivially -
+    there is nothing to render."""
+    if not definition.operations:
         return
     config = carrier_config(session, carrier)
     recent = (
@@ -137,14 +143,15 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
             "shipment": shipment_facts(consignment),
             "config": config,
         }
-        try:
-            render_operation(definition, "book", facts)
-        except ValueError as error:
-            raise HTTPException(
-                409,
-                f"publish refused: rendering against order "
-                f"{consignment.order_number} failed: {error}",
-            ) from error
+        for operation in definition.operations:
+            try:
+                render_operation(definition, operation, facts)
+            except ValueError as error:
+                raise HTTPException(
+                    409,
+                    f"publish refused: rendering operation '{operation}' "
+                    f"against order {consignment.order_number} failed: {error}",
+                ) from error
 
 
 @router.post("/definitions/versions/{version}/publish")
@@ -229,6 +236,8 @@ def golden_replay(
         .options(selectinload(Consignment.parcels))
         .order_by(Consignment.id.desc())
     )
+    if payload.only_this_carrier:
+        query = query.where(Consignment.carrier == carrier)
     if payload.order_numbers is not None:
         query = query.where(Consignment.order_number.in_(payload.order_numbers))
     else:

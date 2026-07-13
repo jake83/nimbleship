@@ -2,7 +2,10 @@
 draft/test/publish pattern (ADR 0003 via ADR 0009), with Golden Replay as
 the test step - draft renders diffed against the active definition's."""
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from nimbleship.models import Consignment
 
 TEST_CARRIER_DEFINITION = {
     "carrier": "testcarrier",
@@ -289,3 +292,114 @@ def test_publish_refuses_a_draft_whose_renders_error(client: TestClient) -> None
     assert response.status_code == 409
     assert "render" in response.text.lower()
     assert "missing_key" in response.text
+
+
+def test_publish_refuses_a_draft_whose_other_operations_cannot_render(
+    client: TestClient,
+) -> None:
+    """The gate covers every declared operation, not just book: a broken
+    track mapping must not publish behind a healthy book operation."""
+    _publish_v1_with_config(client)
+    client.post("/api/consignments", json=CONSIGNMENT)
+
+    broken_track = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "track": {
+                "steps": [
+                    {
+                        "name": "status",
+                        "transport": "http",
+                        "request": {
+                            "method": "GET",
+                            # tracking_url is absent from the carrier config
+                            "url": "config.tracking_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {
+                                    "target": "order",
+                                    "source": "shipment.order_number",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": broken_track},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "'track'" in response.text
+    assert "tracking_url" in response.text
+
+
+def _add_history(app: FastAPI, order_number: str, carrier: str) -> None:
+    with app.state.session_factory() as session:
+        session.add(
+            Consignment(
+                order_number=order_number,
+                recipient_name="Jane Doe",
+                address_lines=["1 High Street"],
+                postcode="AB1 2CD",
+                destination_country="GB",
+                status="allocated",
+                carrier=carrier,
+                service="STD",
+                allocation={},
+            )
+        )
+        session.commit()
+
+
+def test_golden_replay_covers_all_carriers_history_by_default(
+    app: FastAPI, client: TestClient
+) -> None:
+    """Any historical shipment is a valid render input, whichever carrier
+    dispatched it - the default corpus is every recent consignment."""
+    _publish_v1_with_config(client)
+    _add_history(app, "OURS-00001", "testcarrier")
+    _add_history(app, "THEIRS-00001", "othercarrier")
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    replay = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/replay",
+        json={},
+    ).json()
+
+    assert replay["total"] == 2
+    assert {r["order_number"] for r in replay["results"]} == {
+        "OURS-00001",
+        "THEIRS-00001",
+    }
+
+
+def test_golden_replay_filters_to_the_definitions_carrier_when_asked(
+    app: FastAPI, client: TestClient
+) -> None:
+    _publish_v1_with_config(client)
+    _add_history(app, "OURS-00001", "testcarrier")
+    _add_history(app, "THEIRS-00001", "othercarrier")
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    replay = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/replay",
+        json={"only_this_carrier": True},
+    ).json()
+
+    assert replay["total"] == 1
+    assert [r["order_number"] for r in replay["results"]] == ["OURS-00001"]
