@@ -2,7 +2,10 @@
 requests. Pure by design - Golden Replay diffs renders without touching a
 carrier (ADR 0009)."""
 
+import pytest
+
 from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.engine.field_plugins import FIELD_PLUGINS
 from nimbleship.engine.render import render_operation
 
 DEFINITION = CarrierDefinition.model_validate(
@@ -125,8 +128,6 @@ def test_auth_query_key_lands_in_query_not_body() -> None:
 
 
 def test_missing_fact_fails_loudly_with_the_path_named() -> None:
-    import pytest
-
     facts = {**FACTS, "shipment": {"order_number": "X"}}
 
     with pytest.raises(ValueError, match=r"shipment\.postcode"):
@@ -353,6 +354,20 @@ def test_a_real_value_shaped_like_a_placeholder_is_still_transformed() -> None:
     assert request.body["ref"] == "<STEPS.ONLY.REF>"
 
 
+class _EchoOrderPlugin:
+    """Computes a value from the facts it is handed - proof the renderer
+    passes the whole facts dict through."""
+
+    def compute(self, facts: dict[str, object]) -> object:
+        shipment = facts["shipment"]
+        assert isinstance(shipment, dict)
+        return f"computed:{shipment['order_number']}"
+
+
+def _single_entry_definition(entry: dict[str, object]) -> CarrierDefinition:
+    return _single_step_definition([entry])
+
+
 def _single_step_definition(mapping: list[dict[str, object]]) -> CarrierDefinition:
     return CarrierDefinition.model_validate(
         {
@@ -377,6 +392,147 @@ def _single_step_definition(mapping: list[dict[str, object]]) -> CarrierDefiniti
             },
         }
     )
+
+
+def test_plugin_entries_render_by_calling_the_registered_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(FIELD_PLUGINS, "test_echo_order", _EchoOrderPlugin())
+    definition = _single_entry_definition(
+        {"target": "reference", "plugin": "test_echo_order"}
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    [request] = render_operation(definition, "book", facts)
+
+    assert request.body["reference"] == "computed:95000254580"
+
+
+def _entries_definition(*entries: dict[str, object]) -> CarrierDefinition:
+    return CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "only",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": list(entries),
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+
+def test_dotted_targets_render_nested_objects_and_lists() -> None:
+    definition = _entries_definition(
+        {"target": "deliveryAddress.name", "source": "shipment.recipient_name"},
+        {"target": "deliveryAddress.postcode", "source": "shipment.postcode"},
+        {"target": "consignments.0.weight", "source": "shipment.weight_kg"},
+        {"target": "consignments.0.pallets.0.palletType", "const": "H"},
+        {"target": "consignments.0.pallets.0.numberofPallets", "const": "1"},
+    )
+    facts: dict[str, object] = {
+        "shipment": {
+            "recipient_name": "John Doe",
+            "postcode": "IV1 2AB",
+            "weight_kg": "410",
+        },
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    [request] = render_operation(definition, "book", facts)
+
+    assert request.body == {
+        "deliveryAddress": {"name": "John Doe", "postcode": "IV1 2AB"},
+        "consignments": [
+            {
+                "weight": "410",
+                "pallets": [{"palletType": "H", "numberofPallets": "1"}],
+            }
+        ],
+    }
+
+
+def test_source_paths_index_into_extracted_lists() -> None:
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "manifest",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "order", "source": "shipment.order"}
+                                ],
+                            },
+                            "response": {
+                                "format": "json",
+                                "extract": [
+                                    {
+                                        "name": "tracking_codes",
+                                        "path": "successfulTrackingCodes",
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "name": "label",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "trackingNumber",
+                                        "source": "steps.manifest.tracking_codes.0",
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    base_facts: dict[str, object] = {
+        "shipment": {"order": "95000254580"},
+        "config": {"base_url": "https://api.x.example"},
+    }
+
+    # Before the manifest step has answered: a stable placeholder.
+    _, before = render_operation(definition, "book", base_facts)
+    assert before.body["trackingNumber"] == "<steps.manifest.tracking_codes.0>"
+
+    # After execution injects the extracted outputs: the first code.
+    facts = {
+        **base_facts,
+        "steps": {"manifest": {"tracking_codes": ["UMB0000042", "UMB0000043"]}},
+    }
+    _, after = render_operation(definition, "book", facts)
+    assert after.body["trackingNumber"] == "UMB0000042"
 
 
 NESTING_FACTS: dict[str, object] = {
@@ -459,29 +615,34 @@ def test_dotted_targets_nest_inside_each_loops() -> None:
     }
 
 
-def test_a_target_colliding_with_a_nested_value_fails_loudly() -> None:
+def test_a_target_colliding_with_a_nested_value_fails_at_authoring() -> None:
+    """Target collisions die at draft time now (the schema dry-runs its
+    targets), which is strictly earlier than the render-time failure this
+    test originally pinned."""
     import pytest
-
-    definition = _single_step_definition(
-        [
-            {"target": "accountNumber.value", "source": "config.account_number"},
-            {"target": "accountNumber", "source": "shipment.order_number"},
-        ]
-    )
 
     with pytest.raises(ValueError, match="accountNumber"):
-        render_operation(definition, "book", NESTING_FACTS)
+        _single_step_definition(
+            [
+                {
+                    "target": "accountNumber.value",
+                    "source": "config.account_number",
+                },
+                {"target": "accountNumber", "source": "shipment.order_number"},
+            ]
+        )
 
 
-def test_a_list_index_that_skips_a_position_fails_loudly() -> None:
+def test_a_list_index_that_skips_a_position_fails_at_authoring() -> None:
+    """Skipped list positions die at draft time (the schema dry-runs its
+    targets) - strictly earlier than the render-time failure originally
+    pinned here."""
     import pytest
 
-    definition = _single_step_definition(
-        [{"target": "recipients.1.name", "source": "shipment.recipient_name"}]
-    )
-
     with pytest.raises(ValueError, match=r"recipients\.1\.name"):
-        render_operation(definition, "book", NESTING_FACTS)
+        _single_step_definition(
+            [{"target": "recipients.1.name", "source": "shipment.recipient_name"}]
+        )
 
 
 def test_auth_is_not_injected_into_non_http_steps() -> None:

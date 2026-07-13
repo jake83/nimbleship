@@ -6,6 +6,13 @@ from sqlalchemy.orm import DeclarativeBase, Session
 
 from nimbleship.config import get_settings
 
+# Postgres advisory-lock keys in use, each serialising one write concern.
+# Claim the next free key here before taking a new lock anywhere:
+#   815_003  rulebook writes           (domain/rulebook.py)
+#   815_004  proposition seeding       (domain/propositions.py)
+#   815_005  definition writes         (domain/definitions.py)
+#   815_006  carrier number sequences  (engine/plugins/number_range.py)
+
 
 class Base(DeclarativeBase):
     pass

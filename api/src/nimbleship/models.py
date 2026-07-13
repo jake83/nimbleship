@@ -218,6 +218,19 @@ class CarrierDefinitionVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class CarrierNumberSequence(Base):
+    """A named sequential number range per carrier, for carriers that make
+    the client mint consignment identifiers. Claimed only through
+    nimbleship.engine.plugins.number_range.allocate_number, which guards
+    against double allocation - never read-and-bumped directly."""
+
+    __tablename__ = "carrier_number_sequences"
+
+    carrier: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    next_value: Mapped[int] = mapped_column(default=1)
+
+
 class CarrierTraffic(Base):
     """One executed carrier step: the rendered request and the raw
     response. Append-only - this is the golden corpus Golden Replay diffs

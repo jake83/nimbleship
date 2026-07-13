@@ -15,7 +15,9 @@ from nimbleship.domain.carrier_definition import (
     MappingEntry,
     Step,
     Transform,
+    insert_at_target,
 )
+from nimbleship.engine.field_plugins import field_plugin
 
 
 class UnresolvedStepOutput(str):
@@ -46,6 +48,8 @@ def _resolve(path: str, facts: Facts) -> object:
     for part in path.split("."):
         if isinstance(node, dict) and part in node:
             node = node[part]
+        elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+            node = node[int(part)]
         else:
             if path.startswith("steps."):
                 return UnresolvedStepOutput(f"<{path}>")
@@ -75,59 +79,28 @@ def apply_transform(transform: Transform, value: object) -> object:
             return transform.table[key]
 
 
-# A dotted target nests: `accountNumber.value` builds an object member,
-# a numeric segment (`recipients.0.city`) a list position. List positions
-# must arrive in order - an index past the next free slot is a definition
-# mistake and fails loudly rather than padding silently.
-
-
-def _place(
-    node: dict[str, object] | list[object], parts: list[str], value: object, target: str
-) -> None:
-    head, rest = parts[0], parts[1:]
-    if isinstance(node, list):
-        if not head.isdigit():
-            raise ValueError(f"mapping '{target}': '{head}' indexes into a list")
-        index = int(head)
-        if index > len(node):
-            raise ValueError(f"mapping '{target}': index {index} skips a position")
-        if not rest:
-            if index < len(node):
-                raise ValueError(f"mapping '{target}': already mapped")
-            node.append(value)
-            return
-        if index == len(node):
-            node.append([] if rest[0].isdigit() else {})
-        child = node[index]
-        if not isinstance(child, dict | list):
-            raise ValueError(f"mapping '{target}': collides with an earlier mapping")
-        _place(child, rest, value, target)
-        return
-    if not rest:
-        if head in node:
-            raise ValueError(f"mapping '{target}': already mapped")
-        node[head] = value
-        return
-    if head not in node:
-        node[head] = [] if rest[0].isdigit() else {}
-    child = node[head]
-    if not isinstance(child, dict | list):
-        raise ValueError(f"mapping '{target}': collides with an earlier mapping")
-    _place(child, rest, value, target)
-
-
 def _render_mapping(entries: list[MappingEntry], facts: Facts) -> dict[str, Rendered]:
+    """One canonical nesting implementation lives in the schema module
+    (insert_at_target) so authoring-time target validation and rendering
+    can never drift apart."""
     body: dict[str, object] = {}
     for entry in entries:
-        _place(body, entry.target.split("."), _render_entry(entry, facts), entry.target)
-    # _place only ever stores Rendered values and containers of them; the
-    # cast spares every nesting level an invariant-dict re-shuffle.
+        insert_at_target(body, entry.target, _render_entry(entry, facts))
+    # insert_at_target only stores Rendered values and containers of them.
     return cast("dict[str, Rendered]", body)
 
 
 def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     if entry.const is not None:
         return entry.const
+    if entry.plugin is not None:
+        # Plugins compute from the facts alone - the render stays pure.
+        # Stateful inputs (allocated numbers) are injected as facts before
+        # render (see nimbleship.engine.field_plugins).
+        value = field_plugin(entry.plugin).compute(facts)
+        if isinstance(value, str | list | dict) or value is None:
+            return value
+        return str(value)
     assert entry.source is not None  # schema guarantees exactly one
     value = _resolve(entry.source, facts)
     # An unresolved step output stays a stable placeholder token - through

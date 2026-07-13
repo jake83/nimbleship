@@ -1,0 +1,318 @@
+{
+  "_comments": [
+    "PalletForce: the multi-step rung of the Phase 3 proving ladder (ADR 0009).",
+    "Step 1 uploads the manifest and extracts successfulTrackingCodes; step 2 downloads the label using the first extracted code. The label arrives as a base64 JPG (labelImages.0.imageData) and is assembled two-up with the order-number overlay by engine/labels_jpg.py.",
+    "consignmentNumber is minted client-side from a 7-digit number range: dispatch calls engine/plugins/number_range.allocate_number BEFORE render and injects the value as the allocated.consignment_number fact; the palletforce_consignment_number plugin formats it.",
+    "shipment.pallet_type (F full / O oversize / H half) is a dispatch-supplied fact: the routing subtleties that pick F/O/H from parcel dimensions are deliberately outside this definition.",
+    "shipment.collection_date (YYYYMMDD) is likewise dispatch-supplied: the renderer is pure and has no 'today'.",
+    "The collection address ships from Carrier Config until Warehouse facts carry town/county granularity.",
+    "The serviceName/surcharges lookups must list every Delivery Proposition this carrier serves; an unlisted proposition fails the render loudly instead of silently falling back.",
+    "Error payload quirks ('failureReasons ' with a trailing space, the email-notification opt-out retry) are execution concerns, not mapping."
+  ],
+  "carrier": "palletforce",
+  "name": "PalletForce",
+  "auth": {
+    "scheme": "header_key",
+    "header": "x-ibm-client-id",
+    "secret": "config.access_key"
+  },
+  "operations": {
+    "book": {
+      "steps": [
+        {
+          "name": "manifest",
+          "transport": "http",
+          "request": {
+            "method": "POST",
+            "url": "config.manifest_url",
+            "content_type": "json",
+            "mapping": [
+              {
+                "target": "accessKey",
+                "source": "config.access_key"
+              },
+              {
+                "target": "uniqueTransactionNumber",
+                "source": "shipment.order_number"
+              },
+              {
+                "target": "collectionAddress.name",
+                "source": "config.company_name"
+              },
+              {
+                "target": "collectionAddress.streetAddress",
+                "source": "config.company_street"
+              },
+              {
+                "target": "collectionAddress.location",
+                "const": ""
+              },
+              {
+                "target": "collectionAddress.town",
+                "source": "config.company_town"
+              },
+              {
+                "target": "collectionAddress.county",
+                "source": "config.company_county"
+              },
+              {
+                "target": "collectionAddress.postcode",
+                "source": "config.company_postcode"
+              },
+              {
+                "target": "collectionAddress.countryCode",
+                "source": "config.company_country"
+              },
+              {
+                "target": "collectionAddress.phoneNumber",
+                "source": "config.company_phone"
+              },
+              {
+                "target": "collectionAddress.contactName",
+                "source": "config.company_contact_name"
+              },
+              {
+                "target": "deliveryAddress.name",
+                "source": "shipment.recipient_name"
+              },
+              {
+                "target": "deliveryAddress.streetAddress",
+                "source": "shipment.address_lines",
+                "transform": {
+                  "name": "join",
+                  "with": ", "
+                }
+              },
+              {
+                "target": "deliveryAddress.location",
+                "const": ""
+              },
+              {
+                "target": "deliveryAddress.town",
+                "source": "shipment.town"
+              },
+              {
+                "target": "deliveryAddress.county",
+                "source": "shipment.county"
+              },
+              {
+                "target": "deliveryAddress.postcode",
+                "source": "shipment.postcode"
+              },
+              {
+                "target": "deliveryAddress.countryCode",
+                "source": "shipment.destination_country"
+              },
+              {
+                "target": "deliveryAddress.phoneNumber",
+                "source": "shipment.recipient_phone"
+              },
+              {
+                "target": "deliveryAddress.contactName",
+                "source": "shipment.recipient_name"
+              },
+              {
+                "target": "consignments.0.requestingDepot",
+                "source": "config.requesting_depot"
+              },
+              {
+                "target": "consignments.0.collectingDepot",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.deliveryDepot",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.trackingNumber",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.consignmentNumber",
+                "plugin": "palletforce_consignment_number"
+              },
+              {
+                "target": "consignments.0.CustomerAccountNumber",
+                "source": "config.customer_account_number"
+              },
+              {
+                "target": "consignments.0.datesAndTimes.0.dateTimeType",
+                "const": "COLD"
+              },
+              {
+                "target": "consignments.0.datesAndTimes.0.value",
+                "source": "shipment.collection_date"
+              },
+              {
+                "target": "consignments.0.pallets.0.palletType",
+                "source": "shipment.pallet_type"
+              },
+              {
+                "target": "consignments.0.pallets.0.numberofPallets",
+                "const": "1"
+              },
+              {
+                "target": "consignments.0.palletSpaces",
+                "source": "shipment.pallet_spaces"
+              },
+              {
+                "target": "consignments.0.weight",
+                "source": "shipment.weight_kg"
+              },
+              {
+                "target": "consignments.0.serviceName",
+                "source": "shipment.proposition",
+                "transform": {
+                  "name": "lookup",
+                  "table": {
+                    "next-day": "A",
+                    "next-day-pre-10": "A",
+                    "next-day-pre-12": "A",
+                    "next-day-pre-930": "A",
+                    "saturday": "A",
+                    "saturday-pre-10": "A",
+                    "saturday-pre-930": "A",
+                    "economy": "B"
+                  }
+                }
+              },
+              {
+                "target": "consignments.0.surcharges",
+                "source": "shipment.proposition",
+                "transform": {
+                  "name": "lookup",
+                  "table": {
+                    "next-day": "TL",
+                    "next-day-pre-10": "AM TL",
+                    "next-day-pre-12": "AM TL",
+                    "next-day-pre-930": "TA TL",
+                    "saturday": "SA TL",
+                    "saturday-pre-10": "SA AM TL",
+                    "saturday-pre-930": "SA TA TL",
+                    "economy": "BI TL"
+                  }
+                }
+              },
+              {
+                "target": "consignments.0.customersUniqueReference",
+                "source": "shipment.order_number"
+              },
+              {
+                "target": "consignments.0.customersUniqueReference2",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.notes.0.noteName",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.notes.0.value",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.insuranceCode",
+                "source": "config.insurance_code"
+              },
+              {
+                "target": "consignments.0.customerCharge",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.nonPalletforceConsignment",
+                "const": "N"
+              },
+              {
+                "target": "consignments.0.deliveryVehicleCode",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.consignmentType",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.hubIdentifyingCode",
+                "source": "config.hub_identifying_code"
+              },
+              {
+                "target": "consignments.0.notifications.0.notificationType",
+                "const": "EMAIL"
+              },
+              {
+                "target": "consignments.0.notifications.0.value",
+                "source": "shipment.recipient_email"
+              },
+              {
+                "target": "consignments.0.cartonCount",
+                "const": ""
+              },
+              {
+                "target": "consignments.0.aSNFBABOLReferenceNumber",
+                "const": ""
+              }
+            ]
+          },
+          "response": {
+            "format": "json",
+            "success_when": {
+              "path": "success",
+              "equals": "true"
+            },
+            "error_message": {
+              "path": "failedConsignments"
+            },
+            "extract": [
+              {
+                "name": "tracking_codes",
+                "path": "successfulTrackingCodes"
+              }
+            ]
+          }
+        },
+        {
+          "name": "label",
+          "transport": "http",
+          "request": {
+            "method": "POST",
+            "url": "config.label_url",
+            "content_type": "json",
+            "mapping": [
+              {
+                "target": "accessKey",
+                "source": "config.access_key"
+              },
+              {
+                "target": "trackingNumber",
+                "source": "steps.manifest.tracking_codes.0"
+              },
+              {
+                "target": "palletNumber",
+                "const": "1"
+              },
+              {
+                "target": "uniqueTransactionNumber",
+                "source": "shipment.order_number"
+              }
+            ]
+          },
+          "response": {
+            "format": "json",
+            "success_when": {
+              "path": "success",
+              "equals": "true"
+            },
+            "extract": [
+              {
+                "name": "label_image",
+                "path": "labelImages.0.imageData"
+              }
+            ]
+          }
+        }
+      ],
+      "label": {
+        "source": "fetch_step",
+        "from_extract": "label_image"
+      }
+    }
+  }
+}

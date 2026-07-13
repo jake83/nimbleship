@@ -3,6 +3,7 @@ vocabulary cannot say (ADR 0005, ADR 0009). Importing this package fills
 the extension-point registries with every plugin a definition may name."""
 
 from nimbleship.engine.auth_plugins import AUTH_PLUGINS
+from nimbleship.engine.plugins import number_range as number_range
 from nimbleship.engine.plugins.oauth_client_credentials import (
     OAuthClientCredentialsAuth,
 )
