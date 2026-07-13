@@ -271,9 +271,20 @@ class CarrierDefinition(BaseModel):
     @model_validator(mode="after")
     def _sources_resolve(self) -> "CarrierDefinition":
         # The auth secret is a source path too: a typo there must fail at
-        # authoring like any other unknown fact (refuter, PR #26).
+        # authoring like any other unknown fact (refuter, PR #26). One auth
+        # block serves every operation, so its secret must resolve in every
+        # operation's fact context - validate it against the roots common to
+        # all of them, not just a book operation's (a manifest operation has
+        # no shipment facts).
         if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
-            _validate_source(self.auth.secret, {}, False, "auth")
+            common = (
+                set.intersection(
+                    *(set(operation_fact_roots(op)) for op in self.operations)
+                )
+                if self.operations
+                else set(FACT_ROOTS)
+            )
+            _validate_source(self.auth.secret, {}, False, "auth", tuple(sorted(common)))
         for op_name, operation in self.operations.items():
             roots = operation_fact_roots(op_name)
             earlier: dict[str, set[str]] = {}

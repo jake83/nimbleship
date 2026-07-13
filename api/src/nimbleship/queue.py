@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from nimbleship.config import get_settings
 from nimbleship.db import open_session
 from nimbleship.domain.manifests import manifest_consignments, send_manifest
+from nimbleship.engine.execute import CarrierCallError
 from nimbleship.http_client import carrier_http_client
 from nimbleship.models import Manifest, OrderEvent
 
@@ -61,11 +62,23 @@ def run_manifest_send(manifest_id: int, attempts: int) -> None:
         manifest = session.get(Manifest, manifest_id)
         if manifest is None:
             raise ValueError(f"no manifest {manifest_id}")
-        manifest.attempts += 1
+        # Derive the audit counter from the queue's own attempt count rather
+        # than a hand-kept +=1: an at-least-once redelivery re-runs a job
+        # with the same `attempts`, so the two can never drift.
+        manifest.attempts = attempts + 1
         try:
             with carrier_http_client() as http_client:
                 send_manifest(session, manifest, http_client)
-        except Exception as error:
+        # Carrier failures (CarrierCallError) and deterministic manifest
+        # errors (a ValueError: a render fact missing, or the manifest
+        # operation gone from the definition between enqueue and run) are
+        # both manifest-level failures a human must see, so both mark the
+        # Manifest failed for the operator rather than leaving it 'pending'
+        # forever. A genuine infrastructure fault (a DB error) is neither:
+        # it propagates undecorated, so the session context rolls back
+        # instead of this handler committing a session left in
+        # rollback-required state and masking the real cause.
+        except (CarrierCallError, ValueError) as error:
             manifest.last_error = str(error)
             final = (
                 MANIFEST_RETRY.max_attempts is not None

@@ -22,6 +22,17 @@ if not config.get_main_option("sqlalchemy.url"):
 target_metadata = Base.metadata
 
 
+def include_name(
+    name: str | None, type_: str, parent_names: dict[str, str | None]
+) -> bool:
+    # The job queue's tables are Procrastinate's, installed by a migration
+    # (ADR 0004) and absent from Base.metadata. Without this filter,
+    # autogenerate sees them in the database, finds no model, and emits
+    # drop_table for them - a boot-time `alembic upgrade head` would then
+    # destroy the queue schema. Keep them invisible to autogenerate.
+    return not (type_ == "table" and (name or "").startswith("procrastinate_"))
+
+
 def run_migrations_offline() -> None:
     """Emit migration SQL without a live connection."""
     url = config.get_main_option("sqlalchemy.url")
@@ -30,6 +41,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_name=include_name,
     )
 
     with context.begin_transaction():
@@ -44,7 +56,11 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            include_name=include_name,
+        )
 
         with context.begin_transaction():
             context.run_migrations()

@@ -4,6 +4,7 @@ creates are sent to carriers asynchronously, so the endpoint answers as
 soon as the consignments are marked and the send jobs are enqueued - in
 one transaction (ADR 0004)."""
 
+from collections import Counter
 from datetime import datetime
 from typing import Annotated
 
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from nimbleship.db import get_session
 from nimbleship.domain.manifests import create_manifests, manifest_consignments
-from nimbleship.models import Consignment, Manifest
+from nimbleship.models import Consignment, Manifest, ManifestConsignment
 from nimbleship.queue import defer_manifest_send
 
 router = APIRouter(tags=["manifests"])
@@ -43,7 +44,13 @@ class DispatchConfirmationOut(BaseModel):
     manifests: list[ManifestOut]
 
 
-def _manifest_out(session: Session, manifest: Manifest) -> ManifestOut:
+# Bound the listing: a manifest accrues per (carrier, warehouse) per
+# dispatch day and is never pruned, so the endpoint an ops view polls must
+# not grow unboundedly. Newest first; older manifests are fetched by id.
+MANIFEST_LIST_LIMIT = 200
+
+
+def _manifest_out(manifest: Manifest, order_numbers: list[str]) -> ManifestOut:
     return ManifestOut(
         id=manifest.id,
         carrier=manifest.carrier,
@@ -53,11 +60,12 @@ def _manifest_out(session: Session, manifest: Manifest) -> ManifestOut:
         last_error=manifest.last_error,
         created_at=manifest.created_at,
         sent_at=manifest.sent_at,
-        order_numbers=[
-            consignment.order_number
-            for consignment in manifest_consignments(session, manifest)
-        ],
+        order_numbers=order_numbers,
     )
+
+
+def _order_numbers(session: Session, manifest: Manifest) -> list[str]:
+    return [c.order_number for c in manifest_consignments(session, manifest)]
 
 
 @router.post("/dispatch-confirmations", status_code=201)
@@ -66,14 +74,10 @@ def confirm_dispatch(
 ) -> DispatchConfirmationOut:
     """The confirmation is transactional: every named consignment must
     exist and be dispatchable, or nothing is dispatched - a partial
-    scan-out silently splitting into shipped-and-not would be exactly the
-    ambiguity the Manifest concept exists to remove."""
+    confirmation silently splitting into shipped-and-not would be exactly
+    the ambiguity the Manifest concept exists to remove."""
     duplicates = sorted(
-        {
-            number
-            for number in payload.order_numbers
-            if payload.order_numbers.count(number) > 1
-        }
+        number for number, count in Counter(payload.order_numbers).items() if count > 1
     )
     if duplicates:
         raise HTTPException(
@@ -81,9 +85,15 @@ def confirm_dispatch(
         )
     rows = (
         session.execute(
-            select(Consignment).where(
-                Consignment.order_number.in_(payload.order_numbers)
-            )
+            # Lock the rows for the confirmation's lifetime: two overlapping
+            # confirmations for the same orders would otherwise both read
+            # 'allocated', both dispatch, and declare the same consignments
+            # on two manifests. The second now blocks, then sees 'dispatched'
+            # and is rejected below. (A no-op on SQLite, which the unit suite
+            # uses; the Postgres deployment is where the race is real.)
+            select(Consignment)
+            .where(Consignment.order_number.in_(payload.order_numbers))
+            .with_for_update()
         )
         .scalars()
         .all()
@@ -113,16 +123,32 @@ def confirm_dispatch(
 
     return DispatchConfirmationOut(
         dispatched=[c.order_number for c in consignments],
-        manifests=[_manifest_out(session, m) for m in manifests],
+        manifests=[_manifest_out(m, _order_numbers(session, m)) for m in manifests],
     )
 
 
 @router.get("/manifests")
 def list_manifests(session: SessionDep) -> list[ManifestOut]:
     manifests = (
-        session.execute(select(Manifest).order_by(Manifest.id.desc())).scalars().all()
+        session.execute(
+            select(Manifest).order_by(Manifest.id.desc()).limit(MANIFEST_LIST_LIMIT)
+        )
+        .scalars()
+        .all()
     )
-    return [_manifest_out(session, manifest) for manifest in manifests]
+    # One query for every listed manifest's order numbers, grouped in
+    # Python, rather than a per-manifest lookup (an N+1 over a table that
+    # only grows).
+    rows = session.execute(
+        select(ManifestConsignment.manifest_id, Consignment.order_number)
+        .join(Consignment, Consignment.id == ManifestConsignment.consignment_id)
+        .where(ManifestConsignment.manifest_id.in_([m.id for m in manifests]))
+        .order_by(ManifestConsignment.id)
+    ).all()
+    orders: dict[int, list[str]] = {}
+    for manifest_id, order_number in rows:
+        orders.setdefault(manifest_id, []).append(order_number)
+    return [_manifest_out(m, orders.get(m.id, [])) for m in manifests]
 
 
 @router.get("/manifests/{manifest_id}")
@@ -130,4 +156,4 @@ def manifest_detail(manifest_id: int, session: SessionDep) -> ManifestOut:
     manifest = session.get(Manifest, manifest_id)
     if manifest is None:
         raise HTTPException(404, "no such manifest")
-    return _manifest_out(session, manifest)
+    return _manifest_out(manifest, _order_numbers(session, manifest))

@@ -31,18 +31,30 @@ def create_manifests(
     does not manifest; its consignments are still dispatched. The rows are
     flushed so callers can enqueue send jobs by manifest id in the same
     transaction (ADR 0004)."""
-    groups: dict[tuple[str, str | None], list[Consignment]] = {}
+    Group = tuple[str, str | None]
+    groups: dict[Group, list[Consignment]] = {}
     for consignment in consignments:
         assert consignment.carrier is not None  # dispatchable means allocated
         groups.setdefault((consignment.carrier, consignment.warehouse), []).append(
             consignment
         )
 
+    # The definition depends only on carrier; resolve each at most once even
+    # when a carrier ships from several warehouses in one confirmation.
+    manifests_by_carrier: dict[str, bool] = {}
+
+    def manifests_carrier(carrier: str) -> bool:
+        if carrier not in manifests_by_carrier:
+            definition = active_definition(session, carrier)
+            manifests_by_carrier[carrier] = (
+                definition is not None and "manifest" in definition.operations
+            )
+        return manifests_by_carrier[carrier]
+
     manifests: list[Manifest] = []
-    manifested: dict[str, Manifest] = {}
+    manifest_by_group: dict[Group, Manifest] = {}
     for (carrier, warehouse), group in groups.items():
-        definition = active_definition(session, carrier)
-        if definition is None or "manifest" not in definition.operations:
+        if not manifests_carrier(carrier):
             continue
         manifest = Manifest(carrier=carrier, warehouse=warehouse, status="pending")
         session.add(manifest)
@@ -53,12 +65,15 @@ def create_manifests(
                     manifest_id=manifest.id, consignment_id=consignment.id
                 )
             )
-            manifested[consignment.order_number] = manifest
+        manifest_by_group[(carrier, warehouse)] = manifest
         manifests.append(manifest)
 
     for consignment in consignments:
         consignment.status = "dispatched"
-        manifest_for = manifested.get(consignment.order_number)
+        assert consignment.carrier is not None
+        manifest_for = manifest_by_group.get(
+            (consignment.carrier, consignment.warehouse)
+        )
         session.add(
             OrderEvent(
                 order_number=consignment.order_number,
@@ -137,6 +152,11 @@ def send_manifest(
 
     manifest.status = "sent"
     manifest.sent_at = datetime.now(UTC)
+    # The carrier's extracted outputs are author-named, so they live under
+    # their own key: splatting them alongside the internal audit fields
+    # would let an extraction named "manifest_id" overwrite the link back to
+    # the Manifest row.
+    extracted = {key: str(value) for key, value in result.outputs.items()}
     for consignment in consignments:
         session.add(
             OrderEvent(
@@ -145,7 +165,7 @@ def send_manifest(
                 detail={
                     "manifest_id": manifest.id,
                     "carrier": manifest.carrier,
-                    **{key: str(value) for key, value in result.outputs.items()},
+                    "extracted": extracted,
                 },
             )
         )

@@ -178,8 +178,13 @@ def test_sending_declares_the_consignments_and_marks_the_manifest_sent(
         ("O-1", "manifested"),
         ("O-2", "manifested"),
     ]
-    assert all(e.detail["manifest_reference"] == "MAN-77" for e in events)
-    assert all(e.detail["manifest_id"] == manifest.id for e in events)
+    # The carrier's extracted outputs live under their own key so an
+    # author-chosen name can never shadow the internal audit fields.
+    for event in events:
+        extracted = event.detail["extracted"]
+        assert isinstance(extracted, dict)
+        assert extracted["manifest_reference"] == "MAN-77"
+        assert event.detail["manifest_id"] == manifest.id
 
 
 def test_sending_records_the_traffic_for_golden_replay(session: Session) -> None:
@@ -245,6 +250,43 @@ def test_a_definition_without_a_manifest_operation_fails_loudly(
         pytest.raises(ValueError, match="manifest"),
     ):
         send_manifest(session, manifest, http_client)
+
+
+def test_the_job_runner_marks_a_deterministic_error_failed_not_stuck_pending(
+    engine: Engine,
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A definition losing its manifest operation between enqueue and run is
+    # a deterministic ValueError, not a carrier failure - retrying cannot
+    # help. It must still mark the Manifest failed for a human on the final
+    # attempt, never leave it 'pending' forever.
+    definition: dict[str, object] = {
+        "carrier": "brightpost",
+        "name": "Bright Post",
+        "auth": DEFINITION["auth"],
+        "operations": {
+            "book": {"steps": [], "label": {"source": "local_render"}},
+        },
+    }
+    manifest = _seed_manifest(session, definition)
+    session.commit()
+    monkeypatch.setattr(
+        "nimbleship.queue.carrier_http_client",
+        lambda: _client(lambda request: httpx.Response(200)),
+    )
+    assert MANIFEST_RETRY.max_attempts is not None
+
+    with pytest.raises(ValueError, match="manifest"):
+        run_manifest_send(manifest.id, attempts=MANIFEST_RETRY.max_attempts)
+
+    with sessionmaker(bind=engine)() as fresh:
+        row = fresh.get(Manifest, manifest.id)
+        assert row is not None
+        assert row.status == "failed"
+        assert row.last_error is not None
+        stages = fresh.execute(select(OrderEvent.stage)).scalars().all()
+        assert stages.count("manifest_failed") == 2
 
 
 def test_the_job_runner_keeps_the_manifest_pending_while_retries_remain(

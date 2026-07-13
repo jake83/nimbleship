@@ -523,3 +523,95 @@ def test_shipment_facts_are_rejected_inside_the_manifest_operation() -> None:
 
     with pytest.raises(ValidationError, match="unknown source root 'shipment'"):
         CarrierDefinition.model_validate(bad)
+
+
+def test_auth_secret_must_resolve_in_the_manifest_context_too() -> None:
+    """One auth block serves every operation. A definition that manifests
+    cannot authenticate from shipment.* facts (a manifest has no single
+    shipment), so a shipment-sourced secret must fail at authoring, not at
+    trailer-close on the worker."""
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {
+            "scheme": "header_key",
+            "header": "X-Api-Key",
+            "secret": "shipment.order_number",
+        },
+        "operations": {
+            "manifest": {
+                "steps": [
+                    {
+                        "name": "declare",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.manifest_url",
+                            "content_type": "json",
+                            "mapping": [{"target": "date", "source": "manifest.date"}],
+                        },
+                    }
+                ]
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match="unknown source root 'shipment'"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_config_auth_secret_serves_both_book_and_manifest_operations() -> None:
+    # config.* is the credential home (CONTEXT.md: Carrier Config) and
+    # resolves in every operation context, so it validates even when the
+    # definition carries both a book and a manifest operation.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "furdeco",
+            "name": "Furdeco",
+            "auth": {
+                "scheme": "query_key",
+                "param": "key",
+                "secret": "config.api_key",
+            },
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "save",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.base_url",
+                                "content_type": "form",
+                                "mapping": [
+                                    {
+                                        "target": "order",
+                                        "source": "shipment.order_number",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render"},
+                },
+                "manifest": {
+                    "steps": [
+                        {
+                            "name": "declare",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.manifest_url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "date", "source": "manifest.date"}
+                                ],
+                            },
+                        }
+                    ]
+                },
+            },
+        }
+    )
+
+    assert set(definition.operations) == {"book", "manifest"}
