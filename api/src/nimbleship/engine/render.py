@@ -9,6 +9,7 @@ deterministically offline."""
 import csv
 import io
 import re
+import xml.etree.ElementTree as ET
 from typing import Literal, cast
 
 from pydantic import BaseModel
@@ -188,17 +189,72 @@ def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) 
     return buffer.getvalue()
 
 
+XML_PROLOG = '<?xml version="1.0" encoding="UTF-8"?>'
+
+
+def _append_xml(parent: ET.Element, name: str, value: object) -> None:
+    """Attach `value` to `parent` as one or more `<name>` child elements: a
+    list becomes repeated same-name siblings, a dict a nested element, and a
+    scalar an element with text."""
+    if isinstance(value, list):
+        for item in value:
+            _append_xml(parent, name, item)
+    elif isinstance(value, dict):
+        child = ET.SubElement(parent, name)
+        _build_xml(child, value)
+    else:
+        child = ET.SubElement(parent, name)
+        if value is not None:
+            child.text = str(value)
+
+
+def _build_xml(parent: ET.Element, mapping: dict[str, Rendered]) -> None:
+    """Populate `parent` from a rendered mapping dict: an `@`-prefixed key is
+    an attribute of `parent` (and must be scalar), any other key is a child
+    element. ElementTree escapes text and attribute values, so a rendered
+    value can never inject markup."""
+    for key, value in mapping.items():
+        if key.startswith("@"):
+            if isinstance(value, list | dict):
+                raise ValueError(
+                    f"xml attribute '{key}' rendered a {type(value).__name__}, "
+                    "not a scalar"
+                )
+            parent.set(key[1:], "" if value is None else str(value))
+        else:
+            _append_xml(parent, key, value)
+
+
+def _render_xml(
+    root_element: str, entries: list[MappingEntry], facts: Facts, for_execution: bool
+) -> str:
+    """Render the mapping as one XML document: a fixed UTF-8 prolog and the
+    mapping wrapped in `root_element`. Reuses the same nesting/each machinery
+    as every other render (insert_at_target), so xml is data, not a template
+    language (ADR 0009/0010)."""
+    root = ET.Element(root_element)
+    _build_xml(root, _render_mapping(entries, facts, for_execution))
+    return f"{XML_PROLOG}\n{ET.tostring(root, encoding='unicode')}"
+
+
 def _render_upload(step: Step, facts: Facts, for_execution: bool) -> RenderedUpload:
     remote_path = str(_resolve(step.request.url, facts, for_execution))
-    # The schema requires a filename and content_type csv for upload steps.
+    # The schema requires a filename and a csv or xml content_type for uploads.
     assert step.request.filename is not None
+    if step.request.content_type == "xml":
+        assert step.request.root_element is not None
+        content = _render_xml(
+            step.request.root_element, step.request.mapping, facts, for_execution
+        )
+    else:
+        content = _render_csv(step.request.mapping, facts, for_execution)
     return RenderedUpload(
         step=step.name,
         transport=step.transport,
         content_type=step.request.content_type,
         remote_path=remote_path,
         filename=_render_filename(step.request.filename, facts, for_execution),
-        content=_render_csv(step.request.mapping, facts, for_execution),
+        content=content,
     )
 
 

@@ -169,18 +169,55 @@ class MappingEntry(BaseModel):
         return self
 
 
+def _validate_xml_targets(entries: list[MappingEntry]) -> None:
+    """Enforce the @-attribute convention (ADR 0010): an @-prefixed segment
+    names an attribute of its parent element, so it must be the terminal
+    segment of its target and cannot be a repeated element (an each-loop
+    produces sibling elements, never an attribute). Nested each-loops are
+    checked recursively so an attribute inside a repeated element is covered
+    too."""
+    for entry in entries:
+        segments = entry.target.split(".")
+        for segment in segments[:-1]:
+            if segment.startswith("@"):
+                raise ValueError(
+                    f"mapping '{entry.target}': an @attribute must be the last "
+                    "segment of its target"
+                )
+        if segments[-1].startswith("@") and entry.each is not None:
+            raise ValueError(
+                f"mapping '{entry.target}': an @attribute cannot be a repeated "
+                "element (each)"
+            )
+        if entry.each is not None:
+            _validate_xml_targets(entry.each)
+
+
 class RequestSpec(BaseModel):
     method: Literal["GET", "POST", "PUT"] = "POST"
     # A source path (usually config.*) resolved at render time. For an
     # upload transport this is the remote directory rather than a URL.
     url: str
     query: dict[str, str] = {}
-    content_type: Literal["form", "json", "csv"]
+    content_type: Literal["form", "json", "csv", "xml"]
     mapping: list[MappingEntry]
     # Upload transports only: the remote filename, a template whose
     # `{fact.path}` placeholders are substituted at render time (e.g.
     # "{warehouse.code}-{shipment.order_number}.csv").
     filename: str | None = None
+    # Content_type xml only: the single document wrapper element. The renderer
+    # emits a fixed prolog and wraps the mapping in this element.
+    root_element: str | None = None
+
+    @model_validator(mode="after")
+    def _xml_shape(self) -> "RequestSpec":
+        if self.content_type == "xml":
+            if not self.root_element:
+                raise ValueError("an xml request needs a root_element")
+            _validate_xml_targets(self.mapping)
+        elif self.root_element is not None:
+            raise ValueError("root_element is only for content_type xml")
+        return self
 
 
 class Extraction(BaseModel):
@@ -221,12 +258,14 @@ class Step(BaseModel):
         where = f"step '{self.name}'"
         if self.transport in UPLOAD_TRANSPORTS:
             # An upload renders a file to a named remote path and hears
-            # nothing back, so it needs a filename, must be CSV (the only
-            # file rendering the engine owns), and declares no response.
+            # nothing back, so it needs a filename, must be a file format the
+            # engine renders (csv or xml), and declares no response.
             if self.request.filename is None:
                 raise ValueError(f"{where}: an upload step needs a filename")
-            if self.request.content_type != "csv":
-                raise ValueError(f"{where}: an upload step must be content_type csv")
+            if self.request.content_type not in ("csv", "xml"):
+                raise ValueError(
+                    f"{where}: an upload step must be content_type csv or xml"
+                )
             if self.response is not None:
                 raise ValueError(
                     f"{where}: an upload step is fire-and-forget and takes no response"
@@ -240,8 +279,15 @@ class Step(BaseModel):
                     f"{where}: an upload step's remote directory (url) must be a "
                     "config.* source"
                 )
-        elif self.request.filename is not None:
-            raise ValueError(f"{where}: filename is for upload transports, not http")
+        else:
+            if self.request.filename is not None:
+                raise ValueError(
+                    f"{where}: filename is for upload transports, not http"
+                )
+            # xml is a file format for upload steps only - there is no
+            # http-xml request body until a carrier needs one.
+            if self.request.content_type == "xml":
+                raise ValueError(f"{where}: xml is an upload-only content_type")
         return self
 
 
