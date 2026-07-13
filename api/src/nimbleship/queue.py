@@ -9,7 +9,6 @@ The worker runs this module's app:
 """
 
 from procrastinate import App, PsycopgConnector, RetryStrategy
-from procrastinate import testing as procrastinate_testing
 from procrastinate.job_context import JobContext
 from sqlalchemy.orm import Session
 
@@ -42,8 +41,15 @@ def defer_manifest_send(session: Session, manifest_id: int) -> None:
     """Enqueue the send job on the session's own connection: the job INSERT
     commits or rolls back with the dispatch confirmation that caused it
     (ADR 0004) - the two can never disagree."""
-    if session.get_bind().dialect.name != "postgresql" and not isinstance(
-        queue_app.connector, procrastinate_testing.InMemoryConnector
+    # The real connector defers over psycopg, so it needs a psycopg
+    # connection: a session bound to anything but Postgres is a
+    # misconfiguration (NIMBLESHIP_DATABASE_URL pointing at sqlite in a real
+    # deployment). Stated as an invariant of the connector, not a test-mode
+    # exemption - the in-memory connector the suite injects ignores the
+    # connection entirely, so it is simply not a PsycopgConnector.
+    if (
+        isinstance(queue_app.connector, PsycopgConnector)
+        and session.get_bind().dialect.name != "postgresql"
     ):
         raise RuntimeError(
             "background jobs enqueue into Postgres (ADR 0004); "
