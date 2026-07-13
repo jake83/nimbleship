@@ -181,8 +181,10 @@ class SftpFileUploader:
                 (host, port), timeout=CONNECT_TIMEOUT_SECONDS
             )
             transport = paramiko.Transport(sock)
-            # A server presenting a different key raises BadHostKeyException
-            # (an SSHException), caught below and surfaced as UploadError.
+            # A server presenting a different key makes this low-level
+            # Transport.connect raise SSHException("Bad host key from server")
+            # (BadHostKeyException is only the high-level SSHClient's); it is an
+            # SSHException either way, caught below and surfaced as UploadError.
             transport.connect(hostkey=host_key, username=username, password=password)
             sftp = paramiko.SFTPClient.from_transport(transport)
             if sftp is None:
