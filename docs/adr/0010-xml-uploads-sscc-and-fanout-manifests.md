@@ -109,6 +109,20 @@ rejected - it trusts whatever answers the first time, which on a fresh install
 is precisely when an attacker would substitute a host. The cost is that
 onboarding a carrier must obtain its host key; that is the right cost.
 
+Obtaining `sftp_host_key` at onboarding: it is not a credential the carrier
+issues but the public key the carrier's SFTP server presents, captured once
+and pinned. `ssh-keyscan -t ed25519,ecdsa,rsa <sftp_host>` prints the exact
+OpenSSH lines the field takes; pick one and store it. The trust step is
+verifying that captured key is really the carrier's, out of band, before
+pinning: compare its fingerprint (`ssh-keygen -lf`) against a fingerprint the
+carrier publishes in its onboarding pack, or confirm it with the carrier's
+support. Where a carrier publishes no fingerprint, capture-on-first-connect
+then confirm the fingerprint with support is the fallback - weaker than a
+published fingerprint, but still one verified capture pinned thereafter. A
+carrier rotating its server key is a config update, not a code change; the
+upload fails loudly against the stale pin until the new key is stored, which
+is the right failure direction.
+
 ## Consequences
 
 - The upload vocabulary now spans two file formats behind one closed set of
