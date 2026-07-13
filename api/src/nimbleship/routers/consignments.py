@@ -142,26 +142,42 @@ def _book_with_carrier(
     """Execute the book operation's http steps, recording every step as
     carrier traffic (ADR 0009's golden corpus grows from real calls). On
     success the extracted tracking reference and carrier barcodes land on
-    the consignment; on failure the traffic and a booking_failed event are
-    committed before the 502 - never a silent success."""
-    facts: dict[str, object] = {
-        "shipment": shipment_facts(consignment),
-        "config": carrier_config(session, consignment.carrier or ""),
-    }
-    if warehouse is not None:
-        facts["warehouse"] = warehouse_facts(warehouse)
+    the consignment; on failure a booking_failed event is committed before
+    the 502 - never a silent success.
+
+    Carrier contact always commits traffic: every step's traffic row is
+    committed in its own transaction the moment the call returns, so no
+    later failure of the request - a duplicate-order 409 losing the
+    unique-constraint race, a label error, anything - can discard the
+    audit trail of a call that really reached the carrier (refuter,
+    PR #30)."""
+    # Facts are gathered without autoflush: the request session must not
+    # hold an open write transaction (its speculative consignment insert)
+    # while the carrier is on the line - the traffic commits below run on
+    # their own connections and must never queue behind this request's
+    # locks, and a racing duplicate submission must not block on this
+    # request's uncommitted row either.
+    with session.no_autoflush:
+        facts: dict[str, object] = {
+            "shipment": shipment_facts(consignment),
+            "config": carrier_config(session, consignment.carrier or ""),
+        }
+        if warehouse is not None:
+            facts["warehouse"] = warehouse_facts(warehouse)
 
     def record(step_record: StepRecord) -> None:
-        session.add(
-            CarrierTraffic(
-                carrier=consignment.carrier or "",
-                order_number=consignment.order_number,
-                step=step_record.step,
-                request=step_record.request.model_dump(mode="json"),
-                response_status=step_record.response_status,
-                response_body=step_record.response_body,
+        with Session(session.get_bind()) as traffic_session:
+            traffic_session.add(
+                CarrierTraffic(
+                    carrier=consignment.carrier or "",
+                    order_number=consignment.order_number,
+                    step=step_record.step,
+                    request=step_record.request.model_dump(mode="json"),
+                    response_status=step_record.response_status,
+                    response_body=step_record.response_body,
+                )
             )
-        )
+            traffic_session.commit()
 
     try:
         result = execute_operation(definition, "book", facts, http_client, record)
@@ -176,8 +192,8 @@ def _book_with_carrier(
         )
         session.flush()
         # Commit explicitly: raising unwinds the session dependency before
-        # its normal commit, and a failure's traffic and timeline must
-        # survive the 502.
+        # its normal commit, and a failure's timeline must survive the 502
+        # (the traffic already committed in its own transaction above).
         session.commit()
         raise HTTPException(502, str(error)) from error
 

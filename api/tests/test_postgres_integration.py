@@ -12,13 +12,21 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from booking_race import (
+    CONSIGNMENT_PAYLOAD,
+    ORDER,
+    build_app,
+    publish_furdeco,
+    racing_carrier,
+)
 from nimbleship.db import Base
 from nimbleship.domain.allocation import ServiceDeclaration
 from nimbleship.domain.rulebook import active_rulebook, create_draft, publish
-from nimbleship.models import RulebookVersion
+from nimbleship.models import CarrierTraffic, RulebookVersion
 
 POSTGRES_URL = os.environ.get("NIMBLESHIP_TEST_POSTGRES_URL")
 
@@ -139,3 +147,37 @@ def test_concurrent_first_requests_seed_exactly_once(
             .all()
         )
         assert len(seeds) == 1
+
+
+def test_booking_traffic_survives_losing_the_duplicate_order_race(
+    pg_engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Carrier contact always commits traffic, under real transaction
+    isolation: a booking that succeeds on the carrier's side and then
+    loses the duplicate-order race (IntegrityError -> 409) keeps its
+    CarrierTraffic rows (refuter, PR #30)."""
+    monkeypatch.setenv("NIMBLESHIP_LABELS_DIR", str(tmp_path / "labels"))
+    factory = sessionmaker(bind=pg_engine)
+    app = build_app(factory, tmp_path / "labels")
+
+    def fail_fast(racer: Session) -> None:
+        # A regression that holds the losing request's uncommitted
+        # consignment row across the carrier call would block this
+        # duplicate insert on the unique index until that transaction
+        # ends - i.e. forever, since the request is waiting on us. A lock
+        # timeout turns that hang into a loud failure.
+        racer.execute(text("SET lock_timeout = '5s'"))
+
+    with TestClient(app) as client:
+        publish_furdeco(client)
+        racing_carrier(app, factory, prepare_racer=fail_fast)
+
+        response = client.post("/api/consignments", json=CONSIGNMENT_PAYLOAD)
+
+    assert response.status_code == 409
+
+    with factory() as check:
+        traffic = check.execute(select(CarrierTraffic)).scalars().all()
+        assert [
+            (t.carrier, t.order_number, t.step, t.response_status) for t in traffic
+        ] == [("furdeco", ORDER, "save", 200)]
