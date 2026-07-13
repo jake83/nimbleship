@@ -34,6 +34,16 @@ business logic).
   (historical documents by nature); CONTEXT.md carry-over notes are fine.
   PR/finding references (e.g. "refuter, PR #9") are acceptable only as a
   trailing pointer AFTER the constraint itself is stated in full.
+- Verify authored content against the code, not just review feedback. Any
+  executable instruction or format-specific example you write - a shell
+  command, config snippet, sample payload, or "the format is X" claim in a
+  doc, ADR, comment, or PR body - is a claim to verify before commit: run its
+  real output through the code that consumes it (the parser, endpoint, or
+  schema). An unexecuted runbook is unverified. This is the same standard
+  "Handling review feedback" demands for incoming claims, applied to what you
+  author (learned on PR #40, where an ADR runbook told operators to store raw
+  `ssh-keyscan` output that the `sftp_host_key` parser rejects - it was
+  asserted, never run through the parser).
 
 ## Commands
 
@@ -86,6 +96,15 @@ defined in step 1 itself:
    Stacked PRs: merge the base PR and DELETE its branch first so GitHub
    retargets the stacked PR to main - otherwise it merges into a dead
    branch and its content silently never reaches main.
+   Finalize once, then hands off: get ALL intended content into a PR before
+   posting `needs-human-review`, because a push that races the human's merge
+   is squash-dropped silently (it happened twice - an ADR note on PR #39 and
+   a CLAUDE.md convention on PR #40, each merged without its trailing commit).
+   Anything that arises after handoff rides a NEW PR, never a late push to the
+   handed-off one. After any merge, verify the intended commits actually
+   reached main (grep main for the change) rather than assuming the merge
+   carried them - it is the only reliable catch for this race and for the
+   dead-branch case above.
    The trivial definition starts deliberately tight and is loosened only
    with evidence: when human review of a class of PRs has stopped finding
    anything for a sustained stretch, widen the definition here and record
