@@ -42,6 +42,19 @@ the two must always agree (`95000254580-parcel-2:95000254580-2`). Carried
 over from the 3PL glossary.
 _Avoid_: barcode list, 0-based `{n}`
 
+**SSCC** (Serial Shipping Container Code):
+The GS1 18-digit identity of one shipping unit, printed as a GS1-128 barcode
+and declared to the carrier. The carrier provisions a range (the leading
+digits, held in Carrier Config); NimbleShip mints each SSCC by incrementing a
+bounded suffix within that range and appending the GS1 mod-10 check digit.
+Per-parcel, allocated at booking. When the suffix exhausts, the range is
+spent and a new one must be requested from the carrier - suffixes never wrap,
+which would reissue a live code. Stored as the parcel's carrier-facing
+barcode.
+_Avoid_: treating it as a self-generated **Parcel Barcode** (that is the
+internal `{order}-{seq}` Code 128), or as carrier-issued at the
+individual-number level (only the range is carrier-provisioned)
+
 **Girth**:
 The parcel size measure carriers price and restrict by: twice the height
 plus twice the width plus the length, in centimetres. A shipment fact;
