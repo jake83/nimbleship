@@ -29,6 +29,7 @@ from nimbleship.engine.execute import (
     StepRecord,
     execute_operation,
 )
+from nimbleship.ftp_client import FileUploader, get_file_uploader
 from nimbleship.http_client import get_http_client
 from nimbleship.labels.store import LabelStore, get_label_store
 from nimbleship.models import CarrierTraffic, Consignment, OrderEvent, Parcel, Warehouse
@@ -38,6 +39,7 @@ router = APIRouter(prefix="/consignments", tags=["consignments"])
 SessionDep = Annotated[Session, Depends(get_session)]
 LabelStoreDep = Annotated[LabelStore, Depends(get_label_store)]
 HttpClientDep = Annotated[httpx.Client, Depends(get_http_client)]
+UploaderDep = Annotated[FileUploader, Depends(get_file_uploader)]
 
 
 class ParcelIn(BaseModel):
@@ -138,6 +140,7 @@ def _book_with_carrier(
     consignment: Consignment,
     warehouse: Warehouse | None,
     http_client: httpx.Client,
+    uploader: FileUploader,
 ) -> None:
     """Execute the book operation's http steps, recording every step as
     carrier traffic (ADR 0009's golden corpus grows from real calls). On
@@ -180,7 +183,9 @@ def _book_with_carrier(
             traffic_session.commit()
 
     try:
-        result = execute_operation(definition, "book", facts, http_client, record)
+        result = execute_operation(
+            definition, "book", facts, http_client, record, uploader
+        )
     except CarrierCallError as error:
         consignment.status = "booking_failed"
         session.add(
@@ -235,6 +240,7 @@ def create_consignment(
     session: SessionDep,
     store: LabelStoreDep,
     http_client: HttpClientDep,
+    uploader: UploaderDep,
 ) -> ConsignmentOut:
     if _order_exists(session, payload.order_number):
         raise HTTPException(409, "a consignment already exists for this order")
@@ -365,7 +371,9 @@ def create_consignment(
                 "only the local_render label source is supported so far",
             )
         if book.steps:
-            _book_with_carrier(session, definition, consignment, warehouse, http_client)
+            _book_with_carrier(
+                session, definition, consignment, warehouse, http_client, uploader
+            )
         pdf = render_labels(
             LabelRequest(
                 order_number=payload.order_number,

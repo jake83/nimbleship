@@ -6,13 +6,18 @@ Unresolvable step outputs (facts the carrier has not answered yet) render
 as stable placeholder tokens so multi-step operations still replay
 deterministically offline."""
 
+import csv
+import io
+import re
 from typing import Literal, cast
 
 from pydantic import BaseModel
 
 from nimbleship.domain.carrier_definition import (
+    UPLOAD_TRANSPORTS,
     CarrierDefinition,
     MappingEntry,
+    RequestSpec,
     Step,
     Transform,
     insert_at_target,
@@ -41,6 +46,23 @@ class RenderedRequest(BaseModel):
     headers: dict[str, str] = {}
     content_type: str
     body: dict[str, Rendered]
+
+
+class RenderedUpload(BaseModel):
+    """A file rendered for an upload transport: the body is a flat file
+    (`content`), dropped at `remote_path/filename`. Connection secrets are
+    not here - the uploader reads them from config at execution, keeping the
+    Golden Replay corpus secret-free (as http auth already is)."""
+
+    step: str
+    transport: str
+    content_type: str
+    remote_path: str
+    filename: str
+    content: str
+
+
+type RenderedStep = RenderedRequest | RenderedUpload
 
 
 def _resolve(path: str, facts: Facts) -> object:
@@ -77,6 +99,10 @@ def apply_transform(transform: Transform, value: object) -> object:
             if key not in transform.table:
                 raise ValueError(f"lookup has no entry for '{key}'")
             return transform.table[key]
+        case "format":
+            # The template is validated to hold exactly one '{}', so a plain
+            # replace substitutes the value without str.format's brace rules.
+            return transform.template.replace("{}", str(value))
 
 
 def _render_mapping(entries: list[MappingEntry], facts: Facts) -> dict[str, Rendered]:
@@ -119,12 +145,65 @@ def _render_entry(entry: MappingEntry, facts: Facts) -> Rendered:
     return str(value)
 
 
+def _render_filename(template: str, facts: Facts) -> str:
+    """Substitute `{fact.path}` placeholders in a filename template. Pure
+    fact substitution - no expressions - so a filename stays data, readable
+    and validatable, not a template language (ADR 0009)."""
+
+    def _substitute(match: "re.Match[str]") -> str:
+        return str(_resolve(match.group(1), facts))
+
+    return re.sub(r"\{([^{}]+)\}", _substitute, template)
+
+
+def _render_csv(entries: list[MappingEntry], facts: Facts) -> str:
+    """One RFC 4180 row (comma-delimited, CRLF, minimal quoting - what the
+    carriers' legacy CSV writers produced) from the mapping entries in order.
+    Targets name columns for readability; the row is positional."""
+    row: list[str] = []
+    for entry in entries:
+        value = _render_entry(entry, facts)
+        if isinstance(value, list | dict):
+            raise ValueError(
+                f"csv field '{entry.target}' rendered a {type(value).__name__}, "
+                "not a scalar"
+            )
+        row.append("" if value is None else str(value))
+    buffer = io.StringIO()
+    csv.writer(buffer).writerow(row)
+    return buffer.getvalue()
+
+
+def _render_content(request: RequestSpec, facts: Facts) -> str:
+    if request.content_type == "csv":
+        return _render_csv(request.mapping, facts)
+    raise ValueError(
+        f"upload content_type '{request.content_type}' has no file rendering yet"
+    )
+
+
+def _render_upload(step: Step, facts: Facts) -> RenderedUpload:
+    remote_path = str(_resolve(step.request.url, facts))
+    # The schema requires a filename for upload steps.
+    assert step.request.filename is not None
+    return RenderedUpload(
+        step=step.name,
+        transport=step.transport,
+        content_type=step.request.content_type,
+        remote_path=remote_path,
+        filename=_render_filename(step.request.filename, facts),
+        content=_render_content(step.request, facts),
+    )
+
+
 def render_step(
     definition: CarrierDefinition, step: Step, facts: Facts
-) -> RenderedRequest:
+) -> RenderedStep:
     """Render one step. The executor renders step-by-step so each step sees
     the extractions of the steps before it; render_operation renders them
     all at once for offline replay."""
+    if step.transport in UPLOAD_TRANSPORTS:
+        return _render_upload(step, facts)
     url = _resolve(step.request.url, facts)
     query = dict(step.request.query)
     headers: dict[str, str] = {}
@@ -152,7 +231,7 @@ def render_step(
 
 def render_operation(
     definition: CarrierDefinition, operation: str, facts: Facts
-) -> list[RenderedRequest]:
+) -> list[RenderedStep]:
     if operation not in definition.operations:
         raise ValueError(f"definition has no operation '{operation}'")
     return [

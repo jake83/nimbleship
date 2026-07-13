@@ -9,7 +9,7 @@ from pathlib import Path
 import nimbleship.engine.plugins  # noqa: F401  (fills the plugin registries)
 from nimbleship.domain.carrier_definition import CarrierDefinition, PluginAuth
 from nimbleship.engine.auth_plugins import AUTH_PLUGINS
-from nimbleship.engine.render import render_operation
+from render_support import http_renders
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "fedex.definition.json"
 
@@ -69,7 +69,7 @@ def test_booking_is_a_single_http_step_posting_json() -> None:
 
 
 def test_the_render_carries_the_booking_shape() -> None:
-    [request] = render_operation(definition(), "book", FACTS)
+    [request] = http_renders(definition(), "book", FACTS)
 
     assert request.url == "https://apis.fedex.example/ship/v1/shipments"
     assert request.body["labelResponseOptions"] == "LABEL"
@@ -88,7 +88,7 @@ def test_the_render_carries_the_booking_shape() -> None:
 
 
 def test_the_service_type_is_looked_up_from_the_proposition() -> None:
-    [request] = render_operation(definition(), "book", FACTS)
+    [request] = http_renders(definition(), "book", FACTS)
 
     shipment = request.body["requestedShipment"]
     assert isinstance(shipment, dict)
@@ -96,7 +96,7 @@ def test_the_service_type_is_looked_up_from_the_proposition() -> None:
 
 
 def test_the_recipient_address_lines_are_joined_into_street_lines() -> None:
-    [request] = render_operation(definition(), "book", FACTS)
+    [request] = http_renders(definition(), "book", FACTS)
 
     shipment = request.body["requestedShipment"]
     assert isinstance(shipment, dict)
@@ -118,7 +118,7 @@ def test_the_recipient_address_lines_are_joined_into_street_lines() -> None:
 
 
 def test_the_shipper_block_comes_from_the_warehouse() -> None:
-    [request] = render_operation(definition(), "book", FACTS)
+    [request] = http_renders(definition(), "book", FACTS)
 
     shipment = request.body["requestedShipment"]
     assert isinstance(shipment, dict)
@@ -139,7 +139,7 @@ def test_the_shipper_block_comes_from_the_warehouse() -> None:
 
 
 def test_each_parcel_becomes_a_package_line_item_with_kg_weight() -> None:
-    [request] = render_operation(definition(), "book", FACTS)
+    [request] = http_renders(definition(), "book", FACTS)
 
     shipment = request.body["requestedShipment"]
     assert isinstance(shipment, dict)
@@ -163,8 +163,8 @@ def test_labels_are_png_pages_extracted_from_the_response() -> None:
 
 
 def test_the_render_is_deterministic() -> None:
-    first = render_operation(definition(), "book", FACTS)
-    second = render_operation(definition(), "book", FACTS)
+    first = http_renders(definition(), "book", FACTS)
+    second = http_renders(definition(), "book", FACTS)
 
     assert [r.model_dump() for r in first] == [r.model_dump() for r in second]
 
@@ -172,7 +172,7 @@ def test_the_render_is_deterministic() -> None:
 def test_the_render_carries_no_credentials() -> None:
     """Plugin auth applies at execution time; a render (and so the Golden
     Replay corpus) must stay token- and secret-free."""
-    [request] = render_operation(definition(), "book", FACTS)
+    [request] = http_renders(definition(), "book", FACTS)
 
     assert request.headers == {}
     assert "Authorization" not in request.headers

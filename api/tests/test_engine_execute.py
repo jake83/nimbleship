@@ -125,6 +125,7 @@ def test_every_step_is_recorded_with_status_and_body() -> None:
     assert record.success is True
     assert record.response_status == 200
     assert record.response_body == XML_OK
+    assert isinstance(record.request, RenderedRequest)
     assert record.request.body["OrderNumber"] == "95000254580"
     assert result.records == records
 
@@ -318,20 +319,23 @@ def test_success_when_equals_mismatch_uses_the_declared_error_path() -> None:
         execute_operation(JSON_DEFINITION, "book", facts, client)
 
 
-def test_non_http_transports_are_named_not_implemented() -> None:
+def test_an_upload_transport_without_a_backend_is_named_not_implemented() -> None:
+    # sftp_upload renders like ftp_upload (a RenderedUpload) but has no
+    # execution backend yet, so running it fails loudly and by name.
     definition = CarrierDefinition.model_validate(
         {
-            "carrier": "fagans",
-            "name": "Fagans",
+            "carrier": "dachser",
+            "name": "Dachser",
             "auth": {"scheme": "none"},
             "operations": {
                 "book": {
                     "steps": [
                         {
                             "name": "upload",
-                            "transport": "ftp_upload",
+                            "transport": "sftp_upload",
                             "request": {
-                                "url": "config.ftp_path",
+                                "url": "config.sftp_path",
+                                "filename": "{shipment.order_number}.csv",
                                 "content_type": "csv",
                                 "mapping": [
                                     {
@@ -342,20 +346,21 @@ def test_non_http_transports_are_named_not_implemented() -> None:
                             },
                         }
                     ],
+                    "label": {"source": "local_render"},
                 }
             },
         }
     )
     facts: dict[str, object] = {
         "shipment": {"order_number": "95000254580"},
-        "config": {"ftp_path": "/outbound"},
+        "config": {"sftp_path": "/outbound"},
     }
 
     with (
         _client(httpx.MockTransport(lambda request: httpx.Response(200))) as client,
-        pytest.raises(NotImplementedError, match="ftp_upload"),
+        pytest.raises(NotImplementedError, match="sftp_upload"),
     ):
-        execute_operation(definition, "book", facts, client)
+        execute_operation(definition, "book", facts, client, uploader=_FakeUploader())
 
 
 @pytest.fixture
@@ -507,3 +512,122 @@ def test_the_transmit_guard_refuses_placeholder_tokens() -> None:
 
     with pytest.raises(ValueError, match=r"steps\.manifest\.tracking"):
         assert_no_placeholders(request)
+
+
+FTP_DEFINITION = CarrierDefinition.model_validate(
+    {
+        "carrier": "fagans",
+        "name": "Fagans",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "upload",
+                        "transport": "ftp_upload",
+                        "request": {
+                            "url": "config.ftp_remote_dir",
+                            "filename": "DMC{shipment.order_number}.csv",
+                            "content_type": "csv",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"},
+                                {"target": "account", "source": "config.account_code"},
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render", "template": "standard_a6"},
+            }
+        },
+    }
+)
+
+FTP_FACTS: dict[str, object] = {
+    "shipment": {"order_number": "95000254580"},
+    "config": {
+        "account_code": "LIM2",
+        "ftp_remote_dir": "/outbound",
+        "ftp_host": "ftp.fagans.example",
+        "ftp_username": "nimbleship",
+        "ftp_password": "SECRET-PW",
+    },
+}
+
+
+class _FakeUploader:
+    """Records what the executor hands the transport; never touches FTP."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[dict[str, object], str, str, str]] = []
+        self.fail_with: str | None = None
+
+    def upload(
+        self,
+        config: dict[str, object],
+        remote_path: str,
+        filename: str,
+        content: str,
+    ) -> None:
+        from nimbleship.ftp_client import UploadError
+
+        self.calls.append((config, remote_path, filename, content))
+        if self.fail_with is not None:
+            raise UploadError(self.fail_with)
+
+
+def test_ftp_upload_step_uploads_the_rendered_file_and_records_traffic() -> None:
+    uploader = _FakeUploader()
+    records: list[StepRecord] = []
+
+    with _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client:
+        result = execute_operation(
+            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+        )
+
+    [(config, remote_path, filename, content)] = uploader.calls
+    assert remote_path == "/outbound"
+    assert filename == "DMC95000254580.csv"
+    assert content == "95000254580,LIM2\r\n"
+    # The uploader gets config to connect with; the host/creds live there.
+    assert config["ftp_host"] == "ftp.fagans.example"
+    # Fire-and-forget: nothing extracted, no tracking reference.
+    assert result.outputs == {}
+    # Recorded as carrier traffic with no HTTP status, marked successful.
+    [record] = records
+    assert record.step == "upload"
+    assert record.success is True
+    assert record.response_status is None
+
+
+def test_ftp_upload_records_the_file_but_never_the_credentials() -> None:
+    uploader = _FakeUploader()
+    records: list[StepRecord] = []
+
+    with _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client:
+        execute_operation(
+            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+        )
+
+    # The golden corpus records the rendered file, not the connection secret.
+    dumped = str(records[0].request.model_dump())
+    assert "SECRET-PW" not in dumped
+    assert "ftp_host" not in dumped
+
+
+def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None:
+    uploader = _FakeUploader()
+    uploader.fail_with = "530 Login incorrect"
+    records: list[StepRecord] = []
+
+    with (
+        _client(httpx.MockTransport(lambda r: httpx.Response(500))) as client,
+        pytest.raises(CarrierCallError, match="530 Login incorrect"),
+    ):
+        execute_operation(
+            FTP_DEFINITION, "book", FTP_FACTS, client, records.append, uploader
+        )
+
+    [record] = records
+    assert record.success is False
+    assert record.response_status is None
+    assert "530 Login incorrect" in record.response_body

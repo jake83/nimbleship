@@ -615,3 +615,93 @@ def test_config_auth_secret_serves_both_book_and_manifest_operations() -> None:
     )
 
     assert set(definition.operations) == {"book", "manifest"}
+
+
+def _ftp_step(**overrides: object) -> dict[str, object]:
+    request: dict[str, object] = {
+        "url": "config.ftp_remote_dir",
+        "filename": "{shipment.order_number}.csv",
+        "content_type": "csv",
+        "mapping": [{"target": "order", "source": "shipment.order_number"}],
+    }
+    request.update(overrides)
+    return {
+        "carrier": "fagans",
+        "name": "Fagans",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {"name": "upload", "transport": "ftp_upload", "request": request}
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+
+
+def test_a_valid_ftp_upload_step_validates() -> None:
+    definition = CarrierDefinition.model_validate(_ftp_step())
+
+    step = definition.operations["book"].steps[0]
+    assert step.transport == "ftp_upload"
+    assert step.request.filename == "{shipment.order_number}.csv"
+
+
+def test_an_upload_step_requires_a_filename() -> None:
+    with pytest.raises(ValidationError, match="filename"):
+        CarrierDefinition.model_validate(_ftp_step(filename=None))
+
+
+def test_an_upload_step_must_be_csv() -> None:
+    with pytest.raises(ValidationError, match="csv"):
+        CarrierDefinition.model_validate(_ftp_step(content_type="json"))
+
+
+def test_an_upload_step_takes_no_response() -> None:
+    # Uploads are fire-and-forget: declaring a response/extraction would
+    # promise data that never comes back.
+    bad = _ftp_step()
+    bad["operations"]["book"]["steps"][0]["response"] = {  # type: ignore[index]
+        "format": "json",
+        "extract": [{"name": "x", "path": "y"}],
+    }
+    with pytest.raises(ValidationError, match="response"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_an_http_step_may_not_carry_a_filename() -> None:
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "filename": "{shipment.order_number}.csv",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "o", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+    with pytest.raises(ValidationError, match="filename"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_a_filename_placeholder_must_resolve_to_a_known_fact() -> None:
+    with pytest.raises(ValidationError, match="filename"):
+        CarrierDefinition.model_validate(
+            _ftp_step(filename="{shipment.nope}-{bogus.thing}.csv")
+        )
