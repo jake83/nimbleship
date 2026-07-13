@@ -14,4 +14,7 @@ class AuthPlugin(Protocol):
     ) -> RenderedRequest: ...
 
 
+# Plugins register here, keyed by the name definitions reference in
+# `auth.plugin`. The registry starts empty; each plugin module adds its
+# entry at import time.
 AUTH_PLUGINS: dict[str, AuthPlugin] = {}

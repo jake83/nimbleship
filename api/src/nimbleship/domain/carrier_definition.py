@@ -84,10 +84,24 @@ class Extraction(BaseModel):
     transform: Transform | None = None
 
 
+class SuccessCondition(BaseModel):
+    """Success means the value at `path` exists and is non-empty; with
+    `equals`, it must also match exactly."""
+
+    path: str
+    equals: str | None = None
+
+
+class ErrorMessageSource(BaseModel):
+    """Where the carrier puts its human-readable error message."""
+
+    path: str
+
+
 class ResponseSpec(BaseModel):
     format: Literal["json", "xml"]
-    success_when: dict[str, str] | None = None
-    error_message: dict[str, str] | None = None
+    success_when: SuccessCondition | None = None
+    error_message: ErrorMessageSource | None = None
     extract: list[Extraction] = []
 
 
@@ -147,7 +161,7 @@ type Auth = Annotated[
 
 
 def _validate_source(
-    source: str, known_steps: set[str], in_each: bool, where: str
+    source: str, known_steps: dict[str, set[str]], in_each: bool, where: str
 ) -> None:
     root = source.split(".", 1)[0]
     if root in FACT_ROOTS:
@@ -158,6 +172,14 @@ def _validate_source(
         parts = source.split(".")
         if len(parts) < 3 or parts[1] not in known_steps:
             raise ValueError(f"{where}: unknown step in source '{source}'")
+        # The output name must be one of the referenced step's declared
+        # extractions: a typo here would render a placeholder token and
+        # send it to a live carrier (refuter, PR #30).
+        if parts[2] not in known_steps[parts[1]]:
+            raise ValueError(
+                f"{where}: unknown output '{parts[2]}' of step "
+                f"'{parts[1]}' in source '{source}'"
+            )
         return
     raise ValueError(f"{where}: unknown source root '{root}'")
 
@@ -173,21 +195,25 @@ class CarrierDefinition(BaseModel):
         # The auth secret is a source path too: a typo there must fail at
         # authoring like any other unknown fact (refuter, PR #26).
         if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
-            _validate_source(self.auth.secret, set(), False, "auth")
+            _validate_source(self.auth.secret, {}, False, "auth")
         for op_name, operation in self.operations.items():
-            earlier: set[str] = set()
+            earlier: dict[str, set[str]] = {}
             for step in operation.steps:
                 where = f"{op_name}.{step.name}"
                 _validate_source(step.request.url, earlier, False, where)
                 for entry in step.request.mapping:
                     self._validate_entry(entry, earlier, False, where)
-                earlier.add(step.name)
+                earlier[step.name] = (
+                    {extraction.name for extraction in step.response.extract}
+                    if step.response is not None
+                    else set()
+                )
         return self
 
     def _validate_entry(
         self,
         entry: MappingEntry,
-        known_steps: set[str],
+        known_steps: dict[str, set[str]],
         in_each: bool,
         where: str,
     ) -> None:

@@ -27,7 +27,13 @@ _DROPOUT_DEFINITION: dict[str, object] = {
     },
 }
 
-_DEFINITIONS_LOCK_KEY = 815_004
+# Advisory lock key registry - every pg_advisory_xact_lock key in this
+# codebase, in one place: a new key MUST be unique here, or two unrelated
+# write paths silently serialise against each other.
+#   815_003  rulebook writes            (domain/rulebook.py)
+#   815_004  proposition seeding        (domain/propositions.py)
+#   815_005  definition writes          (this module)
+_DEFINITIONS_LOCK_KEY = 815_005
 
 
 def _serialise_definition_writes(session: Session) -> None:
