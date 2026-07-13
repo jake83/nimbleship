@@ -132,6 +132,33 @@ def brightpost_client(client: TestClient) -> TestClient:
     return client
 
 
+def test_a_manifest_definition_publishes_with_order_history_present(
+    client: TestClient,
+) -> None:
+    # The publish render gate renders every shipment-context operation
+    # against recent consignments. A manifest operation renders from
+    # manifest facts, not shipment facts, so it must be skipped by the gate
+    # - otherwise re-publishing a manifest-capable definition once orders
+    # exist would be refused (the gate would find no shipment.* facts for
+    # manifest.date). Publish with history present to pin that.
+    _publish_brightpost(client)
+    assert (
+        client.post("/api/consignments", json=_consignment("HIST-1")).status_code == 201
+    )
+
+    definition = client.post(
+        "/api/carriers/brightpost/definitions/drafts",
+        json={"author": "jake", "definition": MANIFESTING_DEFINITION},
+    )
+    assert definition.status_code == 201
+    version = definition.json()["version"]
+
+    published = client.post(
+        f"/api/carriers/brightpost/definitions/versions/{version}/publish"
+    )
+    assert published.status_code == 200
+
+
 def _queue_jobs(app: FastAPI) -> list[dict[str, object]]:
     connector = cast(InMemoryConnector, app.state.queue_connector)
     return list(connector.jobs.values())
