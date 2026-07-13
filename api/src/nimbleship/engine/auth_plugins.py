@@ -1,8 +1,7 @@
-"""Auth plugins: the extension point for carrier auth schemes the closed
-vocabulary cannot say (OAuth token dances and friends, ADR 0009).
-
-The executor calls the plugin named by a definition's `auth.scheme:
-"plugin"` entry just before a rendered request is transmitted."""
+"""The auth-scheme extension point (ADR 0009): a Carrier Definition with
+plugin auth names an entry in this registry, and the executor applies it to
+each rendered http request at execution time - never at render time, so
+tokens and signatures stay out of renders and the Golden Replay corpus."""
 
 from typing import Protocol
 

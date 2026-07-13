@@ -1,0 +1,104 @@
+{
+  "notes": [
+    "Example Carrier Definition for FedEx ship/v1 booking: OAuth plugin auth, one http step, PNG label pages.",
+    "Carrier Config keys referenced: ship_url, token_url, client_id, client_secret (the oauth_client_credentials plugin reads token_url/client_id/client_secret), account_number.",
+    "customsClearanceDetail (totalCustomsValue, dutiesPayment, commodities) is deliberately omitted: commodity lines need product-level facts (description, country of manufacture, quantity, unit price, unit weight) that are not modelled yet. It joins the definition when product facts land.",
+    "The serviceType lookup table maps Delivery Proposition codes and grows per install as data; list extraction over pieceResponses uses the '*' pluck-each-element path segment, executed by the response-extraction layer."
+  ],
+  "carrier": "fedex",
+  "name": "FedEx",
+  "auth": {
+    "scheme": "plugin",
+    "plugin": "oauth_client_credentials"
+  },
+  "operations": {
+    "book": {
+      "steps": [
+        {
+          "name": "ship",
+          "transport": "http",
+          "request": {
+            "method": "POST",
+            "url": "config.ship_url",
+            "content_type": "json",
+            "mapping": [
+              { "target": "labelResponseOptions", "const": "LABEL" },
+              { "target": "accountNumber.value", "source": "config.account_number" },
+              { "target": "requestedShipment.shipDatestamp", "source": "shipment.ship_date" },
+              { "target": "requestedShipment.pickupType", "const": "USE_SCHEDULED_PICKUP" },
+              {
+                "target": "requestedShipment.serviceType",
+                "source": "shipment.proposition",
+                "transform": {
+                  "name": "lookup",
+                  "table": {
+                    "next-day": "INTERNATIONAL_PRIORITY",
+                    "economy": "INTERNATIONAL_ECONOMY"
+                  }
+                }
+              },
+              { "target": "requestedShipment.packagingType", "const": "YOUR_PACKAGING" },
+              { "target": "requestedShipment.blockInsightVisibility", "const": "false" },
+              { "target": "requestedShipment.shippingChargesPayment.paymentType", "const": "SENDER" },
+              { "target": "requestedShipment.labelSpecification.imageType", "const": "PNG" },
+              { "target": "requestedShipment.labelSpecification.labelStockType", "const": "PAPER_4X6" },
+              { "target": "requestedShipment.shipper.contact.personName", "source": "warehouse.contact_name" },
+              { "target": "requestedShipment.shipper.contact.phoneNumber", "source": "warehouse.phone" },
+              { "target": "requestedShipment.shipper.contact.companyName", "source": "warehouse.name" },
+              {
+                "target": "requestedShipment.shipper.address.streetLines.0",
+                "source": "warehouse.address_lines",
+                "transform": { "name": "join", "with": ", " }
+              },
+              { "target": "requestedShipment.shipper.address.city", "source": "warehouse.city" },
+              { "target": "requestedShipment.shipper.address.postalCode", "source": "warehouse.postcode" },
+              { "target": "requestedShipment.shipper.address.countryCode", "source": "warehouse.country" },
+              { "target": "requestedShipment.shipper.address.residential", "const": "false" },
+              { "target": "requestedShipment.recipients.0.contact.personName", "source": "shipment.recipient_name" },
+              { "target": "requestedShipment.recipients.0.contact.phoneNumber", "source": "shipment.recipient_phone" },
+              {
+                "target": "requestedShipment.recipients.0.address.streetLines.0",
+                "source": "shipment.address_lines",
+                "transform": { "name": "join", "with": ", " }
+              },
+              { "target": "requestedShipment.recipients.0.address.city", "source": "shipment.city" },
+              { "target": "requestedShipment.recipients.0.address.postalCode", "source": "shipment.postcode" },
+              { "target": "requestedShipment.recipients.0.address.countryCode", "source": "shipment.country" },
+              { "target": "requestedShipment.recipients.0.address.residential", "const": "true" },
+              {
+                "target": "requestedShipment.requestedPackageLineItems",
+                "source": "shipment.parcels",
+                "each": [
+                  { "target": "weight.units", "const": "KG" },
+                  { "target": "weight.value", "source": "item.weight_kg" }
+                ]
+              }
+            ]
+          },
+          "response": {
+            "format": "json",
+            "error_message": { "path": "errors.0.message" },
+            "extract": [
+              {
+                "name": "tracking_reference",
+                "path": "output.transactionShipments.0.masterTrackingNumber"
+              },
+              {
+                "name": "label_pages",
+                "path": "output.transactionShipments.0.pieceResponses.*.packageDocuments.0.encodedLabel"
+              },
+              {
+                "name": "parcel_carrier_barcodes",
+                "path": "output.transactionShipments.0.completedShipmentDetail.completedPackageDetails.*.operationalDetail.barcodes.stringBarcodes.0.value"
+              }
+            ]
+          }
+        }
+      ],
+      "label": {
+        "source": "png_pages",
+        "from_extract": "label_pages"
+      }
+    }
+  }
+}
