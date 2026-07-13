@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from procrastinate.testing import InMemoryConnector
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -11,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from nimbleship.db import Base, get_session
 from nimbleship.labels.store import LabelStore, get_label_store
 from nimbleship.main import create_app
+from nimbleship.queue import queue_app
 
 
 @pytest.fixture
@@ -39,7 +41,13 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
     application.dependency_overrides[get_label_store] = lambda: LabelStore(
         tmp_path / "labels"
     )
-    yield application
+    # Procrastinate's in-memory connector: enqueued jobs are recorded for
+    # assertions, never executed, and the sqlite session's connection is
+    # ignored. The Postgres integration tests cover the real defer path.
+    queue_connector = InMemoryConnector()
+    application.state.queue_connector = queue_connector
+    with queue_app.replace_connector(queue_connector):
+        yield application
     engine.dispose()
 
 

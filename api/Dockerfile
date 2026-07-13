@@ -9,7 +9,11 @@ RUN uv sync --frozen --no-install-project --no-dev
 COPY src ./src
 COPY README.md alembic.ini ./
 COPY migrations ./migrations
-RUN uv sync --frozen --no-dev
+# --no-editable installs nimbleship as a real copy into the venv's
+# site-packages. The default editable install writes a .pth pointing at
+# /app/src, which the runtime stage does not carry - importing nimbleship
+# (the boot migration, the worker) would fail with ModuleNotFoundError.
+RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim-bookworm
 

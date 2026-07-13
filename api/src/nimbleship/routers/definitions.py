@@ -7,7 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from nimbleship.db import get_session
-from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.domain.carrier_definition import (
+    FACT_ROOTS,
+    CarrierDefinition,
+    operation_fact_roots,
+)
 from nimbleship.domain.definitions import (
     active_definition_row,
     carrier_config,
@@ -138,12 +142,20 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
         .scalars()
         .all()
     )
+    # A manifest operation renders from a synthetic manifest over many
+    # consignments, not one shipment, so shipment facts cannot gate it;
+    # rendering it offline needs manifest facts and is a tracked follow-up.
+    shipment_operations = [
+        operation
+        for operation in definition.operations
+        if operation_fact_roots(operation) == FACT_ROOTS
+    ]
     for consignment in recent:
         facts: dict[str, object] = {
             "shipment": shipment_facts(consignment),
             "config": config,
         }
-        for operation in definition.operations:
+        for operation in shipment_operations:
             try:
                 render_operation(definition, operation, facts)
             except ValueError as error:

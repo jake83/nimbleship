@@ -1,5 +1,6 @@
-"""Postgres-only integration tests: the advisory-lock branch and the
-migrations, exercised against a real server. Skipped unless
+"""Postgres-only integration tests: the advisory-lock branch, the
+migrations, and the job queue's enqueue-with-commit atomicity (ADR 0004),
+exercised against a real server. Skipped unless
 NIMBLESHIP_TEST_POSTGRES_URL is set (CI provides a service container) -
 closing the coverage gap the refuter flagged on PR #9."""
 
@@ -27,6 +28,48 @@ from nimbleship.db import Base
 from nimbleship.domain.allocation import ServiceDeclaration
 from nimbleship.domain.rulebook import active_rulebook, create_draft, publish
 from nimbleship.models import CarrierTraffic, RulebookVersion
+from nimbleship.queue import defer_manifest_send
+
+# The queue's schema objects (tables, functions, types) are Procrastinate's,
+# created by the migration chain, so cleaning a test database means removing
+# them too - they are not in Base.metadata.
+DROP_PROCRASTINATE = """
+DO $$
+DECLARE
+    name text;
+    args text;
+BEGIN
+    FOR name IN
+        SELECT tablename FROM pg_tables
+        WHERE schemaname = current_schema() AND tablename LIKE 'procrastinate_%'
+    LOOP
+        EXECUTE format('DROP TABLE IF EXISTS %I CASCADE', name);
+    END LOOP;
+    FOR name, args IN
+        SELECT p.proname, pg_get_function_identity_arguments(p.oid)
+        FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = current_schema() AND p.proname LIKE 'procrastinate_%'
+    LOOP
+        EXECUTE format('DROP FUNCTION IF EXISTS %I(%s) CASCADE', name, args);
+    END LOOP;
+    FOR name IN
+        SELECT t.typname FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid
+        WHERE n.nspname = current_schema()
+          AND t.typname LIKE 'procrastinate_%' AND t.typtype IN ('e', 'c')
+    LOOP
+        EXECUTE format('DROP TYPE IF EXISTS %I CASCADE', name);
+    END LOOP;
+END
+$$;
+"""
+
+
+def _clean_database(engine: Engine) -> None:
+    Base.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        connection.execute(text(DROP_PROCRASTINATE))
+
 
 POSTGRES_URL = os.environ.get("NIMBLESHIP_TEST_POSTGRES_URL")
 
@@ -55,32 +98,64 @@ SERVICES = [
 def pg_engine() -> "Iterator[Engine]":
     assert POSTGRES_URL is not None
     engine = create_engine(POSTGRES_URL)
-    Base.metadata.drop_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    _clean_database(engine)
     Base.metadata.create_all(engine)
     yield engine
     Base.metadata.drop_all(engine)
     engine.dispose()
 
 
-def test_alembic_upgrade_head_against_postgres() -> None:
+def _alembic_config() -> Config:
     assert POSTGRES_URL is not None
-    engine = create_engine(POSTGRES_URL)
-    Base.metadata.drop_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
-
     config = Config(str(API_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(API_ROOT / "migrations"))
     config.set_main_option("sqlalchemy.url", POSTGRES_URL)
-    command.upgrade(config, "head")
+    return config
 
-    assert set(Base.metadata.tables) <= set(inspect(engine).get_table_names())
-    Base.metadata.drop_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text("DROP TABLE alembic_version"))
+
+@pytest.fixture
+def migrated_engine() -> "Iterator[Engine]":
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL)
+    _clean_database(engine)
+    command.upgrade(_alembic_config(), "head")
+    yield engine
+    _clean_database(engine)
     engine.dispose()
+
+
+def test_alembic_upgrade_head_against_postgres(migrated_engine: Engine) -> None:
+    tables = set(inspect(migrated_engine).get_table_names())
+    assert set(Base.metadata.tables) <= tables
+    # The queue lives in the same database (ADR 0004): the migration chain
+    # owns Procrastinate's schema too.
+    assert "procrastinate_jobs" in tables
+
+
+def test_manifest_jobs_enqueue_in_the_callers_transaction(
+    migrated_engine: Engine,
+) -> None:
+    factory = sessionmaker(bind=migrated_engine)
+
+    def queued_jobs() -> list[tuple[str, dict[str, object], str]]:
+        # A separate connection: only committed jobs are visible to it,
+        # which is exactly what the worker will see.
+        with migrated_engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT task_name, args, status FROM procrastinate_jobs")
+            ).all()
+        return [(row.task_name, row.args, row.status) for row in rows]
+
+    with factory() as session:
+        defer_manifest_send(session, manifest_id=1)
+        assert queued_jobs() == []  # not yet committed: invisible to the worker
+        session.rollback()
+    assert queued_jobs() == []  # rolled back: the job vanished with the writes
+
+    with factory() as session:
+        defer_manifest_send(session, manifest_id=2)
+        session.commit()
+    assert queued_jobs() == [("manifests.send", {"manifest_id": 2}, "todo")]
 
 
 def test_concurrent_publishes_of_same_draft_pick_exactly_one_winner(
@@ -181,3 +256,109 @@ def test_booking_traffic_survives_losing_the_duplicate_order_race(
         assert [
             (t.carrier, t.order_number, t.step, t.response_status) for t in traffic
         ] == [("furdeco", ORDER, "save", 200)]
+
+
+# A carrier that manifests, for the dispatch-confirmation race test below.
+MANIFEST_DEFINITION = {
+    "carrier": "brightpost",
+    "name": "Bright Post",
+    "auth": {"scheme": "header_key", "header": "X-Api-Key", "secret": "config.api_key"},
+    "operations": {
+        "manifest": {
+            "steps": [
+                {
+                    "name": "declare",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.manifest_url",
+                        "content_type": "json",
+                        "mapping": [{"target": "date", "source": "manifest.date"}],
+                    },
+                }
+            ]
+        }
+    },
+}
+
+
+def test_concurrent_dispatch_confirmations_dispatch_a_consignment_once(
+    migrated_engine: Engine,
+) -> None:
+    """Two overlapping confirmations for the same order must not both
+    dispatch it and declare it on two manifests. The row lock in
+    confirm_dispatch (with_for_update) is a no-op on SQLite, so only a real
+    Postgres run under contention proves it: exactly one confirmation
+    dispatches, the other is rejected, and exactly one Manifest exists.
+    Uses the threading.Barrier pattern the publish-race test established."""
+    from fastapi import HTTPException
+
+    from nimbleship.models import (
+        CarrierConfig,
+        CarrierDefinitionVersion,
+        Consignment,
+        Manifest,
+        Parcel,
+    )
+    from nimbleship.routers.manifests import DispatchConfirmationIn, confirm_dispatch
+
+    factory = sessionmaker(bind=migrated_engine)
+    with factory() as setup:
+        setup.add(
+            CarrierDefinitionVersion(
+                carrier="brightpost",
+                version=1,
+                status="published",
+                author="pg-test",
+                data=MANIFEST_DEFINITION,
+            )
+        )
+        setup.add(
+            CarrierConfig(
+                carrier="brightpost",
+                data={"api_key": "K", "manifest_url": "https://api.brightpost/m"},
+            )
+        )
+        consignment = Consignment(
+            order_number="RACE-1",
+            recipient_name="John Doe",
+            address_lines=["10 Downing Street"],
+            postcode="SW1A 2AA",
+            destination_country="GB",
+            status="allocated",
+            carrier="brightpost",
+            service="BP-STD",
+            allocation={},
+        )
+        consignment.parcels = [Parcel(sequence=1, weight_kg="1", barcode="RACE-1-1")]
+        setup.add(consignment)
+        setup.commit()
+
+    barrier = threading.Barrier(2, timeout=15)
+    outcomes: list[str] = []
+    lock = threading.Lock()
+
+    def attempt(session: Session) -> None:
+        try:
+            barrier.wait()
+            confirm_dispatch(DispatchConfirmationIn(order_numbers=["RACE-1"]), session)
+            session.commit()
+            outcome = "dispatched"
+        except HTTPException:
+            session.rollback()
+            outcome = "rejected"
+        finally:
+            session.close()
+        with lock:
+            outcomes.append(outcome)
+
+    threads = [threading.Thread(target=attempt, args=(factory(),)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(outcomes) == ["dispatched", "rejected"]
+    with factory() as check:
+        manifests = check.execute(select(Manifest)).scalars().all()
+        assert len(manifests) == 1
