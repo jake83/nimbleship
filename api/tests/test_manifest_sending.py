@@ -92,6 +92,13 @@ FAN_OUT_DEFINITION: dict[str, object] = {
                         "mapping": [
                             {"target": "order", "source": "shipment.order_number"},
                             {"target": "postcode", "source": "shipment.postcode"},
+                            {
+                                "target": "units",
+                                "source": "shipment.parcels",
+                                "each": [
+                                    {"target": "sscc", "source": "item.carrier_barcode"}
+                                ],
+                            },
                         ],
                     },
                     "response": {
@@ -162,7 +169,12 @@ def _seed_manifest(session: Session, definition: dict[str, object]) -> Manifest:
             allocation={},
         )
         consignment.parcels = [
-            Parcel(sequence=1, weight_kg="4.2", barcode=f"{order}-1")
+            Parcel(
+                sequence=1,
+                weight_kg="4.2",
+                barcode=f"{order}-1",
+                carrier_barcode=f"SSCC-{order}",
+            )
         ]
         session.add(consignment)
         consignments.append(consignment)
@@ -326,7 +338,11 @@ def test_a_fan_out_manifest_sends_one_document_per_consignment(
         send_manifest(session, manifest, http_client, {})
 
     # One document per consignment, each rendered from its own shipment facts.
-    assert [json.loads(r.content)["order"] for r in requests] == ["O-1", "O-2"]
+    bodies = [json.loads(r.content) for r in requests]
+    assert [body["order"] for body in bodies] == ["O-1", "O-2"]
+    # The per-parcel SSCC (carrier_barcode, stored at booking) reaches the
+    # carrier - the point of fanning out per order.
+    assert bodies[0]["units"] == [{"sscc": "SSCC-O-1"}]
     assert manifest.status == "sent"
     assert manifest.sent_at is not None
 
