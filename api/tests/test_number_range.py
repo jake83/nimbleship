@@ -74,6 +74,15 @@ def test_the_halt_policy_claims_up_to_the_limit_then_raises(session: Session) ->
         allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
 
 
+def test_a_halt_range_with_no_capacity_is_exhausted_before_the_first_claim(
+    session: Session,
+) -> None:
+    # wrap_after below 1 leaves nothing claimable; a fresh range must not still
+    # hand out "1" past its own limit.
+    with pytest.raises(RangeExhausted, match="no capacity"):
+        allocate_number(session, "dachser", "empty", wrap_after=0, policy="halt")
+
+
 def test_wrap_is_the_default_policy(session: Session) -> None:
     session.add(CarrierNumberSequence(carrier="palletforce", name="c", next_value=3))
     session.flush()
@@ -215,6 +224,15 @@ def test_the_sscc_plugin_fails_loudly_on_bad_prefix_or_suffix() -> None:
     with pytest.raises(ValueError, match="sscc_prefix"):
         plugin.compute(
             {"config": {"sscc_prefix": "12x"}, "allocated": {"sscc_suffix": "1"}}
+        )
+    # A non-ASCII "digit" (superscript one) passes str.isdigit but int() would
+    # reject it, so it is refused with the prefix message, not a later crash.
+    with pytest.raises(ValueError, match="sscc_prefix"):
+        plugin.compute(
+            {
+                "config": {"sscc_prefix": "\u00b9234567890"},
+                "allocated": {"sscc_suffix": "1"},
+            }
         )
     # A prefix that fills all 17 body digits leaves no room for a suffix.
     with pytest.raises(ValueError, match="no room"):

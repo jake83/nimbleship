@@ -90,6 +90,10 @@ def allocate_number(
     `low_water` is set, a structured warning is logged once the remaining
     count reaches it.
 
+    A given (carrier, name) must be allocated with a consistent `policy` and
+    `wrap_after`: neither is stored on the row, so switching an exhausted
+    `halt` range to `wrap` is unsupported and would reissue.
+
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
     the engine-agnostic backstop - a lost race raises rather than ever
@@ -102,6 +106,13 @@ def allocate_number(
         )
     ).scalar_one_or_none()
     if current is None:
+        # A halt range with no capacity (wrap_after below 1) can claim nothing,
+        # so it is exhausted before the first allocation.
+        if policy == "halt" and wrap_after < 1:
+            raise RangeExhausted(
+                f"number range '{name}' for carrier '{carrier}' has no capacity "
+                f"(wrap_after={wrap_after})"
+            )
         # A fresh range: claiming value 1 and creating the counter are one
         # insert, so a concurrent first caller trips the primary key.
         session.add(CarrierNumberSequence(carrier=carrier, name=name, next_value=2))
@@ -217,7 +228,10 @@ class SSCCField:
     def compute(self, facts: dict[str, object]) -> object:
         config = facts.get("config")
         prefix = config.get(self._prefix_key) if isinstance(config, dict) else None
-        if not isinstance(prefix, str) or not prefix.isdigit():
+        # isascii guards against non-ASCII "digits" (e.g. superscripts) that
+        # str.isdigit accepts but int() rejects, which would otherwise blow up
+        # later inside the check-digit sum with a confusing message.
+        if not isinstance(prefix, str) or not (prefix.isascii() and prefix.isdigit()):
             raise ValueError(
                 f"config '{self._prefix_key}' is not a digit-string SSCC prefix: "
                 f"{prefix!r}"
