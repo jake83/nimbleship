@@ -7,6 +7,7 @@ httpx.MockTransport: zero real network."""
 
 import base64
 import json
+import textwrap
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -322,3 +323,22 @@ def test_a_base64_label_that_is_not_a_pdf_fails_the_booking(
     created = client.post("/api/consignments", json=CONSIGNMENT)
     assert created.status_code == 502
     assert "not a PDF" in created.text
+
+
+def test_a_line_wrapped_base64_label_still_decodes(
+    app: FastAPI, client: TestClient
+) -> None:
+    # Server-side encoders often line-wrap base64 at 76 columns; a valid label
+    # must not be rejected just because its JSON carries newlines.
+    _publish_label_carrier(client)
+    wrapped = "\n".join(textwrap.wrap(base64.b64encode(FAKE_PDF).decode(), 76))
+    _carrier_answers(
+        app, lambda request: httpx.Response(200, text=_label_carrier_response(wrapped))
+    )
+
+    created = client.post("/api/consignments", json=CONSIGNMENT)
+    assert created.status_code == 201
+
+    label = client.get("/api/consignments/95000254580/label.pdf")
+    assert label.status_code == 200
+    assert label.content == FAKE_PDF

@@ -152,7 +152,10 @@ def _base64_pdf_label(
             f"'{from_extract}'",
         )
     try:
-        pdf = base64.b64decode(raw, validate=True)
+        # Strip whitespace first: a carrier's JSON may line-wrap the base64
+        # (MIME-style) or leave a trailing newline, which validate=True would
+        # otherwise reject as a false booking failure on a valid label.
+        pdf = base64.b64decode("".join(raw.split()), validate=True)
     except (binascii.Error, ValueError) as error:
         raise HTTPException(
             502, f"carrier '{carrier}' returned an invalid base64 label: {error}"
