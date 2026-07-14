@@ -275,6 +275,10 @@ def test_the_sscc_plugin_fails_loudly_on_bad_prefix_or_suffix() -> None:
         plugin.compute({"config": good_prefix, "allocated": {"sscc_suffix": "1234567"}})
     with pytest.raises(ValueError, match="allocate_number"):
         plugin.compute({"config": good_prefix})
+    # The serial goes through the same ASCII-digit guard as the prefix, so a
+    # non-ASCII "digit" (superscript two) fails cleanly, not with a raw int().
+    with pytest.raises(ValueError, match="not a number"):
+        plugin.compute({"config": good_prefix, "allocated": {"sscc_suffix": "\u00b2"}})
 
 
 def test_sscc_sequences_key_on_the_prefix_so_a_new_range_starts_fresh(
