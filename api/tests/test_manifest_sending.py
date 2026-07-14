@@ -28,6 +28,7 @@ from nimbleship.models import (
     Parcel,
 )
 from nimbleship.queue import MANIFEST_RETRY, queue_app, run_manifest_send
+from nimbleship.uploaders import UploadError
 
 DEFINITION: dict[str, object] = {
     "carrier": "brightpost",
@@ -74,39 +75,35 @@ DEFINITION: dict[str, object] = {
 }
 
 
+# Fan-out is upload-only (retry re-sends every document), and a per-parcel
+# SSCC needs the nested XML shape, so Dachser's manifest is one XML file per
+# order dropped on SFTP.
 FAN_OUT_DEFINITION: dict[str, object] = {
     "carrier": "brightpost",
     "name": "Bright Post",
-    "auth": {"scheme": "header_key", "header": "X-Api-Key", "secret": "config.api_key"},
+    "auth": {"scheme": "none"},
     "operations": {
         "manifest": {
             "fan_out": True,
             "steps": [
                 {
-                    "name": "declare",
-                    "transport": "http",
+                    "name": "drop",
+                    "transport": "sftp_upload",
                     "request": {
-                        "method": "POST",
-                        "url": "config.manifest_url",
-                        "content_type": "json",
+                        "url": "config.sftp_remote_dir",
+                        "filename": "{shipment.order_number}.xml",
+                        "content_type": "xml",
+                        "root_element": "Order",
                         "mapping": [
-                            {"target": "order", "source": "shipment.order_number"},
-                            {"target": "postcode", "source": "shipment.postcode"},
+                            {"target": "@Ref", "source": "shipment.order_number"},
+                            {"target": "Postcode", "source": "shipment.postcode"},
                             {
-                                "target": "units",
+                                "target": "Unit",
                                 "source": "shipment.parcels",
                                 "each": [
-                                    {"target": "sscc", "source": "item.carrier_barcode"}
+                                    {"target": "SSCC", "source": "item.carrier_barcode"}
                                 ],
                             },
-                        ],
-                    },
-                    "response": {
-                        "format": "json",
-                        "success_when": {"path": "manifest_id"},
-                        "error_message": {"path": "error"},
-                        "extract": [
-                            {"name": "manifest_reference", "path": "manifest_id"}
                         ],
                     },
                 }
@@ -151,6 +148,7 @@ def _seed_manifest(session: Session, definition: dict[str, object]) -> Manifest:
                 "api_key": "SECRET-KEY",
                 "manifest_url": "https://api.brightpost.example/manifests",
                 "ftp_remote_dir": "/outbound",
+                "sftp_remote_dir": "/inbox",
             },
         )
     )
@@ -263,8 +261,9 @@ FTP_MANIFEST_DEFINITION: dict[str, object] = {
 
 
 class _RecordingUploader:
-    def __init__(self) -> None:
+    def __init__(self, fail_on: str | None = None) -> None:
         self.calls: list[tuple[str, str, str]] = []
+        self._fail_on = fail_on
 
     def upload(
         self,
@@ -274,6 +273,8 @@ class _RecordingUploader:
         content: str,
     ) -> None:
         self.calls.append((remote_path, filename, content))
+        if filename == self._fail_on:
+            raise UploadError(f"upload rejected: {filename}")
 
 
 def test_a_manifest_over_ftp_is_routed_to_the_uploader(session: Session) -> None:
@@ -328,21 +329,18 @@ def test_a_fan_out_manifest_sends_one_document_per_consignment(
     session: Session,
 ) -> None:
     manifest = _seed_manifest(session, FAN_OUT_DEFINITION)
-    requests: list[httpx.Request] = []
+    uploader = _RecordingUploader()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, json={"manifest_id": f"MAN-{len(requests)}"})
+    with _client(lambda request: httpx.Response(500)) as http_client:
+        send_manifest(session, manifest, http_client, {"sftp_upload": uploader})
 
-    with _client(handler) as http_client:
-        send_manifest(session, manifest, http_client, {})
-
-    # One document per consignment, each rendered from its own shipment facts.
-    bodies = [json.loads(r.content) for r in requests]
-    assert [body["order"] for body in bodies] == ["O-1", "O-2"]
+    # One document dropped per consignment, named and rendered from its own
+    # shipment facts.
+    assert [filename for _, filename, _ in uploader.calls] == ["O-1.xml", "O-2.xml"]
+    assert [remote for remote, _, _ in uploader.calls] == ["/inbox", "/inbox"]
     # The per-parcel SSCC (carrier_barcode, stored at booking) reaches the
     # carrier - the point of fanning out per order.
-    assert bodies[0]["units"] == [{"sscc": "SSCC-O-1"}]
+    assert "<Unit><SSCC>SSCC-O-1</SSCC></Unit>" in uploader.calls[0][2]
     assert manifest.status == "sent"
     assert manifest.sent_at is not None
 
@@ -351,12 +349,6 @@ def test_a_fan_out_manifest_sends_one_document_per_consignment(
         ("O-1", "manifested"),
         ("O-2", "manifested"),
     ]
-    # Each consignment's event carries its own send's extracted output.
-    references = {
-        e.order_number: e.detail["extracted"]["manifest_reference"]  # type: ignore[index]
-        for e in events
-    }
-    assert references == {"O-1": "MAN-1", "O-2": "MAN-2"}
 
     # Each fan-out document's traffic is keyed on its own order (not the
     # manifest), so Golden Replay can attribute it to the right consignment.
@@ -372,19 +364,14 @@ def test_a_fan_out_failure_partway_raises_and_leaves_the_manifest_pending(
     session: Session,
 ) -> None:
     manifest = _seed_manifest(session, FAN_OUT_DEFINITION)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        order = json.loads(request.content)["order"]
-        # The second consignment's send is rejected (no manifest_id).
-        if order == "O-2":
-            return httpx.Response(200, json={"error": "rejected"})
-        return httpx.Response(200, json={"manifest_id": "MAN-1"})
+    # The second consignment's upload is rejected.
+    uploader = _RecordingUploader(fail_on="O-2.xml")
 
     with (
-        _client(handler) as http_client,
-        pytest.raises(CarrierCallError, match="rejected"),
+        _client(lambda request: httpx.Response(500)) as http_client,
+        pytest.raises(CarrierCallError, match="upload rejected"),
     ):
-        send_manifest(session, manifest, http_client, {})
+        send_manifest(session, manifest, http_client, {"sftp_upload": uploader})
 
     # The manifest stays pending for retry, and no consignment is marked
     # manifested when the fan-out did not complete - the whole manifest retries

@@ -22,13 +22,13 @@ from nimbleship.domain.definitions import (
     publish,
     upsert_carrier_config,
 )
-from nimbleship.domain.facts import shipment_facts
+from nimbleship.domain.facts import shipment_facts, warehouse_facts
 from nimbleship.engine.render import (
     RenderedStep,
     RenderedUpload,
     render_operation,
 )
-from nimbleship.models import Consignment
+from nimbleship.models import Consignment, Warehouse
 
 router = APIRouter(prefix="/carriers/{carrier}", tags=["definitions"])
 
@@ -156,11 +156,27 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
         for op_name, operation in definition.operations.items()
         if operation_fact_roots(op_name, operation.fan_out) == FACT_ROOTS
     ]
+    # warehouse.* is a valid shipment-context root, so the gate must supply it
+    # (like live booking and manifest send do) or an operation referencing a
+    # depot would render-fail and 409 the publish. Loaded once for the batch.
+    warehouse_codes = {c.warehouse for c in recent if c.warehouse is not None}
+    warehouses = (
+        {
+            warehouse.code: warehouse_facts(warehouse)
+            for warehouse in session.execute(
+                select(Warehouse).where(Warehouse.code.in_(warehouse_codes))
+            ).scalars()
+        }
+        if warehouse_codes
+        else {}
+    )
     for consignment in recent:
         facts: dict[str, object] = {
             "shipment": shipment_facts(consignment),
             "config": config,
         }
+        if consignment.warehouse in warehouses:
+            facts["warehouse"] = warehouses[consignment.warehouse]
         for op_name in shipment_operations:
             try:
                 render_operation(definition, op_name, facts)

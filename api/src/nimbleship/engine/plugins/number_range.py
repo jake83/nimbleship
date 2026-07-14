@@ -51,17 +51,27 @@ def _serialise_allocations(session: Session) -> None:
         session.execute(select(func.pg_advisory_xact_lock(_NUMBER_SEQUENCES_LOCK_KEY)))
 
 
+def _is_ascii_digits(value: str) -> bool:
+    # str.isdigit accepts non-ASCII "digits" (superscripts, etc.) that int()
+    # rejects; a range number may only contain ASCII 0-9.
+    return value.isascii() and value.isdigit()
+
+
 def _warn_if_low(
-    carrier: str, name: str, claimed: int, wrap_after: int, low_water: int | None
+    carrier: str,
+    name: str,
+    claimed: int,
+    wrap_after: int,
+    reorder_threshold: int | None,
 ) -> None:
     """Emit a structured 'running low' warning once a range's remaining count
-    reaches the soft threshold. The remaining count rides the log record so it
-    is queryable; delivering the alert (email/Teams) is Phase 7 - the
+    reaches the reorder threshold. The remaining count rides the log record so
+    it is queryable; delivering the alert (email/Teams) is Phase 7 - the
     allocation path must not depend on a notification channel."""
-    if low_water is None:
+    if reorder_threshold is None:
         return
     remaining = wrap_after - claimed
-    if remaining <= low_water:
+    if remaining <= reorder_threshold:
         logger.warning(
             "number range running low",
             extra={
@@ -80,32 +90,32 @@ def allocate_number(
     *,
     wrap_after: int = DEFAULT_WRAP_AFTER,
     policy: ExhaustionPolicy = "wrap",
-    low_water: int | None = None,
+    reorder_threshold: int | None = None,
 ) -> str:
     """Claim the next value of a carrier's number range, as a plain
     decimal string (formatting to width is the field plugin's job).
 
     `wrap_after` is the last claimable value; `policy` decides what happens
     beyond it - `wrap` cycles to 1, `halt` raises RangeExhausted. When
-    `low_water` is set, a structured warning is logged once the remaining
-    count reaches it.
+    `reorder_threshold` is set, a structured warning is logged once the
+    remaining count reaches it.
 
-    A given (carrier, name) must be allocated with a consistent `policy` and
-    `wrap_after`: neither is stored on the row, so switching an exhausted
-    `halt` range to `wrap` is unsupported and would reissue.
+    A range's `policy` is stored on its row at creation: a later call with a
+    different policy is refused, so an exhausted `halt` range can never be
+    reissued by a stray `wrap` call.
 
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
     the engine-agnostic backstop - a lost race raises rather than ever
     handing out a duplicate."""
     _serialise_allocations(session)
-    current = session.execute(
-        select(CarrierNumberSequence.next_value).where(
+    existing = session.execute(
+        select(CarrierNumberSequence.next_value, CarrierNumberSequence.policy).where(
             CarrierNumberSequence.carrier == carrier,
             CarrierNumberSequence.name == name,
         )
-    ).scalar_one_or_none()
-    if current is None:
+    ).one_or_none()
+    if existing is None:
         # A halt range with no capacity (wrap_after below 1) can claim nothing,
         # so it is exhausted before the first allocation.
         if policy == "halt" and wrap_after < 1:
@@ -114,11 +124,26 @@ def allocate_number(
                 f"(wrap_after={wrap_after})"
             )
         # A fresh range: claiming value 1 and creating the counter are one
-        # insert, so a concurrent first caller trips the primary key.
-        session.add(CarrierNumberSequence(carrier=carrier, name=name, next_value=2))
+        # insert, so a concurrent first caller trips the primary key. The
+        # policy is stored so it cannot later be switched.
+        session.add(
+            CarrierNumberSequence(
+                carrier=carrier, name=name, next_value=2, policy=policy
+            )
+        )
         session.flush()
-        _warn_if_low(carrier, name, 1, wrap_after, low_water)
+        _warn_if_low(carrier, name, 1, wrap_after, reorder_threshold)
         return "1"
+    current, stored_policy = existing
+    # A range's policy is fixed at creation: reusing its name with a different
+    # policy is refused, so an exhausted halt range can never be cycled by a
+    # stray wrap call. A row created before the policy column is null and
+    # backfills on this allocation.
+    if stored_policy is not None and stored_policy != policy:
+        raise ValueError(
+            f"number range '{name}' for carrier '{carrier}' was created with "
+            f"policy '{stored_policy}', not '{policy}'"
+        )
     if policy == "halt":
         # `current` is the value about to be claimed and `wrap_after` the last
         # claimable one, so the counter only passes it after the last value was
@@ -138,14 +163,14 @@ def allocate_number(
             CarrierNumberSequence.name == name,
             CarrierNumberSequence.next_value == current,
         )
-        .values(next_value=following)
+        .values(next_value=following, policy=policy)
     )
     if claimed.rowcount != 1:
         raise ValueError(
             f"number range '{name}' for carrier '{carrier}' was claimed by "
             "a concurrent request"
         )
-    _warn_if_low(carrier, name, current, wrap_after, low_water)
+    _warn_if_low(carrier, name, current, wrap_after, reorder_threshold)
     return str(current)
 
 
@@ -186,7 +211,7 @@ def _allocated_number(facts: dict[str, object], fact: str) -> int:
         )
     raw = allocated[fact]
     valid = (isinstance(raw, int) and not isinstance(raw, bool)) or (
-        isinstance(raw, str) and raw.isdigit()
+        isinstance(raw, str) and _is_ascii_digits(raw)
     )
     if not valid:
         raise ValueError(f"allocated '{fact}' is not a number: {raw!r}")
@@ -228,10 +253,10 @@ class SSCCField:
     def compute(self, facts: dict[str, object]) -> object:
         config = facts.get("config")
         prefix = config.get(self._prefix_key) if isinstance(config, dict) else None
-        # isascii guards against non-ASCII "digits" (e.g. superscripts) that
-        # str.isdigit accepts but int() rejects, which would otherwise blow up
-        # later inside the check-digit sum with a confusing message.
-        if not isinstance(prefix, str) or not (prefix.isascii() and prefix.isdigit()):
+        # A non-ASCII "digit" would pass str.isdigit but blow up later inside
+        # the check-digit sum's int(); _is_ascii_digits refuses it up front,
+        # the same guard _allocated_number applies to the serial.
+        if not isinstance(prefix, str) or not _is_ascii_digits(prefix):
             raise ValueError(
                 f"config '{self._prefix_key}' is not a digit-string SSCC prefix: "
                 f"{prefix!r}"

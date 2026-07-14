@@ -229,6 +229,11 @@ class CarrierNumberSequence(Base):
     carrier: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(64), primary_key=True)
     next_value: Mapped[int] = mapped_column(default=1)
+    # The exhaustion policy fixed at creation ("wrap" or "halt"): stored so an
+    # exhausted halt range cannot be reissued by a later wrap allocation.
+    # Nullable for rows created before the column existed; they backfill on
+    # their next allocation.
+    policy: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
 
 class CarrierTraffic(Base):
