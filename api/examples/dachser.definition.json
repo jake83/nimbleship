@@ -1,0 +1,136 @@
+{
+  "notes": [
+    "Dachser: the proving ladder's final rung (ADR 0010). book is a REST /labels call (X-API-Key header) that sends the per-parcel SSCCs and returns a base64 PDF label; manifest is a fan-out SFTP EDI file, one ForwardingOrderInformation XML per order, carrying the same SSCCs.",
+    "The SSCCs are minted per parcel at booking (the allocate block) from config.sscc_prefix and stored on each parcel's carrier_barcode. The book body collects them with pluck (a JSON array of strings); the manifest emits one PackageIdentification/SSCCBarCode per parcel with each.",
+    "Carrier Config keys: labels_url, labels_api_key (REST); sscc_prefix (13-digit GS1 company prefix); division, product, dispatch_branch_number, incoterm, test_flag; partner_id, partner_gln, consignor_partner_id, forwarding_gln (EDI partner identity); consignor_name/street/city/postcode/country (the shipping depot, a per-install account fact - fan-out manifests render from shipment.* and config.* only, never warehouse.*); sftp_remote_dir (the EDI drop directory).",
+    "Deliberately omitted until the fact model carries them (they render null/empty today, not wrong): ship date and document date (the renderer is pure and has no 'now' - a dispatch-supplied shipment.ship_date fact will fill them), the consignee city (the model has flat address_lines, no city split), parcel dimensions/volume and goods description/value/currency, the recipient contact phone/email, and the total shipment weight. The real filename is KUNDE<documentId>.xml; order_number is the per-order identity here.",
+    "The Voila gateway and the separate transport-order send are a distinct optional integration, out of scope like DigiDocs."
+  ],
+  "carrier": "dachser",
+  "name": "Dachser",
+  "auth": {
+    "scheme": "header_key",
+    "header": "X-API-Key",
+    "secret": "config.labels_api_key"
+  },
+  "operations": {
+    "book": {
+      "allocate": [
+        {
+          "kind": "sscc",
+          "per": "parcel",
+          "prefix": "config.sscc_prefix",
+          "policy": "halt"
+        }
+      ],
+      "steps": [
+        {
+          "name": "labels",
+          "transport": "http",
+          "request": {
+            "method": "POST",
+            "url": "config.labels_url",
+            "content_type": "json",
+            "mapping": [
+              { "target": "shipment.division", "source": "config.division" },
+              { "target": "shipment.product", "source": "config.product" },
+              { "target": "shipment.forwarder.id", "source": "config.dispatch_branch_number" },
+              { "target": "shipment.shipmentWeight.unit", "const": "KG" },
+              { "target": "shipment.consignor.externalId", "source": "config.partner_id" },
+              { "target": "shipment.consignor.partnerGLN", "source": "config.partner_gln" },
+              { "target": "shipment.consignor.names.0", "source": "config.consignor_name" },
+              { "target": "shipment.consignor.addressInformation.streets.0", "source": "config.consignor_street" },
+              { "target": "shipment.consignor.addressInformation.city", "source": "config.consignor_city" },
+              { "target": "shipment.consignor.addressInformation.postalCode", "source": "config.consignor_postcode" },
+              { "target": "shipment.consignor.addressInformation.countryCode", "source": "config.consignor_country" },
+              { "target": "shipment.consignee.names.0", "source": "shipment.recipient_name" },
+              {
+                "target": "shipment.consignee.addressInformation.streets.0",
+                "source": "shipment.address_lines",
+                "transform": { "name": "join", "with": ", " }
+              },
+              { "target": "shipment.consignee.addressInformation.postalCode", "source": "shipment.postcode" },
+              { "target": "shipment.consignee.addressInformation.countryCode", "source": "shipment.destination_country" },
+              {
+                "target": "shipment.ssccs",
+                "source": "shipment.parcels",
+                "pluck": "item.carrier_barcode"
+              },
+              { "target": "shipment.references.0.code", "const": "100" },
+              { "target": "shipment.references.0.value", "source": "shipment.order_number" }
+            ]
+          },
+          "response": {
+            "format": "json",
+            "success_when": { "path": "label" },
+            "error_message": { "path": "message" },
+            "extract": [{ "name": "label_pdf", "path": "label" }]
+          }
+        }
+      ],
+      "label": { "source": "base64_pdf", "from_extract": "label_pdf" }
+    },
+    "manifest": {
+      "fan_out": true,
+      "steps": [
+        {
+          "name": "forwarding-order",
+          "transport": "sftp_upload",
+          "request": {
+            "url": "config.sftp_remote_dir",
+            "filename": "{shipment.order_number}.xml",
+            "content_type": "xml",
+            "root_element": "ForwardingOrderInformation",
+            "mapping": [
+              { "target": "DocumentHeader.EDISender.PartnerInformation.PartnerID", "source": "config.partner_id" },
+              { "target": "DocumentHeader.EDIReceiver.PartnerInformation.PartnerGLN", "source": "config.partner_gln" },
+              { "target": "DocumentHeader.DocumentID", "source": "shipment.order_number" },
+              { "target": "DocumentHeader.TestFlag", "source": "config.test_flag" },
+              { "target": "Transport.ShipmentHeader.@CustomerShipmentReference", "source": "shipment.order_number" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.0.@AddressType", "const": "CZ" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.0.PartnerInformation.PartnerID", "source": "config.consignor_partner_id" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.0.PartnerInformation.PartnerName", "source": "config.consignor_name" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.0.PartnerInformation.AddressInformation.Street", "source": "config.consignor_street" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.0.PartnerInformation.AddressInformation.City", "source": "config.consignor_city" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.0.PartnerInformation.AddressInformation.PostalCode", "source": "config.consignor_postcode" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.0.PartnerInformation.AddressInformation.CountryCode", "source": "config.consignor_country" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.1.@AddressType", "const": "CN" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.1.PartnerInformation.PartnerName", "source": "shipment.recipient_name" },
+              {
+                "target": "Transport.ShipmentHeader.ShipmentAddress.1.PartnerInformation.AddressInformation.Street",
+                "source": "shipment.address_lines",
+                "transform": { "name": "join", "with": ", " }
+              },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.1.PartnerInformation.AddressInformation.PostalCode", "source": "shipment.postcode" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.1.PartnerInformation.AddressInformation.CountryCode", "source": "shipment.destination_country" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.2.@AddressType", "const": "FW" },
+              { "target": "Transport.ShipmentHeader.ShipmentAddress.2.PartnerInformation.PartnerGLN", "source": "config.forwarding_gln" },
+              { "target": "Transport.ShipmentHeader.OriginalTerm", "source": "config.incoterm" },
+              { "target": "Transport.ShipmentHeader.Division", "source": "config.division" },
+              { "target": "Transport.ShipmentHeader.DachserProduct", "source": "config.product" },
+              { "target": "Transport.ShipmentHeader.ADRflag", "const": "N" },
+              { "target": "Transport.ShipmentHeader.TailLiftRequired", "const": "N" },
+              { "target": "Transport.ShipmentHeader.ConsigneeCollectionIndicator", "const": "N" },
+              { "target": "Transport.ShipmentHeader.CustomsIndicator", "const": "N" },
+              {
+                "target": "Transport.ShipmentHeader.ShipmentLine",
+                "source": "shipment.parcels",
+                "each": [
+                  { "target": "PackagesQuantity", "const": "1" },
+                  { "target": "Measurements.Weight.@Code", "const": "GRO" },
+                  { "target": "Measurements.Weight.Measurement.Value", "source": "item.weight_kg" },
+                  { "target": "Measurements.Weight.Measurement.Unit", "const": "KGM" }
+                ]
+              },
+              {
+                "target": "Transport.ShipmentHeader.PackageIdentification",
+                "source": "shipment.parcels",
+                "each": [{ "target": "SSCCBarCode", "source": "item.carrier_barcode" }]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
