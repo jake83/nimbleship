@@ -25,6 +25,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Upgrade schema."""
     op.add_column(
         "carrier_number_sequences",
         sa.Column("policy", sa.String(length=8), nullable=True),
@@ -32,4 +33,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Downgrade schema."""
     op.drop_column("carrier_number_sequences", "policy")
