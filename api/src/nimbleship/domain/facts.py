@@ -14,7 +14,15 @@ def shipment_facts(consignment: Consignment) -> dict[str, object]:
         "postcode": consignment.postcode,
         "destination_country": consignment.destination_country,
         "parcels": [
-            {"weight_kg": parcel.weight_kg, "barcode": parcel.barcode}
+            {
+                "weight_kg": parcel.weight_kg,
+                "barcode": parcel.barcode,
+                # The carrier-facing barcode (a Dachser SSCC, minted at
+                # booking): a fan-out manifest declares it per parcel from
+                # shipment facts, so it must travel here as manifest_facts
+                # already carries it.
+                "carrier_barcode": parcel.carrier_barcode,
+            }
             for parcel in consignment.parcels
         ],
     }

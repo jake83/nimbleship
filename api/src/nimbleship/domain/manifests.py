@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.definitions import active_definition, carrier_config
-from nimbleship.domain.facts import manifest_facts, warehouse_facts
+from nimbleship.domain.facts import manifest_facts, shipment_facts, warehouse_facts
 from nimbleship.engine.execute import StepRecord, execute_operation
 from nimbleship.models import (
     CarrierTraffic,
@@ -115,11 +115,15 @@ def send_manifest(
     uploaders: Mapping[str, FileUploader],
 ) -> None:
     """Execute the carrier's manifest operation for this Manifest, recording
-    the traffic (the golden corpus grows from manifests too). Success marks
-    the Manifest sent and appends a manifested event per consignment; a
-    carrier failure raises with the traffic already recorded - the caller
-    owns retry bookkeeping. Sending an already-sent Manifest is a no-op:
-    the queue may redeliver a job whose work committed."""
+    the traffic (the golden corpus grows from manifests too). A fan_out
+    manifest emits one document per consignment from that consignment's
+    shipment facts; otherwise one document is rendered from the whole
+    manifest's facts. Success marks the Manifest sent and appends a manifested
+    event per consignment, each carrying its own send's extracted output; a
+    carrier failure raises before anything is marked sent, with the traffic
+    already recorded - the caller owns retry bookkeeping. Sending an
+    already-sent Manifest is a no-op: the queue may redeliver a job whose work
+    committed."""
     if manifest.status == "sent":
         return
     definition = active_definition(session, manifest.carrier)
@@ -129,42 +133,67 @@ def send_manifest(
             "published definition; it cannot be manifested"
         )
     consignments = manifest_consignments(session, manifest)
-    facts: dict[str, object] = {
-        "manifest": manifest_facts(manifest, consignments),
-        "config": carrier_config(session, manifest.carrier),
-    }
+    config = carrier_config(session, manifest.carrier)
+    warehouse_facts_value: dict[str, object] | None = None
     if manifest.warehouse is not None:
         warehouse = session.execute(
             select(Warehouse).where(Warehouse.code == manifest.warehouse)
         ).scalar_one_or_none()
         if warehouse is not None:
-            facts["warehouse"] = warehouse_facts(warehouse)
+            warehouse_facts_value = warehouse_facts(warehouse)
 
-    def record(step_record: StepRecord) -> None:
-        session.add(
-            CarrierTraffic(
-                carrier=manifest.carrier,
-                # Manifests span orders; the traffic key is the manifest.
-                order_number=f"manifest-{manifest.id}",
-                step=step_record.step,
-                request=step_record.request.model_dump(mode="json"),
-                response_status=step_record.response_status,
-                response_body=step_record.response_body,
+    def run(facts: dict[str, object], traffic_key: str) -> dict[str, object]:
+        # Each rendered document's traffic is keyed to what it declares: a
+        # fan-out document is one order (its order_number), the single
+        # whole-manifest document spans every order (the manifest).
+        if warehouse_facts_value is not None:
+            facts["warehouse"] = warehouse_facts_value
+
+        def record(step_record: StepRecord) -> None:
+            session.add(
+                CarrierTraffic(
+                    carrier=manifest.carrier,
+                    order_number=traffic_key,
+                    step=step_record.step,
+                    request=step_record.request.model_dump(mode="json"),
+                    response_status=step_record.response_status,
+                    response_body=step_record.response_body,
+                )
             )
-        )
 
-    result = execute_operation(
-        definition, "manifest", facts, http_client, record, uploaders
-    )
+        return execute_operation(
+            definition, "manifest", facts, http_client, record, uploaders
+        ).outputs
+
+    operation = definition.operations["manifest"]
+    emitted: list[tuple[Consignment, dict[str, object]]] = []
+    if operation.fan_out:
+        # One document per consignment, each rendered from that consignment's
+        # own shipment facts (including the SSCCs stored at booking). A failure
+        # partway raises before any consignment is marked manifested; the whole
+        # manifest retries, and uploads are overwrite-idempotent so re-sending
+        # the documents that already landed is safe.
+        for consignment in consignments:
+            outputs = run(
+                {"shipment": shipment_facts(consignment), "config": config},
+                consignment.order_number,
+            )
+            emitted.append((consignment, outputs))
+    else:
+        batch = run(
+            {"manifest": manifest_facts(manifest, consignments), "config": config},
+            f"manifest-{manifest.id}",
+        )
+        emitted = [(consignment, batch) for consignment in consignments]
 
     manifest.status = "sent"
     manifest.sent_at = datetime.now(UTC)
-    # The carrier's extracted outputs are author-named, so they live under
-    # their own key: splatting them alongside the internal audit fields
-    # would let an extraction named "manifest_id" overwrite the link back to
-    # the Manifest row.
-    extracted = {key: str(value) for key, value in result.outputs.items()}
-    for consignment in consignments:
+    for consignment, outputs in emitted:
+        # The carrier's extracted outputs are author-named, so they live under
+        # their own key: splatting them alongside the internal audit fields
+        # would let an extraction named "manifest_id" overwrite the link back
+        # to the Manifest row.
+        extracted = {key: str(value) for key, value in outputs.items()}
         session.add(
             OrderEvent(
                 order_number=consignment.order_number,

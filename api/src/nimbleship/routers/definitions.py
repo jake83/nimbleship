@@ -146,26 +146,28 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
         .scalars()
         .all()
     )
-    # A manifest operation renders from a synthetic manifest over many
-    # consignments, not one shipment, so shipment facts cannot gate it;
-    # rendering it offline needs manifest facts and is a tracked follow-up.
+    # A manifest operation without fan_out renders from a synthetic manifest
+    # over many consignments, not one shipment, so shipment facts cannot gate
+    # it; rendering it offline needs manifest facts and is a tracked follow-up.
+    # A fan-out manifest renders per consignment from shipment.* facts, so it
+    # gates like a book operation.
     shipment_operations = [
-        operation
-        for operation in definition.operations
-        if operation_fact_roots(operation) == FACT_ROOTS
+        op_name
+        for op_name, operation in definition.operations.items()
+        if operation_fact_roots(op_name, operation.fan_out) == FACT_ROOTS
     ]
     for consignment in recent:
         facts: dict[str, object] = {
             "shipment": shipment_facts(consignment),
             "config": config,
         }
-        for operation in shipment_operations:
+        for op_name in shipment_operations:
             try:
-                render_operation(definition, operation, facts)
+                render_operation(definition, op_name, facts)
             except ValueError as error:
                 raise HTTPException(
                     409,
-                    f"publish refused: rendering operation '{operation}' "
+                    f"publish refused: rendering operation '{op_name}' "
                     f"against order {consignment.order_number} failed: {error}",
                 ) from error
 

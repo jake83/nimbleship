@@ -74,6 +74,48 @@ DEFINITION: dict[str, object] = {
 }
 
 
+FAN_OUT_DEFINITION: dict[str, object] = {
+    "carrier": "brightpost",
+    "name": "Bright Post",
+    "auth": {"scheme": "header_key", "header": "X-Api-Key", "secret": "config.api_key"},
+    "operations": {
+        "manifest": {
+            "fan_out": True,
+            "steps": [
+                {
+                    "name": "declare",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.manifest_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"},
+                            {"target": "postcode", "source": "shipment.postcode"},
+                            {
+                                "target": "units",
+                                "source": "shipment.parcels",
+                                "each": [
+                                    {"target": "sscc", "source": "item.carrier_barcode"}
+                                ],
+                            },
+                        ],
+                    },
+                    "response": {
+                        "format": "json",
+                        "success_when": {"path": "manifest_id"},
+                        "error_message": {"path": "error"},
+                        "extract": [
+                            {"name": "manifest_reference", "path": "manifest_id"}
+                        ],
+                    },
+                }
+            ],
+        }
+    },
+}
+
+
 @pytest.fixture
 def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Engine]:
     # A file-backed database: the job runner opens its own session from
@@ -127,7 +169,12 @@ def _seed_manifest(session: Session, definition: dict[str, object]) -> Manifest:
             allocation={},
         )
         consignment.parcels = [
-            Parcel(sequence=1, weight_kg="4.2", barcode=f"{order}-1")
+            Parcel(
+                sequence=1,
+                weight_kg="4.2",
+                barcode=f"{order}-1",
+                carrier_barcode=f"SSCC-{order}",
+            )
         ]
         session.add(consignment)
         consignments.append(consignment)
@@ -275,6 +322,76 @@ def test_a_carrier_error_raises_and_still_records_the_traffic(
     assert manifest.sent_at is None
     [row] = session.execute(select(CarrierTraffic)).scalars().all()
     assert "manifest window closed" in row.response_body
+
+
+def test_a_fan_out_manifest_sends_one_document_per_consignment(
+    session: Session,
+) -> None:
+    manifest = _seed_manifest(session, FAN_OUT_DEFINITION)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"manifest_id": f"MAN-{len(requests)}"})
+
+    with _client(handler) as http_client:
+        send_manifest(session, manifest, http_client, {})
+
+    # One document per consignment, each rendered from its own shipment facts.
+    bodies = [json.loads(r.content) for r in requests]
+    assert [body["order"] for body in bodies] == ["O-1", "O-2"]
+    # The per-parcel SSCC (carrier_barcode, stored at booking) reaches the
+    # carrier - the point of fanning out per order.
+    assert bodies[0]["units"] == [{"sscc": "SSCC-O-1"}]
+    assert manifest.status == "sent"
+    assert manifest.sent_at is not None
+
+    events = session.execute(select(OrderEvent).order_by(OrderEvent.id)).scalars().all()
+    assert [(e.order_number, e.stage) for e in events] == [
+        ("O-1", "manifested"),
+        ("O-2", "manifested"),
+    ]
+    # Each consignment's event carries its own send's extracted output.
+    references = {
+        e.order_number: e.detail["extracted"]["manifest_reference"]  # type: ignore[index]
+        for e in events
+    }
+    assert references == {"O-1": "MAN-1", "O-2": "MAN-2"}
+
+    # Each fan-out document's traffic is keyed on its own order (not the
+    # manifest), so Golden Replay can attribute it to the right consignment.
+    traffic = (
+        session.execute(select(CarrierTraffic).order_by(CarrierTraffic.id))
+        .scalars()
+        .all()
+    )
+    assert sorted(row.order_number for row in traffic) == ["O-1", "O-2"]
+
+
+def test_a_fan_out_failure_partway_raises_and_leaves_the_manifest_pending(
+    session: Session,
+) -> None:
+    manifest = _seed_manifest(session, FAN_OUT_DEFINITION)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        order = json.loads(request.content)["order"]
+        # The second consignment's send is rejected (no manifest_id).
+        if order == "O-2":
+            return httpx.Response(200, json={"error": "rejected"})
+        return httpx.Response(200, json={"manifest_id": "MAN-1"})
+
+    with (
+        _client(handler) as http_client,
+        pytest.raises(CarrierCallError, match="rejected"),
+    ):
+        send_manifest(session, manifest, http_client, {})
+
+    # The manifest stays pending for retry, and no consignment is marked
+    # manifested when the fan-out did not complete - the whole manifest retries
+    # (uploads are overwrite-idempotent).
+    assert manifest.status == "pending"
+    assert manifest.sent_at is None
+    assert session.execute(select(OrderEvent)).scalars().all() == []
 
 
 def test_an_already_sent_manifest_is_not_sent_again(session: Session) -> None:
