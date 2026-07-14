@@ -445,6 +445,63 @@ def test_step_reference_to_a_step_with_no_extractions_is_rejected() -> None:
         CarrierDefinition.model_validate(bad)
 
 
+def _book_with_label(label: dict[str, object], extract_name: str) -> dict[str, object]:
+    return {
+        "carrier": "dachser",
+        "name": "Dachser",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "labels",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.labels_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                        "response": {
+                            "format": "json",
+                            "extract": [{"name": extract_name, "path": "label.pdf"}],
+                        },
+                    }
+                ],
+                "label": label,
+            }
+        },
+    }
+
+
+def test_a_base64_pdf_label_with_a_valid_from_extract_validates() -> None:
+    definition = CarrierDefinition.model_validate(
+        _book_with_label(
+            {"source": "base64_pdf", "from_extract": "label_pdf"}, "label_pdf"
+        )
+    )
+
+    assert definition.operations["book"].label is not None
+
+
+def test_a_base64_pdf_label_needs_a_from_extract() -> None:
+    with pytest.raises(ValidationError, match="from_extract"):
+        CarrierDefinition.model_validate(
+            _book_with_label({"source": "base64_pdf"}, "label_pdf")
+        )
+
+
+def test_a_base64_pdf_label_from_extract_must_name_an_extraction() -> None:
+    with pytest.raises(ValidationError, match="not an extraction"):
+        CarrierDefinition.model_validate(
+            _book_with_label(
+                {"source": "base64_pdf", "from_extract": "nonexistent"}, "label_pdf"
+            )
+        )
+
+
 def _manifest_operation(
     mapping: list[dict[str, object]], fan_out: bool = False
 ) -> dict[str, object]:
