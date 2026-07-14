@@ -342,6 +342,15 @@ def test_a_fan_out_manifest_sends_one_document_per_consignment(
     }
     assert references == {"O-1": "MAN-1", "O-2": "MAN-2"}
 
+    # Each fan-out document's traffic is keyed on its own order (not the
+    # manifest), so Golden Replay can attribute it to the right consignment.
+    traffic = (
+        session.execute(select(CarrierTraffic).order_by(CarrierTraffic.id))
+        .scalars()
+        .all()
+    )
+    assert sorted(row.order_number for row in traffic) == ["O-1", "O-2"]
+
 
 def test_a_fan_out_failure_partway_raises_and_leaves_the_manifest_pending(
     session: Session,
