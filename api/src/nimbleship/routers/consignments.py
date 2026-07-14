@@ -22,7 +22,7 @@ from nimbleship.domain.allocation import (
     selection_cost,
 )
 from nimbleship.domain.barcodes import parcel_barcodes
-from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.domain.carrier_definition import AllocationSpec, CarrierDefinition
 from nimbleship.domain.definitions import active_definition, carrier_config
 from nimbleship.domain.facts import shipment_facts, warehouse_facts
 from nimbleship.domain.geography import resolve_shipping_areas
@@ -31,6 +31,13 @@ from nimbleship.engine.execute import (
     CarrierCallError,
     StepRecord,
     execute_operation,
+)
+from nimbleship.engine.plugins.number_range import (
+    RangeExhausted,
+    allocate_number,
+    assemble_sscc,
+    sscc_sequence_name,
+    sscc_wrap_after,
 )
 from nimbleship.http_client import get_http_client
 from nimbleship.labels.store import LabelStore, get_label_store
@@ -165,6 +172,74 @@ def _base64_pdf_label(
     return pdf
 
 
+def _config_key(source: str) -> str:
+    # An allocate prefix is authored as a config.* source (schema-enforced),
+    # so the bare config key is whatever follows the first dot.
+    return source.split(".", 1)[1]
+
+
+def _mint_parcel_allocations(
+    session: Session,
+    consignment: Consignment,
+    specs: list[AllocationSpec],
+    config: dict[str, object],
+) -> None:
+    """Mint each parcel's carrier-provisioned code before the book call, so the
+    request the carrier receives carries codes this system issued: an SSCC
+    identifies a physical unit and must be minted once, client-side, never
+    echoed back from a carrier response. Each code lands on
+    parcel.carrier_barcode, where shipment_facts exposes it to the book mapping
+    and the detail view returns it.
+
+    Minting commits in its own transaction - like the traffic rows - for two
+    reasons the request transaction cannot give: the global allocation lock is
+    released before the carrier call rather than held across its latency, and a
+    minted halt-range number is durably spent the instant it is issued, so a
+    later crash can never reissue a code that may already have reached the
+    carrier. A booking that then fails simply wastes those numbers, which a
+    halt range trades willingly for never double-issuing.
+
+    All of a consignment's parcels mint together or not at all: a range
+    exhausted partway rolls the whole consignment's mint back (nothing
+    committed) and fails the booking loudly, rather than shipping some parcels
+    with codes and some without."""
+    carrier = consignment.carrier or ""
+    with Session(session.get_bind()) as mint_session:
+        for spec in specs:
+            prefix = config.get(_config_key(spec.prefix))
+            if not isinstance(prefix, str):
+                raise HTTPException(
+                    500,
+                    f"carrier '{carrier}' allocate prefix '{spec.prefix}' is not "
+                    "configured; provision it before dispatch",
+                )
+            try:
+                # The serial fills whatever the prefix leaves of the 17-digit
+                # body; wrap_after is the last serial that still fits.
+                wrap_after = sscc_wrap_after(prefix)
+            except ValueError as error:
+                raise HTTPException(
+                    500, f"carrier '{carrier}' SSCC prefix is invalid: {error}"
+                ) from error
+            for parcel in consignment.parcels:
+                try:
+                    serial = allocate_number(
+                        mint_session,
+                        carrier,
+                        sscc_sequence_name(prefix),
+                        wrap_after=wrap_after,
+                        policy=spec.policy,
+                    )
+                except RangeExhausted as error:
+                    raise HTTPException(
+                        503,
+                        f"carrier '{carrier}' SSCC range exhausted; provision a "
+                        f"new prefix before dispatch: {error}",
+                    ) from error
+                parcel.carrier_barcode = assemble_sscc(prefix, int(serial))
+        mint_session.commit()
+
+
 def _book_with_carrier(
     session: Session,
     definition: CarrierDefinition,
@@ -252,9 +327,13 @@ def _book_with_carrier(
     if isinstance(barcodes, list):
         # Carrier barcodes pair with parcels positionally, like the labels
         # they arrive on; the full list is kept on the event so a count
-        # mismatch loses nothing.
+        # mismatch loses nothing. A code this system minted before the call
+        # (an allocated SSCC) is never overwritten by the response - the two
+        # are mutually exclusive per carrier, and the minted code is the one
+        # that was physically applied and sent.
         for parcel, barcode in zip(consignment.parcels, barcodes, strict=False):
-            parcel.carrier_barcode = str(barcode)
+            if parcel.carrier_barcode is None:
+                parcel.carrier_barcode = str(barcode)
         detail["barcodes"] = [str(b) for b in barcodes]
     session.add(
         OrderEvent(
@@ -403,6 +482,16 @@ def create_consignment(
                 500,
                 f"carrier '{selected.carrier}' label source is unsupported; only "
                 "local_render and base64_pdf are supported so far",
+            )
+        if book.allocate:
+            # Mint the parcels' carrier-provisioned codes (SSCCs) before the
+            # carrier call so the book request carries them; the declaration
+            # names what to mint, so no carrier name is hardcoded here.
+            _mint_parcel_allocations(
+                session,
+                consignment,
+                book.allocate,
+                carrier_config(session, selected.carrier or ""),
             )
         outputs: dict[str, object] = {}
         if book.steps:

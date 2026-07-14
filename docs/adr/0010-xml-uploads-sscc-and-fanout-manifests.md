@@ -81,6 +81,25 @@ algorithm is the only new engine code. A **soft threshold warning**
 remaining-count; delivering it (email/Teams) is deferred to Phase 7
 observability - the dispatch path must not depend on a notification channel.
 
+**Minting is declared, not hardcoded, and lands on the parcel.** The book
+operation carries an `allocate` block - `{kind: "sscc", per: "parcel",
+prefix: "config.<key>", policy: "halt"}` - and the dispatch reads that
+declaration to know it must mint, so no carrier name lives in code. Before
+the carrier call it mints one SSCC per parcel and stores the assembled code
+on the parcel's `carrier_barcode`; the book render and the fan-out manifest
+then both read it as `item.carrier_barcode`, so one stored value feeds both
+and mint-time and read-time never diverge. `assemble_sscc` is the single
+assembly routine, shared with the computed-field plugin. The schema pins the
+block: at most one entry (a parcel has one carrier barcode), `book`-only, a
+`config.*` prefix, and `halt` for `sscc` (a wrapping SSCC would reissue a
+live code). Minting commits in **its own transaction** (like the traffic
+rows): the allocation lock releases before the carrier call rather than
+being held across its latency, and a halt-range number is durably spent the
+instant it is issued - a crash can never reissue a code that may already
+have reached the carrier, at the cost of wasting the numbers of a booking
+that later fails. A range exhausted partway through a consignment mints
+nothing (all parcels or none) and fails the booking loudly.
+
 ### 3. Per-consignment (fan-out) manifests
 
 Manifests so far send one document per manifest (all consignments in a

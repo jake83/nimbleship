@@ -198,6 +198,40 @@ def sscc_sequence_name(prefix: str) -> str:
     return f"sscc:{prefix}"
 
 
+def sscc_serial_width(prefix: str) -> int:
+    """How many serial digits a prefix leaves in the 17-digit body: the
+    allocator's wrap_after for the range is 10**width - 1 (the last serial)."""
+    if not _is_ascii_digits(prefix):
+        raise ValueError(f"SSCC prefix is not a digit string: {prefix!r}")
+    width = SSCC_BODY_DIGITS - len(prefix)
+    if width <= 0:
+        raise ValueError(
+            f"SSCC prefix {prefix!r} leaves no room for a serial in "
+            f"{SSCC_BODY_DIGITS} body digits"
+        )
+    return width
+
+
+def sscc_wrap_after(prefix: str) -> int:
+    """The last serial an SSCC range issues before it is exhausted: the widest
+    value the serial digits the prefix leaves can hold. This is the allocator's
+    `wrap_after` for the range, kept beside the width and assembly rules so the
+    body-digit definition lives in one place."""
+    return int(10 ** sscc_serial_width(prefix)) - 1
+
+
+def assemble_sscc(prefix: str, serial: int) -> str:
+    """Assemble an 18-digit SSCC: the carrier prefix, the serial zero-padded to
+    fill the 17-digit body, and the GS1 mod-10 check digit. Shared by the
+    booking dispatch (which mints one per parcel) and the SSCCField plugin, so
+    render-time and mint-time SSCCs are assembled the one way."""
+    width = sscc_serial_width(prefix)
+    if serial <= 0 or len(str(serial)) > width:
+        raise ValueError(f"SSCC serial {serial} does not fit {width} digits")
+    body = prefix + f"{serial:0{width}d}"
+    return body + _gs1_check_digit(body)
+
+
 def _allocated_number(facts: dict[str, object], fact: str) -> int:
     """Read and validate a pre-allocated range number from facts["allocated"]
     - injected by the dispatch integration after allocate_number - failing
@@ -261,17 +295,7 @@ class SSCCField:
                 f"config '{self._prefix_key}' is not a digit-string SSCC prefix: "
                 f"{prefix!r}"
             )
-        width = SSCC_BODY_DIGITS - len(prefix)
-        if width <= 0:
-            raise ValueError(
-                f"config '{self._prefix_key}' SSCC prefix {prefix!r} leaves no room "
-                f"for a serial in {SSCC_BODY_DIGITS} body digits"
-            )
-        serial = _zero_pad(
-            _allocated_number(facts, self._suffix_fact), self._suffix_fact, width
-        )
-        body = prefix + serial
-        return body + _gs1_check_digit(body)
+        return assemble_sscc(prefix, _allocated_number(facts, self._suffix_fact))
 
 
 register(

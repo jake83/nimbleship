@@ -502,6 +502,103 @@ def test_a_base64_pdf_label_from_extract_must_name_an_extraction() -> None:
         )
 
 
+def _book_with_allocate(
+    allocate: list[dict[str, object]], op_name: str = "book"
+) -> dict[str, object]:
+    return {
+        "carrier": "dachser",
+        "name": "Dachser",
+        "auth": {"scheme": "none"},
+        "operations": {
+            op_name: {
+                "steps": [
+                    {
+                        "name": "labels",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.labels_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "o", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "allocate": allocate,
+            }
+        },
+    }
+
+
+def test_a_book_allocate_sscc_block_validates() -> None:
+    definition = CarrierDefinition.model_validate(
+        _book_with_allocate(
+            [
+                {
+                    "kind": "sscc",
+                    "per": "parcel",
+                    "prefix": "config.sscc_prefix",
+                    "policy": "halt",
+                }
+            ]
+        )
+    )
+
+    spec = definition.operations["book"].allocate[0]
+    assert spec.kind == "sscc" and spec.prefix == "config.sscc_prefix"
+
+
+def test_allocate_is_only_for_the_book_operation() -> None:
+    with pytest.raises(ValidationError, match="allocate is only for the book"):
+        CarrierDefinition.model_validate(
+            _book_with_allocate(
+                [{"kind": "sscc", "per": "parcel", "prefix": "config.sscc_prefix"}],
+                op_name="track",
+            )
+        )
+
+
+def test_an_allocate_prefix_must_be_a_config_source() -> None:
+    with pytest.raises(ValidationError, match="must be a config"):
+        CarrierDefinition.model_validate(
+            _book_with_allocate(
+                [{"kind": "sscc", "per": "parcel", "prefix": "shipment.order_number"}]
+            )
+        )
+
+
+def test_an_sscc_allocation_may_not_wrap() -> None:
+    # A wrapping SSCC would reissue a live code; only halt is admissible.
+    with pytest.raises(ValidationError, match="must use policy 'halt'"):
+        CarrierDefinition.model_validate(
+            _book_with_allocate(
+                [
+                    {
+                        "kind": "sscc",
+                        "per": "parcel",
+                        "prefix": "config.sscc_prefix",
+                        "policy": "wrap",
+                    }
+                ]
+            )
+        )
+
+
+def test_at_most_one_allocate_entry() -> None:
+    # A parcel carries one carrier barcode, so a second spec could only
+    # overwrite the first while spending its range.
+    with pytest.raises(ValidationError, match="at most one allocate entry"):
+        CarrierDefinition.model_validate(
+            _book_with_allocate(
+                [
+                    {"kind": "sscc", "per": "parcel", "prefix": "config.sscc_prefix"},
+                    {"kind": "sscc", "per": "parcel", "prefix": "config.other_prefix"},
+                ]
+            )
+        )
+
+
 def _manifest_operation(
     mapping: list[dict[str, object]], fan_out: bool = False
 ) -> dict[str, object]:
