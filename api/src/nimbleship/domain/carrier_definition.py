@@ -333,6 +333,28 @@ class LabelSpec(BaseModel):
     from_extract: str | None = None
 
 
+class AllocationSpec(BaseModel):
+    # A number the client mints per parcel before the book call, stored as the
+    # parcel's carrier barcode, for carriers that assign it themselves (an
+    # SSCC). prefix is a config.* source; the book render and fan-out manifest
+    # both read the result as item.carrier_barcode.
+    kind: Literal["sscc"]
+    per: Literal["parcel"]
+    prefix: str
+    policy: Literal["wrap", "halt"] = "halt"
+
+    @model_validator(mode="after")
+    def _sscc_never_wraps(self) -> "AllocationSpec":
+        # An SSCC identifies a live physical unit, so its serial must never
+        # wrap: reissuing a live code is unsafe.
+        if self.kind == "sscc" and self.policy != "halt":
+            raise ValueError(
+                "an sscc allocation must use policy 'halt': wrapping would "
+                "reissue a live code"
+            )
+        return self
+
+
 class Operation(BaseModel):
     steps: list[Step] = []
     label: LabelSpec | None = None
@@ -341,6 +363,9 @@ class Operation(BaseModel):
     # from manifest.* facts. CarrierDefinition rejects it on any other
     # operation.
     fan_out: bool = False
+    # Book operation only: numbers the dispatch mints per parcel before the
+    # carrier call (see AllocationSpec). CarrierDefinition rejects it elsewhere.
+    allocate: list[AllocationSpec] = []
 
     @model_validator(mode="after")
     def _requires_steps_or_local_render(self) -> "Operation":
@@ -458,6 +483,32 @@ class CarrierDefinition(BaseModel):
                         f"{op_name}.{step.name}: a fan_out manifest must use an "
                         "upload transport, not "
                         f"'{step.transport}' (retry re-sends every document)"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _allocate_shape(self) -> "CarrierDefinition":
+        for op_name, operation in self.operations.items():
+            if not operation.allocate:
+                continue
+            # Minting runs at booking, before the carrier call: book-only.
+            if op_name != "book":
+                raise ValueError(
+                    f"operation '{op_name}': allocate is only for the book operation"
+                )
+            # A parcel has one carrier barcode: a second spec would overwrite
+            # the first while spending its range.
+            if len(operation.allocate) > 1:
+                raise ValueError(
+                    f"{op_name}: at most one allocate entry (a parcel has one "
+                    "carrier barcode)"
+                )
+            for spec in operation.allocate:
+                # The prefix is a per-install account fact, not shipment data.
+                if not spec.prefix.startswith("config."):
+                    raise ValueError(
+                        f"{op_name}: allocate prefix must be a config.* source, "
+                        f"not '{spec.prefix}'"
                     )
         return self
 

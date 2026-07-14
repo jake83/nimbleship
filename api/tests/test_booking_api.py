@@ -342,3 +342,192 @@ def test_a_line_wrapped_base64_label_still_decodes(
     label = client.get("/api/consignments/95000254580/label.pdf")
     assert label.status_code == 200
     assert label.content == FAKE_PDF
+
+
+# A carrier that requires the client to mint each parcel's SSCC before the book
+# call and send it in the request. The book mapping loops the parcels and emits
+# each minted code from item.carrier_barcode; the label is the returned PDF.
+SSCC_DEFINITION = {
+    "carrier": "ssccarrier",
+    "name": "SSCC Carrier",
+    "auth": {"scheme": "none"},
+    "operations": {
+        "book": {
+            "allocate": [
+                {
+                    "kind": "sscc",
+                    "per": "parcel",
+                    "prefix": "config.sscc_prefix",
+                    "policy": "halt",
+                }
+            ],
+            "steps": [
+                {
+                    "name": "labels",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.labels_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"},
+                            {
+                                "target": "units",
+                                "source": "shipment.parcels",
+                                "each": [
+                                    {"target": "sscc", "source": "item.carrier_barcode"}
+                                ],
+                            },
+                        ],
+                    },
+                    "response": {
+                        "format": "json",
+                        "success_when": {"path": "label_pdf"},
+                        "extract": [
+                            {"name": "tracking_reference", "path": "shipment_number"},
+                            {"name": "label_pdf", "path": "label_pdf"},
+                        ],
+                    },
+                }
+            ],
+            "label": {"source": "base64_pdf", "from_extract": "label_pdf"},
+        }
+    },
+}
+
+# A 10-digit prefix leaves a 7-digit serial; the first two parcels mint serials
+# 1 and 2, each closed by its GS1 mod-10 check digit.
+SSCC_PREFIX = "0012345678"
+SSCC_1 = "001234567800000019"
+SSCC_2 = "001234567800000026"
+SSCC_3 = "001234567800000033"
+SSCC_4 = "001234567800000040"
+
+
+def _sscc_response(label_pdf: str) -> str:
+    return json.dumps({"shipment_number": "SS-1", "label_pdf": label_pdf})
+
+
+def _publish_sscc_carrier(client: TestClient, prefix: str = SSCC_PREFIX) -> None:
+    client.put(
+        "/api/carriers/ssccarrier/config",
+        json={"labels_url": "https://api.ssc.example/labels", "sscc_prefix": prefix},
+    )
+    version = client.post(
+        "/api/carriers/ssccarrier/definitions/drafts",
+        json={"author": "jake", "definition": SSCC_DEFINITION},
+    ).json()["version"]
+    published = client.post(
+        f"/api/carriers/ssccarrier/definitions/versions/{version}/publish"
+    )
+    assert published.status_code == 200, published.text
+    rulebook = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "SS-STD",
+                "carrier": "ssccarrier",
+                "name": "SSCC Carrier Std",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "5.00",
+                "tie_break_order": 1,
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=rulebook).json()["version"]
+    client.post(f"/api/rulebook/versions/{version}/publish")
+
+
+def _sscc_answers(app: FastAPI) -> None:
+    encoded = base64.b64encode(FAKE_PDF).decode()
+    _carrier_answers(
+        app, lambda request: httpx.Response(200, text=_sscc_response(encoded))
+    )
+
+
+def test_per_parcel_ssccs_are_minted_and_stored_on_the_parcels(
+    app: FastAPI, client: TestClient
+) -> None:
+    _publish_sscc_carrier(client)
+    _sscc_answers(app)
+
+    created = client.post("/api/consignments", json=CONSIGNMENT)
+    assert created.status_code == 201
+    assert created.json()["carrier"] == "ssccarrier"
+
+    detail = client.get("/api/consignments/95000254580").json()
+    # Two parcels, two distinct SSCCs from consecutive serials.
+    assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_1, SSCC_2]
+
+
+def test_the_book_request_carries_the_minted_ssccs(
+    app: FastAPI, client: TestClient
+) -> None:
+    _publish_sscc_carrier(client)
+    _sscc_answers(app)
+
+    client.post("/api/consignments", json=CONSIGNMENT)
+
+    with app.state.session_factory() as session:
+        [row] = session.execute(select(CarrierTraffic)).scalars().all()
+        # The carrier receives the codes this system minted, one per parcel.
+        assert row.request["body"]["units"] == [{"sscc": SSCC_1}, {"sscc": SSCC_2}]
+
+
+def test_ssccs_advance_across_bookings(app: FastAPI, client: TestClient) -> None:
+    _publish_sscc_carrier(client)
+    _sscc_answers(app)
+
+    client.post("/api/consignments", json=CONSIGNMENT)
+    second = dict(CONSIGNMENT, order_number="95000254581")
+    client.post("/api/consignments", json=second)
+
+    detail = client.get("/api/consignments/95000254581").json()
+    # The range is durable: the second consignment mints the next serials, not
+    # a fresh 1 and 2.
+    assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_3, SSCC_4]
+
+
+def test_an_exhausted_sscc_range_fails_the_booking_loudly(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A single-digit serial range holds serials 1-9; an eleven-parcel
+    # consignment cannot mint all its codes.
+    _publish_sscc_carrier(client, prefix="0123456789012345")
+    _sscc_answers(app)
+    eleven = dict(
+        CONSIGNMENT, order_number="95000254590", parcels=[{"weight_kg": "1"}] * 11
+    )
+
+    created = client.post("/api/consignments", json=eleven)
+    assert created.status_code == 503
+    assert "exhausted" in created.text
+
+    # All-or-nothing: nothing persisted, and the rolled-back mint burned no
+    # serials - a following one-parcel booking still starts at serial 1.
+    assert client.get("/api/consignments/95000254590").status_code == 404
+    one_parcel = dict(
+        CONSIGNMENT, order_number="95000254591", parcels=[{"weight_kg": "1"}]
+    )
+    ok = client.post("/api/consignments", json=one_parcel)
+    assert ok.status_code == 201
+    detail = client.get("/api/consignments/95000254591").json()
+    assert detail["parcels"][0]["carrier_barcode"] == "012345678901234515"
+
+
+def test_an_unconfigured_sscc_prefix_is_a_loud_config_error(
+    app: FastAPI, client: TestClient
+) -> None:
+    _publish_sscc_carrier(client)
+    _sscc_answers(app)
+    # Drop the prefix the definition's allocate block names.
+    client.put(
+        "/api/carriers/ssccarrier/config",
+        json={"labels_url": "https://api.ssc.example/labels"},
+    )
+
+    created = client.post("/api/consignments", json=CONSIGNMENT)
+    assert created.status_code == 500
+    assert "not configured" in created.text
