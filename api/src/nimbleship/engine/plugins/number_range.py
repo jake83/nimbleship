@@ -109,6 +109,9 @@ def allocate_number(
         _warn_if_low(carrier, name, 1, wrap_after, low_water)
         return "1"
     if policy == "halt":
+        # `current` is the value about to be claimed and `wrap_after` the last
+        # claimable one, so the counter only passes it after the last value was
+        # handed out: the range is spent and must not reissue.
         if current > wrap_after:
             raise RangeExhausted(
                 f"number range '{name}' for carrier '{carrier}' is exhausted "

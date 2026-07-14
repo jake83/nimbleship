@@ -197,12 +197,13 @@ def test_the_sscc_plugin_assembles_prefix_suffix_and_check_digit() -> None:
         "config": {"sscc_prefix": "01234567890"},
         "allocated": {"sscc_suffix": "42"},
     }
-    # An 11-digit prefix leaves a 6-digit suffix (17 body digits), then the
-    # mod-10 check digit makes the full 18-digit SSCC.
-    body = "01234567890" + "000042"
+    # A fixed 18-digit reference: an 11-digit prefix and serial 42 give the
+    # 17-digit body 01234567890000042, whose GS1 check digit is 5. Asserting
+    # the literal (not the plugin's own check-digit output) makes a wrong
+    # check digit fail here, not only in the algorithm test.
     sscc = plugin.compute(facts)
-    assert sscc == body + _gs1_check_digit(body)
-    assert isinstance(sscc, str) and len(sscc) == 18
+    assert sscc == "012345678900000425"
+    assert len(sscc) == 18
 
 
 def test_the_sscc_plugin_fails_loudly_on_bad_prefix_or_suffix() -> None:
