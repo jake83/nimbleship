@@ -415,12 +415,25 @@ class CarrierDefinition(BaseModel):
     operations: dict[str, Operation]
 
     @model_validator(mode="after")
-    def _fan_out_is_manifest_only(self) -> "CarrierDefinition":
+    def _fan_out_shape(self) -> "CarrierDefinition":
         for op_name, operation in self.operations.items():
-            if operation.fan_out and op_name != "manifest":
+            if not operation.fan_out:
+                continue
+            if op_name != "manifest":
                 raise ValueError(
                     f"operation '{op_name}': fan_out is only for the manifest operation"
                 )
+            # Whole-manifest retry re-sends every document, so fan_out is
+            # restricted to upload transports, whose overwrite-idempotence
+            # makes re-sending an already-landed document safe; an http step
+            # would double-submit an already-accepted order on retry.
+            for step in operation.steps:
+                if step.transport not in UPLOAD_TRANSPORTS:
+                    raise ValueError(
+                        f"{op_name}.{step.name}: a fan_out manifest must use an "
+                        "upload transport, not "
+                        f"'{step.transport}' (retry re-sends every document)"
+                    )
         return self
 
     @model_validator(mode="after")

@@ -84,11 +84,42 @@ def test_a_halt_range_with_no_capacity_is_exhausted_before_the_first_claim(
 
 
 def test_wrap_is_the_default_policy(session: Session) -> None:
-    session.add(CarrierNumberSequence(carrier="palletforce", name="c", next_value=3))
+    session.add(
+        CarrierNumberSequence(
+            carrier="palletforce", name="c", next_value=3, policy="wrap"
+        )
+    )
     session.flush()
     # No policy argument still wraps, so existing callers are unchanged.
     assert allocate_number(session, "palletforce", "c", wrap_after=3) == "3"
     assert allocate_number(session, "palletforce", "c", wrap_after=3) == "1"
+
+
+def test_a_ranges_policy_is_stored_and_a_later_switch_is_refused(
+    session: Session,
+) -> None:
+    allocate_number(session, "dachser", "r", wrap_after=3, policy="halt")
+    # The policy is fixed on the row at creation.
+    row = session.get(CarrierNumberSequence, ("dachser", "r"))
+    assert row is not None and row.policy == "halt"
+
+    # A later call with a different policy is refused, so an exhausted halt
+    # range can never be cycled - and thus reissued - by a stray wrap call.
+    with pytest.raises(ValueError, match="created with policy 'halt'"):
+        allocate_number(session, "dachser", "r", wrap_after=3, policy="wrap")
+
+
+def test_a_legacy_row_without_a_policy_backfills_on_allocation(
+    session: Session,
+) -> None:
+    # A row created before the policy column has policy None; it keeps working
+    # and adopts its policy on the next allocation.
+    session.add(CarrierNumberSequence(carrier="x", name="y", next_value=5))
+    session.flush()
+
+    assert allocate_number(session, "x", "y", wrap_after=100, policy="wrap") == "5"
+    row = session.get(CarrierNumberSequence, ("x", "y"))
+    assert row is not None and row.policy == "wrap"
 
 
 def test_concurrent_allocations_never_hand_out_the_same_number(
@@ -173,7 +204,7 @@ def test_a_low_range_emits_a_structured_warning_with_a_remaining_count(
     session.flush()
 
     allocate_number(
-        session, "dachser", "sscc", wrap_after=100, policy="halt", low_water=5
+        session, "dachser", "sscc", wrap_after=100, policy="halt", reorder_threshold=5
     )
 
     [record] = [r for r in range_logs.records if "running low" in r.getMessage()]
@@ -186,7 +217,7 @@ def test_a_healthy_range_emits_no_warning(
     session: Session, range_logs: _RecordingHandler
 ) -> None:
     allocate_number(
-        session, "dachser", "sscc", wrap_after=100, policy="halt", low_water=5
+        session, "dachser", "sscc", wrap_after=100, policy="halt", reorder_threshold=5
     )
 
     assert not [r for r in range_logs.records if "running low" in r.getMessage()]
@@ -291,6 +322,8 @@ def test_the_plugin_refuses_numbers_wider_than_the_range() -> None:
 def test_the_plugin_refuses_a_non_numeric_allocation() -> None:
     plugin = field_plugin("palletforce_consignment_number")
 
-    for garbage in ("UMB42", "", True, None):
+    # "\u00b2" is a superscript two: str.isdigit accepts it but int() rejects
+    # it, so the shared validator refuses it up front like any other non-number.
+    for garbage in ("UMB42", "", True, None, "\u00b2"):
         with pytest.raises(ValueError, match="not a number"):
             plugin.compute({"allocated": {"consignment_number": garbage}})

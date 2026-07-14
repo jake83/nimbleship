@@ -5,7 +5,7 @@ the test step - draft renders diffed against the active definition's."""
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nimbleship.models import Consignment
+from nimbleship.models import Consignment, Warehouse
 
 TEST_CARRIER_DEFINITION = {
     "carrier": "testcarrier",
@@ -358,6 +358,134 @@ def _add_history(app: FastAPI, order_number: str, carrier: str) -> None:
             )
         )
         session.commit()
+
+
+def _add_warehoused_history(
+    app: FastAPI, order_number: str, carrier: str, warehouse_code: str
+) -> None:
+    with app.state.session_factory() as session:
+        session.add(
+            Warehouse(
+                code=warehouse_code,
+                name="Depot",
+                address_lines=["1 Depot Way"],
+                postcode="AB1 2CD",
+                country="GB",
+            )
+        )
+        session.add(
+            Consignment(
+                order_number=order_number,
+                recipient_name="Jane Doe",
+                address_lines=["1 High Street"],
+                postcode="AB1 2CD",
+                destination_country="GB",
+                status="allocated",
+                carrier=carrier,
+                service="STD",
+                warehouse=warehouse_code,
+                allocation={},
+            )
+        )
+        session.commit()
+
+
+_FAN_OUT_MANIFEST = {
+    "fan_out": True,
+    "steps": [
+        {
+            "name": "drop",
+            "transport": "sftp_upload",
+            "request": {
+                "url": "config.sftp_remote_dir",
+                "filename": "{shipment.order_number}.xml",
+                "content_type": "xml",
+                "root_element": "Order",
+                "mapping": [{"target": "Nope", "source": "shipment.nope"}],
+            },
+        }
+    ],
+}
+
+
+def test_the_publish_gate_renders_a_fan_out_manifest(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A fan-out manifest renders per consignment, so the gate covers it (a
+    # batch manifest is skipped): its broken shipment source - which validates
+    # at draft time, roots only - is caught here at publish.
+    _publish_v1_with_config(client)
+    client.put(
+        "/api/carriers/testcarrier/config",
+        json={
+            "api_key": "K-1",
+            "base_url": "https://api.test.example",
+            "sftp_remote_dir": "/inbox",
+        },
+    )
+    _add_history(app, "95000254580", "testcarrier")
+
+    broken = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": _FAN_OUT_MANIFEST,
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": broken},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "'manifest'" in response.text
+    assert "shipment.nope" in response.text
+
+
+def test_the_publish_gate_supplies_warehouse_facts(
+    app: FastAPI, client: TestClient
+) -> None:
+    # An operation referencing warehouse.* renders only if the gate supplies
+    # warehouse facts (it 409'd unconditionally before).
+    _publish_v1_with_config(client)
+    _add_warehoused_history(app, "W-00001", "testcarrier", "DEPOT1")
+
+    with_depot = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"},
+                                {"target": "depot", "source": "warehouse.code"},
+                            ],
+                        },
+                    }
+                ]
+            }
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": with_depot},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 200
 
 
 def test_golden_replay_covers_all_carriers_history_by_default(

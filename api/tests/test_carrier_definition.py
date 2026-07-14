@@ -448,20 +448,32 @@ def test_step_reference_to_a_step_with_no_extractions_is_rejected() -> None:
 def _manifest_operation(
     mapping: list[dict[str, object]], fan_out: bool = False
 ) -> dict[str, object]:
-    operation: dict[str, object] = {
-        "steps": [
-            {
-                "name": "declare",
-                "transport": "http",
-                "request": {
-                    "method": "POST",
-                    "url": "config.manifest_url",
-                    "content_type": "json",
-                    "mapping": mapping,
-                },
-            }
-        ]
-    }
+    # A fan-out manifest must use an upload transport; a batch manifest uses
+    # http here.
+    step: dict[str, object] = (
+        {
+            "name": "declare",
+            "transport": "sftp_upload",
+            "request": {
+                "url": "config.sftp_remote_dir",
+                "filename": "{shipment.order_number}.csv",
+                "content_type": "csv",
+                "mapping": mapping,
+            },
+        }
+        if fan_out
+        else {
+            "name": "declare",
+            "transport": "http",
+            "request": {
+                "method": "POST",
+                "url": "config.manifest_url",
+                "content_type": "json",
+                "mapping": mapping,
+            },
+        }
+    )
+    operation: dict[str, object] = {"steps": [step]}
     if fan_out:
         operation["fan_out"] = True
     return {
@@ -548,6 +560,38 @@ def test_fan_out_is_only_valid_on_the_manifest_operation() -> None:
     }
 
     with pytest.raises(ValidationError, match="fan_out"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_a_fan_out_manifest_must_use_an_upload_transport() -> None:
+    # Whole-manifest retry re-sends every document, safe only for
+    # overwrite-idempotent uploads, so a fan_out manifest over http is refused.
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "manifest": {
+                "fan_out": True,
+                "steps": [
+                    {
+                        "name": "declare",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.manifest_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "o", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="upload transport"):
         CarrierDefinition.model_validate(bad)
 
 
