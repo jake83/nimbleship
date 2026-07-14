@@ -205,6 +205,12 @@ def _validate_xml_targets(entries: list[MappingEntry]) -> None:
                 raise ValueError(
                     f"mapping '{entry.target}': an @attribute needs a name after the @"
                 )
+            if terminal[1:] == "xmlns":
+                raise ValueError(
+                    f"mapping '{entry.target}': xmlns declares a namespace, which is "
+                    "out of scope (a prefixed xmlns:* is already rejected by the "
+                    "no-colon rule)"
+                )
             _require_xml_name(terminal[1:], f"mapping '{entry.target}': attribute name")
             if entry.each is not None:
                 raise ValueError(

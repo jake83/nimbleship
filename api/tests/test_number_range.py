@@ -4,6 +4,7 @@ hand two callers the same number; because the render path is pure,
 allocation happens BEFORE render and reaches the plugin as an injected
 `allocated` fact."""
 
+import logging
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -14,7 +15,12 @@ from sqlalchemy.orm import ORMExecuteState, Session, sessionmaker
 
 from nimbleship.db import Base
 from nimbleship.engine.field_plugins import field_plugin
-from nimbleship.engine.plugins.number_range import allocate_number
+from nimbleship.engine.plugins.number_range import (
+    RangeExhausted,
+    _gs1_check_digit,
+    allocate_number,
+    sscc_sequence_name,
+)
 from nimbleship.models import CarrierNumberSequence
 
 
@@ -53,6 +59,27 @@ def test_the_range_wraps_to_one_after_its_last_value(session: Session) -> None:
 
     assert allocate_number(session, "palletforce", "consignment_number") == "9999999"
     assert allocate_number(session, "palletforce", "consignment_number") == "1"
+
+
+def test_the_halt_policy_claims_up_to_the_limit_then_raises(session: Session) -> None:
+    # A halt range never wraps: reissuing a live SSCC would be unsafe. The
+    # limit value is still claimable; the next allocation is refused loudly.
+    numbers = [
+        allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
+        for _ in range(3)
+    ]
+    assert numbers == ["1", "2", "3"]
+
+    with pytest.raises(RangeExhausted, match="sscc"):
+        allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
+
+
+def test_wrap_is_the_default_policy(session: Session) -> None:
+    session.add(CarrierNumberSequence(carrier="palletforce", name="c", next_value=3))
+    session.flush()
+    # No policy argument still wraps, so existing callers are unchanged.
+    assert allocate_number(session, "palletforce", "c", wrap_after=3) == "3"
+    assert allocate_number(session, "palletforce", "c", wrap_after=3) == "1"
 
 
 def test_concurrent_allocations_never_hand_out_the_same_number(
@@ -97,6 +124,127 @@ def test_concurrent_allocations_never_hand_out_the_same_number(
     engine.dispose()
 
     assert sorted(outcomes.values()) == ["2", "conflict"]
+
+
+class _RecordingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def range_logs() -> Iterator[_RecordingHandler]:
+    # Attach directly to the allocator's logger rather than via caplog, whose
+    # root-propagation capture is fragile here. `disabled` is forced off because
+    # running Alembic in-process (the Postgres integration tests) calls
+    # fileConfig with disable_existing_loggers=True, which disables this logger
+    # for the rest of the test process - a test-only artifact (migrations run
+    # apart from the API in production).
+    handler = _RecordingHandler()
+    logger = logging.getLogger("nimbleship.engine.plugins.number_range")
+    previous_level, previous_disabled = logger.level, logger.disabled
+    logger.setLevel(logging.WARNING)
+    logger.disabled = False
+    logger.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        logger.disabled = previous_disabled
+
+
+def test_a_low_range_emits_a_structured_warning_with_a_remaining_count(
+    session: Session, range_logs: _RecordingHandler
+) -> None:
+    session.add(CarrierNumberSequence(carrier="dachser", name="sscc", next_value=98))
+    session.flush()
+
+    allocate_number(
+        session, "dachser", "sscc", wrap_after=100, policy="halt", low_water=5
+    )
+
+    [record] = [r for r in range_logs.records if "running low" in r.getMessage()]
+    # 100 last claimable, 98 just claimed -> 2 left; queryable off the record.
+    assert record.remaining == 2  # type: ignore[attr-defined]
+    assert record.carrier == "dachser"  # type: ignore[attr-defined]
+
+
+def test_a_healthy_range_emits_no_warning(
+    session: Session, range_logs: _RecordingHandler
+) -> None:
+    allocate_number(
+        session, "dachser", "sscc", wrap_after=100, policy="halt", low_water=5
+    )
+
+    assert not [r for r in range_logs.records if "running low" in r.getMessage()]
+
+
+def test_gs1_check_digit_matches_the_standard_algorithm() -> None:
+    # GS1's own worked example (GTIN-12 body 03600029145 -> check digit 2),
+    # which pins the mod-10 weighting; plus two hand-checked 17-digit bodies.
+    assert _gs1_check_digit("03600029145") == "2"
+    assert _gs1_check_digit("0" * 17) == "0"
+    assert _gs1_check_digit("12345678901234567") == "5"
+
+
+def test_the_sscc_plugin_assembles_prefix_suffix_and_check_digit() -> None:
+    plugin = field_plugin("sscc")
+    facts: dict[str, object] = {
+        "config": {"sscc_prefix": "01234567890"},
+        "allocated": {"sscc_suffix": "42"},
+    }
+    # An 11-digit prefix leaves a 6-digit suffix (17 body digits), then the
+    # mod-10 check digit makes the full 18-digit SSCC.
+    body = "01234567890" + "000042"
+    sscc = plugin.compute(facts)
+    assert sscc == body + _gs1_check_digit(body)
+    assert isinstance(sscc, str) and len(sscc) == 18
+
+
+def test_the_sscc_plugin_fails_loudly_on_bad_prefix_or_suffix() -> None:
+    plugin = field_plugin("sscc")
+    good_prefix = {"sscc_prefix": "01234567890"}
+
+    with pytest.raises(ValueError, match="sscc_prefix"):
+        plugin.compute({"config": {}, "allocated": {"sscc_suffix": "1"}})
+    with pytest.raises(ValueError, match="sscc_prefix"):
+        plugin.compute(
+            {"config": {"sscc_prefix": "12x"}, "allocated": {"sscc_suffix": "1"}}
+        )
+    # A prefix that fills all 17 body digits leaves no room for a suffix.
+    with pytest.raises(ValueError, match="no room"):
+        plugin.compute(
+            {"config": {"sscc_prefix": "0" * 17}, "allocated": {"sscc_suffix": "1"}}
+        )
+    # A suffix wider than the room the prefix leaves cannot fit.
+    with pytest.raises(ValueError, match="does not fit"):
+        plugin.compute({"config": good_prefix, "allocated": {"sscc_suffix": "1234567"}})
+    with pytest.raises(ValueError, match="allocate_number"):
+        plugin.compute({"config": good_prefix})
+
+
+def test_sscc_sequences_key_on_the_prefix_so_a_new_range_starts_fresh(
+    session: Session,
+) -> None:
+    old = sscc_sequence_name("9610000")
+    new = sscc_sequence_name("9620000")
+    assert old != new
+
+    assert (
+        allocate_number(session, "dachser", old, wrap_after=999, policy="halt") == "1"
+    )
+    assert (
+        allocate_number(session, "dachser", old, wrap_after=999, policy="halt") == "2"
+    )
+    # Provisioning a new range (a config prefix change) is a fresh sequence at
+    # 1; the spent prefix's counter stays frozen as an audit of what issued.
+    assert (
+        allocate_number(session, "dachser", new, wrap_after=999, policy="halt") == "1"
+    )
 
 
 def test_the_consignment_number_plugin_formats_the_allocated_fact() -> None:
