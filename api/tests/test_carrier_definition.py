@@ -791,6 +791,19 @@ def test_an_xml_root_element_must_be_a_legal_xml_name() -> None:
         )
 
 
+def test_an_xml_xmlns_attribute_is_rejected() -> None:
+    # xmlns needs no colon, so the no-namespace-colon rule misses it; declaring
+    # a default namespace would silently put the whole document in it.
+    with pytest.raises(ValidationError, match="xmlns"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Order",
+                mapping=[{"target": "@xmlns", "const": "http://example.com/ns"}],
+            )
+        )
+
+
 def test_an_xml_attribute_cannot_be_a_repeated_element() -> None:
     with pytest.raises(ValidationError, match="repeated element"):
         CarrierDefinition.model_validate(
