@@ -169,18 +169,80 @@ class MappingEntry(BaseModel):
         return self
 
 
+# A conservative XML 1.0 Name (no namespace colon - namespaces are out of
+# scope): a letter or underscore, then letters, digits, underscore, hyphen,
+# or period. Element and attribute names must match so a target can never
+# render a document no XML parser can read.
+_XML_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]*")
+
+
+def _require_xml_name(name: str, where: str) -> None:
+    if not _XML_NAME.fullmatch(name):
+        raise ValueError(f"{where} is not a legal XML name: {name!r}")
+
+
+def _validate_xml_targets(entries: list[MappingEntry]) -> None:
+    """Enforce the @-attribute convention (ADR 0010): an @-prefixed segment
+    names an attribute of its parent element, so it must be the terminal
+    segment of its target and cannot be a repeated element (an each-loop
+    produces sibling elements, never an attribute). Every element/attribute
+    name is also checked to be a legal XML name (an all-digit segment is a
+    list position, not a name). Nested each-loops are checked recursively so
+    an attribute inside a repeated element is covered too."""
+    for entry in entries:
+        segments = entry.target.split(".")
+        for segment in segments[:-1]:
+            if segment.startswith("@"):
+                raise ValueError(
+                    f"mapping '{entry.target}': an @attribute must be the last "
+                    "segment of its target"
+                )
+            if not segment.isdigit():
+                _require_xml_name(segment, f"mapping '{entry.target}': element name")
+        terminal = segments[-1]
+        if terminal.startswith("@"):
+            if terminal == "@":
+                raise ValueError(
+                    f"mapping '{entry.target}': an @attribute needs a name after the @"
+                )
+            _require_xml_name(terminal[1:], f"mapping '{entry.target}': attribute name")
+            if entry.each is not None:
+                raise ValueError(
+                    f"mapping '{entry.target}': an @attribute cannot be a repeated "
+                    "element (each)"
+                )
+        elif not terminal.isdigit():
+            _require_xml_name(terminal, f"mapping '{entry.target}': element name")
+        if entry.each is not None:
+            _validate_xml_targets(entry.each)
+
+
 class RequestSpec(BaseModel):
     method: Literal["GET", "POST", "PUT"] = "POST"
     # A source path (usually config.*) resolved at render time. For an
     # upload transport this is the remote directory rather than a URL.
     url: str
     query: dict[str, str] = {}
-    content_type: Literal["form", "json", "csv"]
+    content_type: Literal["form", "json", "csv", "xml"]
     mapping: list[MappingEntry]
     # Upload transports only: the remote filename, a template whose
     # `{fact.path}` placeholders are substituted at render time (e.g.
     # "{warehouse.code}-{shipment.order_number}.csv").
     filename: str | None = None
+    # content_type xml only: the single document wrapper element. The renderer
+    # emits a fixed prolog and wraps the mapping in this element.
+    root_element: str | None = None
+
+    @model_validator(mode="after")
+    def _xml_shape(self) -> "RequestSpec":
+        if self.content_type == "xml":
+            if not self.root_element:
+                raise ValueError("an xml request needs a root_element")
+            _require_xml_name(self.root_element, "root_element")
+            _validate_xml_targets(self.mapping)
+        elif self.root_element is not None:
+            raise ValueError("root_element is only for content_type xml")
+        return self
 
 
 class Extraction(BaseModel):
@@ -221,12 +283,14 @@ class Step(BaseModel):
         where = f"step '{self.name}'"
         if self.transport in UPLOAD_TRANSPORTS:
             # An upload renders a file to a named remote path and hears
-            # nothing back, so it needs a filename, must be CSV (the only
-            # file rendering the engine owns), and declares no response.
+            # nothing back, so it needs a filename, must be a file format the
+            # engine renders (csv or xml), and declares no response.
             if self.request.filename is None:
                 raise ValueError(f"{where}: an upload step needs a filename")
-            if self.request.content_type != "csv":
-                raise ValueError(f"{where}: an upload step must be content_type csv")
+            if self.request.content_type not in ("csv", "xml"):
+                raise ValueError(
+                    f"{where}: an upload step must be content_type csv or xml"
+                )
             if self.response is not None:
                 raise ValueError(
                     f"{where}: an upload step is fire-and-forget and takes no response"
@@ -240,8 +304,15 @@ class Step(BaseModel):
                     f"{where}: an upload step's remote directory (url) must be a "
                     "config.* source"
                 )
-        elif self.request.filename is not None:
-            raise ValueError(f"{where}: filename is for upload transports, not http")
+        else:
+            if self.request.filename is not None:
+                raise ValueError(
+                    f"{where}: filename is for upload transports, not http"
+                )
+            # xml is a file format for upload steps only - there is no
+            # http-xml request body until a carrier needs one.
+            if self.request.content_type == "xml":
+                raise ValueError(f"{where}: xml is an upload-only content_type")
         return self
 
 

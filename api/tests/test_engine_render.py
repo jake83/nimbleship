@@ -2,6 +2,8 @@
 requests. Pure by design - Golden Replay diffs renders without touching a
 carrier (ADR 0009)."""
 
+import xml.etree.ElementTree as ET
+
 import pytest
 from pydantic import ValidationError
 
@@ -187,6 +189,202 @@ def test_upload_render_is_deterministic_and_secret_free() -> None:
     # rendered - nothing here should carry a host/username/password.
     dumped = str(first[0].model_dump())
     assert "password" not in dumped and "ftp_host" not in dumped
+
+
+XML_DEFINITION = CarrierDefinition.model_validate(
+    {
+        "carrier": "dachser",
+        "name": "Dachser",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "edi",
+                        "transport": "sftp_upload",
+                        "request": {
+                            "url": "config.sftp_remote_dir",
+                            "filename": "{shipment.order_number}.xml",
+                            "content_type": "xml",
+                            "root_element": "ForwardingOrderInformation",
+                            "mapping": [
+                                {"target": "@Version", "const": "2.0"},
+                                {
+                                    "target": "Order.OrderNumber",
+                                    "source": "shipment.order_number",
+                                },
+                                {
+                                    "target": "ShipmentAddress.@AddressType",
+                                    "const": "Consignee",
+                                },
+                                {
+                                    "target": "ShipmentAddress.@Country",
+                                    "const": "CZ",
+                                },
+                                {
+                                    "target": "ShipmentAddress.City",
+                                    "source": "shipment.city",
+                                },
+                                {
+                                    "target": "ShipmentLine",
+                                    "source": "shipment.parcels",
+                                    "each": [
+                                        {"target": "@Sequence", "source": "item.seq"},
+                                        {
+                                            "target": "Weight",
+                                            "source": "item.weight_kg",
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render", "template": "standard_a6"},
+            }
+        },
+    }
+)
+
+XML_FACTS = {
+    "shipment": {
+        "order_number": "95000254580",
+        "city": "Praha",
+        "parcels": [
+            {"seq": "1", "weight_kg": "4.2"},
+            {"seq": "2", "weight_kg": "3.1"},
+        ],
+    },
+    "config": {"sftp_remote_dir": "/inbox"},
+}
+
+
+def test_xml_upload_renders_prolog_root_attributes_nesting_and_repeats() -> None:
+    [rendered] = render_operation(XML_DEFINITION, "book", XML_FACTS)
+
+    assert isinstance(rendered, RenderedUpload)
+    assert rendered.content_type == "xml"
+    assert rendered.filename == "95000254580.xml"
+    # A fixed UTF-8 prolog; @-targets become attributes of their element
+    # (@Version on the root, @AddressType/@Country/@Sequence on their parents);
+    # two attributes on one element keep mapping order; dot targets nest
+    # elements; an each-loop becomes repeated same-name elements.
+    assert rendered.content == (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<ForwardingOrderInformation Version="2.0">'
+        "<Order><OrderNumber>95000254580</OrderNumber></Order>"
+        '<ShipmentAddress AddressType="Consignee" Country="CZ">'
+        "<City>Praha</City></ShipmentAddress>"
+        '<ShipmentLine Sequence="1"><Weight>4.2</Weight></ShipmentLine>'
+        '<ShipmentLine Sequence="2"><Weight>3.1</Weight></ShipmentLine>'
+        "</ForwardingOrderInformation>"
+    )
+    # And the document is well-formed - it round-trips through a parser.
+    ET.fromstring(rendered.content)
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "line1\x0bline2",  # a C0 control (vertical tab)
+        "before\ud800after",  # a lone surrogate (cannot even be UTF-8 encoded)
+        "x\ufffey",  # a U+FFFE noncharacter (encodes cleanly, still illegal)
+    ],
+    ids=["control", "surrogate", "noncharacter"],
+)
+def test_xml_refuses_a_character_not_permitted_in_xml(note: str) -> None:
+    # Anything outside XML 1.0's Char production can arrive in ordinary
+    # free-text shipment data (or mis-decoded input crossing the legacy edge);
+    # it must fail loudly at render, never ship as a broken EDI file - the
+    # noncharacter case even encodes to valid UTF-8, so nothing downstream
+    # would catch it.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dachser",
+            "name": "Dachser",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "edi",
+                            "transport": "sftp_upload",
+                            "request": {
+                                "url": "config.sftp_remote_dir",
+                                "filename": "{shipment.order_number}.xml",
+                                "content_type": "xml",
+                                "root_element": "Order",
+                                "mapping": [
+                                    {"target": "Notes", "source": "shipment.notes"}
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render", "template": "a6"},
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "1", "notes": note},
+        "config": {"sftp_remote_dir": "/inbox"},
+    }
+
+    with pytest.raises(ValueError, match="not permitted in XML"):
+        render_operation(definition, "book", facts)
+
+
+def test_xml_escapes_special_characters_in_text_and_attributes() -> None:
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dachser",
+            "name": "Dachser",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "edi",
+                            "transport": "sftp_upload",
+                            "request": {
+                                "url": "config.sftp_remote_dir",
+                                "filename": "{shipment.order_number}.xml",
+                                "content_type": "xml",
+                                "root_element": "Order",
+                                "mapping": [
+                                    {"target": "@Ref", "source": "shipment.ref"},
+                                    {"target": "Notes", "source": "shipment.notes"},
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render", "template": "a6"},
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "1", "ref": 'A&B"C', "notes": "x < y & z"},
+        "config": {"sftp_remote_dir": "/inbox"},
+    }
+
+    [rendered] = render_operation(definition, "book", facts)
+
+    assert isinstance(rendered, RenderedUpload)
+    # Markup metacharacters are escaped, so a value can never inject structure.
+    assert '<Order Ref="A&amp;B&quot;C">' in rendered.content
+    assert "<Notes>x &lt; y &amp; z</Notes>" in rendered.content
+
+
+def test_xml_upload_render_is_deterministic_and_secret_free() -> None:
+    first = render_operation(XML_DEFINITION, "book", XML_FACTS)
+    second = render_operation(XML_DEFINITION, "book", XML_FACTS)
+    assert [r.model_dump() for r in first] == [r.model_dump() for r in second]
+    # Connection secrets are read by the uploader at execution, never rendered -
+    # nothing here should carry a host/username/password (as the csv path also
+    # guarantees).
+    dumped = str(first[0].model_dump())
+    assert "password" not in dumped and "sftp_host" not in dumped
 
 
 def test_renders_mapped_transformed_and_constant_fields() -> None:

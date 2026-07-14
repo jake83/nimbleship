@@ -712,3 +712,130 @@ def test_an_upload_remote_directory_must_come_from_config() -> None:
     # shipment-sourced value could carry `..` and escape the directory.
     with pytest.raises(ValidationError, match="config"):
         CarrierDefinition.model_validate(_ftp_step(url="shipment.order_number"))
+
+
+def test_a_valid_xml_upload_step_validates() -> None:
+    definition = CarrierDefinition.model_validate(
+        _ftp_step(
+            content_type="xml",
+            root_element="ForwardingOrderInformation",
+            filename="{shipment.order_number}.xml",
+            mapping=[
+                {"target": "@Version", "const": "2.0"},
+                {"target": "Order.Number", "source": "shipment.order_number"},
+                {
+                    "target": "ShipmentLine",
+                    "source": "shipment.parcels",
+                    "each": [{"target": "@Sequence", "source": "item.seq"}],
+                },
+            ],
+        )
+    )
+
+    step = definition.operations["book"].steps[0]
+    assert step.request.content_type == "xml"
+    assert step.request.root_element == "ForwardingOrderInformation"
+
+
+def test_an_xml_upload_step_needs_a_root_element() -> None:
+    with pytest.raises(ValidationError, match="root_element"):
+        CarrierDefinition.model_validate(_ftp_step(content_type="xml"))
+
+
+def test_root_element_is_only_for_xml() -> None:
+    with pytest.raises(ValidationError, match="root_element is only for content_type"):
+        CarrierDefinition.model_validate(_ftp_step(root_element="Order"))
+
+
+def test_an_xml_attribute_must_be_the_terminal_segment() -> None:
+    with pytest.raises(ValidationError, match="last segment"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Order",
+                mapping=[{"target": "@Bad.Inner", "source": "shipment.order_number"}],
+            )
+        )
+
+
+def test_an_xml_attribute_needs_a_name_after_the_at_sign() -> None:
+    # A bare "@" would strip to an empty attribute name and render malformed
+    # XML (`<Root ="v"/>`), so it is refused at authoring.
+    with pytest.raises(ValidationError, match="needs a name"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Root",
+                mapping=[{"target": "@", "const": "v"}],
+            )
+        )
+
+
+def test_an_xml_element_name_must_be_a_legal_xml_name() -> None:
+    # A target segment with a space (or an @ mid-name, etc.) would render a
+    # tag no XML parser can read; it is refused at authoring.
+    with pytest.raises(ValidationError, match="legal XML name"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Order",
+                mapping=[{"target": "Ship To", "source": "shipment.order_number"}],
+            )
+        )
+
+
+def test_an_xml_root_element_must_be_a_legal_xml_name() -> None:
+    with pytest.raises(ValidationError, match="legal XML name"):
+        CarrierDefinition.model_validate(
+            _ftp_step(content_type="xml", root_element="Bad Root")
+        )
+
+
+def test_an_xml_attribute_cannot_be_a_repeated_element() -> None:
+    with pytest.raises(ValidationError, match="repeated element"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Order",
+                mapping=[
+                    {
+                        "target": "@Lines",
+                        "source": "shipment.parcels",
+                        "each": [{"target": "W", "source": "item.weight_kg"}],
+                    }
+                ],
+            )
+        )
+
+
+def test_xml_is_an_upload_only_content_type() -> None:
+    # There is no http-xml request body: an http step declaring xml is refused
+    # (root_element set so the failure is the upload-only rule, not a missing
+    # root_element).
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "xml",
+                            "root_element": "Order",
+                            "mapping": [
+                                {"target": "o", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+    with pytest.raises(ValidationError, match="upload-only"):
+        CarrierDefinition.model_validate(bad)
