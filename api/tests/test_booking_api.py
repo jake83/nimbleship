@@ -5,7 +5,9 @@ carrier traffic, and a failed carrier call is loud - 502, never a silent
 success. The carrier here is the Furdeco example definition over an
 httpx.MockTransport: zero real network."""
 
+import base64
 import json
+import textwrap
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -218,3 +220,125 @@ def test_a_stepless_carrier_records_no_traffic(
     assert response.json()["tracking_reference"] is None
     with app.state.session_factory() as session:
         assert session.execute(select(CarrierTraffic)).scalars().all() == []
+
+
+B64_LABEL_DEFINITION = {
+    "carrier": "labelcarrier",
+    "name": "Label Carrier",
+    "auth": {"scheme": "none"},
+    "operations": {
+        "book": {
+            "steps": [
+                {
+                    "name": "labels",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.labels_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"}
+                        ],
+                    },
+                    "response": {
+                        "format": "json",
+                        "success_when": {"path": "label_pdf"},
+                        "extract": [
+                            {"name": "tracking_reference", "path": "shipment_number"},
+                            {"name": "label_pdf", "path": "label_pdf"},
+                        ],
+                    },
+                }
+            ],
+            "label": {"source": "base64_pdf", "from_extract": "label_pdf"},
+        }
+    },
+}
+
+FAKE_PDF = b"%PDF-1.4 a real-looking label from the carrier"
+
+
+def _label_carrier_response(label_pdf: str) -> str:
+    return json.dumps({"shipment_number": "D-123", "label_pdf": label_pdf})
+
+
+def _publish_label_carrier(client: TestClient) -> None:
+    client.put(
+        "/api/carriers/labelcarrier/config",
+        json={"labels_url": "https://api.label.example/labels"},
+    )
+    version = client.post(
+        "/api/carriers/labelcarrier/definitions/drafts",
+        json={"author": "jake", "definition": B64_LABEL_DEFINITION},
+    ).json()["version"]
+    client.post(f"/api/carriers/labelcarrier/definitions/versions/{version}/publish")
+    rulebook = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "LC-STD",
+                "carrier": "labelcarrier",
+                "name": "Label Carrier Std",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "10.00",
+                "tie_break_order": 1,
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=rulebook).json()["version"]
+    client.post(f"/api/rulebook/versions/{version}/publish")
+
+
+def test_a_base64_pdf_label_is_the_decoded_carrier_pdf(
+    app: FastAPI, client: TestClient
+) -> None:
+    _publish_label_carrier(client)
+    encoded = base64.b64encode(FAKE_PDF).decode()
+    _carrier_answers(
+        app, lambda request: httpx.Response(200, text=_label_carrier_response(encoded))
+    )
+
+    created = client.post("/api/consignments", json=CONSIGNMENT)
+    assert created.status_code == 201
+    assert created.json()["carrier"] == "labelcarrier"
+
+    label = client.get("/api/consignments/95000254580/label.pdf")
+    assert label.status_code == 200
+    # The stored label is exactly the carrier's PDF, not a locally-rendered one.
+    assert label.content == FAKE_PDF
+
+
+def test_a_base64_label_that_is_not_a_pdf_fails_the_booking(
+    app: FastAPI, client: TestClient
+) -> None:
+    _publish_label_carrier(client)
+    not_a_pdf = base64.b64encode(b"<html>error page</html>").decode()
+    _carrier_answers(
+        app,
+        lambda request: httpx.Response(200, text=_label_carrier_response(not_a_pdf)),
+    )
+
+    created = client.post("/api/consignments", json=CONSIGNMENT)
+    assert created.status_code == 502
+    assert "not a PDF" in created.text
+
+
+def test_a_line_wrapped_base64_label_still_decodes(
+    app: FastAPI, client: TestClient
+) -> None:
+    # Server-side encoders often line-wrap base64 at 76 columns; a valid label
+    # must not be rejected just because its JSON carries newlines.
+    _publish_label_carrier(client)
+    wrapped = "\n".join(textwrap.wrap(base64.b64encode(FAKE_PDF).decode(), 76))
+    _carrier_answers(
+        app, lambda request: httpx.Response(200, text=_label_carrier_response(wrapped))
+    )
+
+    created = client.post("/api/consignments", json=CONSIGNMENT)
+    assert created.status_code == 201
+
+    label = client.get("/api/consignments/95000254580/label.pdf")
+    assert label.status_code == 200
+    assert label.content == FAKE_PDF

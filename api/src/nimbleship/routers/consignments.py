@@ -1,3 +1,5 @@
+import base64
+import binascii
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
@@ -135,6 +137,34 @@ def _label_sender(warehouse: Warehouse | None) -> LabelSender | None:
     )
 
 
+def _base64_pdf_label(
+    outputs: dict[str, object], from_extract: str, carrier: str
+) -> bytes:
+    """Decode the base64 PDF a carrier returned in its book response. The label
+    is the exact document the carrier produced, so a missing, non-string,
+    non-base64, or non-PDF value is a failed booking (502), never a silent bad
+    label the warehouse would print."""
+    raw = outputs.get(from_extract)
+    if not isinstance(raw, str) or not raw:
+        raise HTTPException(
+            502,
+            f"carrier '{carrier}' book response has no base64 label at "
+            f"'{from_extract}'",
+        )
+    try:
+        # Strip whitespace first: a carrier's JSON may line-wrap the base64
+        # (MIME-style) or leave a trailing newline, which validate=True would
+        # otherwise reject as a false booking failure on a valid label.
+        pdf = base64.b64decode("".join(raw.split()), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise HTTPException(
+            502, f"carrier '{carrier}' returned an invalid base64 label: {error}"
+        ) from error
+    if not pdf.startswith(b"%PDF"):
+        raise HTTPException(502, f"carrier '{carrier}' base64 label is not a PDF")
+    return pdf
+
+
 def _book_with_carrier(
     session: Session,
     definition: CarrierDefinition,
@@ -142,7 +172,7 @@ def _book_with_carrier(
     warehouse: Warehouse | None,
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
-) -> None:
+) -> dict[str, object]:
     """Execute the book operation's http steps, recording every step as
     carrier traffic (ADR 0009's golden corpus grows from real calls). On
     success the extracted tracking reference and carrier barcodes land on
@@ -233,6 +263,7 @@ def _book_with_carrier(
             detail=detail,
         )
     )
+    return result.outputs
 
 
 @router.post("", status_code=201)
@@ -362,30 +393,41 @@ def create_consignment(
                 "published definition; it cannot dispatch consignments",
             )
         label_spec = book.label
-        # The label spec is checked before any carrier call: an unsupported
-        # label source must fail before a booking exists on the carrier's
-        # side, not after.
-        if label_spec is None or label_spec.source != "local_render":
+        # The label source is checked before any carrier call: an unsupported
+        # source must fail before a booking exists on the carrier's side.
+        if label_spec is None or label_spec.source not in (
+            "local_render",
+            "base64_pdf",
+        ):
             raise HTTPException(
                 500,
-                f"carrier '{selected.carrier}' does not local_render labels; "
-                "only the local_render label source is supported so far",
+                f"carrier '{selected.carrier}' label source is unsupported; only "
+                "local_render and base64_pdf are supported so far",
             )
+        outputs: dict[str, object] = {}
         if book.steps:
-            _book_with_carrier(
+            outputs = _book_with_carrier(
                 session, definition, consignment, warehouse, http_client, uploaders
             )
-        pdf = render_labels(
-            LabelRequest(
-                order_number=payload.order_number,
-                recipient_name=payload.recipient_name,
-                address_lines=payload.address_lines,
-                postcode=payload.postcode,
-                country=payload.destination_country,
-                parcel_count=len(payload.parcels),
-                sender=_label_sender(warehouse),
+        if label_spec.source == "base64_pdf":
+            # The carrier returned the label as a base64 PDF in its book
+            # response; the extraction the label names carries it.
+            assert label_spec.from_extract is not None  # schema-guaranteed
+            pdf = _base64_pdf_label(
+                outputs, label_spec.from_extract, selected.carrier or ""
             )
-        )
+        else:
+            pdf = render_labels(
+                LabelRequest(
+                    order_number=payload.order_number,
+                    recipient_name=payload.recipient_name,
+                    address_lines=payload.address_lines,
+                    postcode=payload.postcode,
+                    country=payload.destination_country,
+                    parcel_count=len(payload.parcels),
+                    sender=_label_sender(warehouse),
+                )
+            )
         store.save(payload.order_number, pdf)
         session.add(
             OrderEvent(

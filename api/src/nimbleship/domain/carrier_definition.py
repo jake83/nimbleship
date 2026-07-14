@@ -352,6 +352,31 @@ class Operation(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _base64_pdf_label_resolves(self) -> "Operation":
+        # A base64_pdf label is a base64 PDF the carrier returned, so it names
+        # the step extraction that carries it; that name must resolve to a real
+        # extraction of this operation, or the label would fail at booking.
+        label = self.label
+        if label is None or label.source != "base64_pdf":
+            return self
+        if label.from_extract is None:
+            raise ValueError(
+                "a base64_pdf label needs a from_extract naming a step extraction"
+            )
+        extraction_names = {
+            extraction.name
+            for step in self.steps
+            if step.response is not None
+            for extraction in step.response.extract
+        }
+        if label.from_extract not in extraction_names:
+            raise ValueError(
+                f"base64_pdf label from_extract '{label.from_extract}' is not an "
+                "extraction of this operation"
+            )
+        return self
+
 
 class QueryKeyAuth(BaseModel):
     scheme: Literal["query_key"]
