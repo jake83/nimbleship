@@ -324,6 +324,22 @@ def test_a_base64_label_that_is_not_a_pdf_fails_the_booking(
     assert created.status_code == 502
     assert "not a PDF" in created.text
 
+    # The carrier already created the shipment, so the booking is preserved
+    # rather than lost: the consignment persists as label_failed, with the
+    # failure and the carrier traffic on record.
+    detail = client.get("/api/consignments/95000254580").json()
+    assert detail["status"] == "label_failed"
+    assert detail["label_url"] is None
+    stages = [e["stage"] for e in detail["events"]]
+    assert stages == ["allocated", "booked", "label_failed"]
+    with app.state.session_factory() as session:
+        assert session.execute(select(CarrierTraffic)).scalars().all() != []
+
+    # A retry does not double-book: the persisted consignment 409s the
+    # duplicate submission.
+    retry = client.post("/api/consignments", json=CONSIGNMENT)
+    assert retry.status_code == 409
+
 
 def test_a_line_wrapped_base64_label_still_decodes(
     app: FastAPI, client: TestClient
