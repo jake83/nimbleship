@@ -334,11 +334,10 @@ class LabelSpec(BaseModel):
 
 
 class AllocationSpec(BaseModel):
-    # Mint a number per parcel before the book call and store it as the
-    # parcel's carrier barcode, for carriers that require the client to assign
-    # it (an SSCC). The prefix is a config.* source (a per-install account
-    # fact); `halt` never reissues a live code. The book render then reads
-    # item.carrier_barcode, and so does the later fan-out manifest.
+    # A number the client mints per parcel before the book call, stored as the
+    # parcel's carrier barcode, for carriers that assign it themselves (an
+    # SSCC). prefix is a config.* source; the book render and fan-out manifest
+    # both read the result as item.carrier_barcode.
     kind: Literal["sscc"]
     per: Literal["parcel"]
     prefix: str
@@ -346,9 +345,8 @@ class AllocationSpec(BaseModel):
 
     @model_validator(mode="after")
     def _sscc_never_wraps(self) -> "AllocationSpec":
-        # An SSCC identifies a physical unit still moving through the network,
-        # so its serial must never wrap: reissuing a live code is unsafe. Only
-        # `halt` is admissible for kind sscc.
+        # An SSCC identifies a live physical unit, so its serial must never
+        # wrap: reissuing a live code is unsafe.
         if self.kind == "sscc" and self.policy != "halt":
             raise ValueError(
                 "an sscc allocation must use policy 'halt': wrapping would "
@@ -493,24 +491,20 @@ class CarrierDefinition(BaseModel):
         for op_name, operation in self.operations.items():
             if not operation.allocate:
                 continue
-            # Minting happens once, at booking, before the carrier call, so an
-            # allocate block belongs to the book operation.
+            # Minting runs at booking, before the carrier call: book-only.
             if op_name != "book":
                 raise ValueError(
                     f"operation '{op_name}': allocate is only for the book operation"
                 )
-            # A parcel carries one carrier barcode, so a second spec would only
-            # overwrite the first while durably spending its range: the model
-            # admits at most one allocation.
+            # A parcel has one carrier barcode: a second spec would overwrite
+            # the first while spending its range.
             if len(operation.allocate) > 1:
                 raise ValueError(
                     f"{op_name}: at most one allocate entry (a parcel has one "
                     "carrier barcode)"
                 )
             for spec in operation.allocate:
-                # The prefix is a per-install account fact (the carrier's
-                # provisioned range), never shipment data, so it is pinned to
-                # config.* like every other credential-shaped source.
+                # The prefix is a per-install account fact, not shipment data.
                 if not spec.prefix.startswith("config."):
                     raise ValueError(
                         f"{op_name}: allocate prefix must be a config.* source, "

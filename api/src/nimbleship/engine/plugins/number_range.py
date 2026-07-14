@@ -213,10 +213,9 @@ def sscc_serial_width(prefix: str) -> int:
 
 
 def sscc_wrap_after(prefix: str) -> int:
-    """The last serial an SSCC range issues before it is exhausted: the widest
-    value the serial digits the prefix leaves can hold. This is the allocator's
-    `wrap_after` for the range, kept beside the width and assembly rules so the
-    body-digit definition lives in one place."""
+    """The allocator's `wrap_after` for an SSCC range: the widest serial the
+    digits the prefix leaves can hold, kept beside the width and assembly rules
+    so the body-digit definition lives in one place."""
     return int(10 ** sscc_serial_width(prefix)) - 1
 
 

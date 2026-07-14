@@ -173,8 +173,8 @@ def _base64_pdf_label(
 
 
 def _config_key(source: str) -> str:
-    # An allocate prefix is authored as a config.* source (schema-enforced),
-    # so the bare config key is whatever follows the first dot.
+    # An allocate prefix is a schema-enforced config.* source; the bare key
+    # follows the first dot.
     return source.split(".", 1)[1]
 
 
@@ -184,25 +184,17 @@ def _mint_parcel_allocations(
     specs: list[AllocationSpec],
     config: dict[str, object],
 ) -> None:
-    """Mint each parcel's carrier-provisioned code before the book call, so the
-    request the carrier receives carries codes this system issued: an SSCC
-    identifies a physical unit and must be minted once, client-side, never
-    echoed back from a carrier response. Each code lands on
-    parcel.carrier_barcode, where shipment_facts exposes it to the book mapping
-    and the detail view returns it.
+    """Mint each parcel's SSCC before the book call and store it on
+    parcel.carrier_barcode, where shipment_facts exposes it to the book
+    mapping. A client-assigned code must be minted once, never echoed from a
+    response.
 
-    Minting commits in its own transaction - like the traffic rows - for two
-    reasons the request transaction cannot give: the global allocation lock is
-    released before the carrier call rather than held across its latency, and a
-    minted halt-range number is durably spent the instant it is issued, so a
-    later crash can never reissue a code that may already have reached the
-    carrier. A booking that then fails simply wastes those numbers, which a
-    halt range trades willingly for never double-issuing.
-
-    All of a consignment's parcels mint together or not at all: a range
-    exhausted partway rolls the whole consignment's mint back (nothing
-    committed) and fails the booking loudly, rather than shipping some parcels
-    with codes and some without."""
+    Minting commits in its own transaction (like the traffic rows): the
+    allocation lock releases before the carrier call, and a halt-range number
+    is spent the instant it is issued, so a crash never reissues a code that
+    may have reached the carrier - at the cost of wasting a failed booking's
+    numbers. All parcels mint or none do: a range exhausted partway rolls back
+    and fails the booking loudly."""
     carrier = consignment.carrier or ""
     with Session(session.get_bind()) as mint_session:
         for spec in specs:
@@ -327,10 +319,9 @@ def _book_with_carrier(
     if isinstance(barcodes, list):
         # Carrier barcodes pair with parcels positionally, like the labels
         # they arrive on; the full list is kept on the event so a count
-        # mismatch loses nothing. A code this system minted before the call
-        # (an allocated SSCC) is never overwritten by the response - the two
-        # are mutually exclusive per carrier, and the minted code is the one
-        # that was physically applied and sent.
+        # mismatch loses nothing. A code minted before the call (an SSCC) is
+        # never overwritten by the response: the minted code is the one applied
+        # and sent.
         for parcel, barcode in zip(consignment.parcels, barcodes, strict=False):
             if parcel.carrier_barcode is None:
                 parcel.carrier_barcode = str(barcode)
@@ -484,13 +475,11 @@ def create_consignment(
                 "local_render and base64_pdf are supported so far",
             )
         if book.allocate:
-            # Mint the parcels' carrier-provisioned codes (SSCCs) before the
-            # carrier call so the book request carries them; the declaration
-            # names what to mint, so no carrier name is hardcoded here. Read the
-            # config without autoflush: the request session must not flush its
-            # speculative consignment insert here, or that write transaction
-            # sits open across minting and the carrier call - the hazard
-            # _book_with_carrier's own no_autoflush block exists to avoid.
+            # Mint the parcels' SSCCs before the carrier call; the declaration
+            # names what to mint, so no carrier name is hardcoded. no_autoflush
+            # keeps the speculative consignment insert from flushing here and
+            # holding a write transaction open across the carrier call (the
+            # hazard _book_with_carrier guards the same way).
             with session.no_autoflush:
                 config = carrier_config(session, selected.carrier or "")
             _mint_parcel_allocations(session, consignment, book.allocate, config)
