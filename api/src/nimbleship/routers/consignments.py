@@ -486,13 +486,14 @@ def create_consignment(
         if book.allocate:
             # Mint the parcels' carrier-provisioned codes (SSCCs) before the
             # carrier call so the book request carries them; the declaration
-            # names what to mint, so no carrier name is hardcoded here.
-            _mint_parcel_allocations(
-                session,
-                consignment,
-                book.allocate,
-                carrier_config(session, selected.carrier or ""),
-            )
+            # names what to mint, so no carrier name is hardcoded here. Read the
+            # config without autoflush: the request session must not flush its
+            # speculative consignment insert here, or that write transaction
+            # sits open across minting and the carrier call - the hazard
+            # _book_with_carrier's own no_autoflush block exists to avoid.
+            with session.no_autoflush:
+                config = carrier_config(session, selected.carrier or "")
+            _mint_parcel_allocations(session, consignment, book.allocate, config)
         outputs: dict[str, object] = {}
         if book.steps:
             outputs = _book_with_carrier(
