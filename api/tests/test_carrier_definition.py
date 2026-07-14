@@ -445,27 +445,30 @@ def test_step_reference_to_a_step_with_no_extractions_is_rejected() -> None:
         CarrierDefinition.model_validate(bad)
 
 
-def _manifest_operation(mapping: list[dict[str, object]]) -> dict[str, object]:
+def _manifest_operation(
+    mapping: list[dict[str, object]], fan_out: bool = False
+) -> dict[str, object]:
+    operation: dict[str, object] = {
+        "steps": [
+            {
+                "name": "declare",
+                "transport": "http",
+                "request": {
+                    "method": "POST",
+                    "url": "config.manifest_url",
+                    "content_type": "json",
+                    "mapping": mapping,
+                },
+            }
+        ]
+    }
+    if fan_out:
+        operation["fan_out"] = True
     return {
         "carrier": "furdeco",
         "name": "Furdeco",
         "auth": {"scheme": "query_key", "param": "key", "secret": "config.api_key"},
-        "operations": {
-            "manifest": {
-                "steps": [
-                    {
-                        "name": "declare",
-                        "transport": "http",
-                        "request": {
-                            "method": "POST",
-                            "url": "config.manifest_url",
-                            "content_type": "json",
-                            "mapping": mapping,
-                        },
-                    }
-                ]
-            }
-        },
+        "operations": {"manifest": operation},
     }
 
 
@@ -486,6 +489,66 @@ def test_a_manifest_operation_sources_manifest_facts() -> None:
     )
 
     assert "manifest" in definition.operations
+
+
+def test_a_fan_out_manifest_sources_shipment_facts() -> None:
+    # A fan-out manifest renders once per consignment from that consignment's
+    # own shipment.* facts, so it validates against shipment roots, not the
+    # batch manifest.* roots.
+    definition = CarrierDefinition.model_validate(
+        _manifest_operation(
+            [
+                {"target": "order", "source": "shipment.order_number"},
+                {"target": "depot", "source": "warehouse.code"},
+                {"target": "account", "source": "config.account_number"},
+            ],
+            fan_out=True,
+        )
+    )
+
+    assert definition.operations["manifest"].fan_out is True
+
+
+def test_a_fan_out_manifest_rejects_manifest_facts() -> None:
+    # manifest.* is the batch declaration; a fan-out manifest has no batch to
+    # source from, so a manifest.* source must fail at authoring.
+    bad = _manifest_operation(
+        [{"target": "date", "source": "manifest.date"}], fan_out=True
+    )
+
+    with pytest.raises(ValidationError, match="unknown source root 'manifest'"):
+        CarrierDefinition.model_validate(bad)
+
+
+def test_fan_out_is_only_valid_on_the_manifest_operation() -> None:
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "query_key", "param": "key", "secret": "config.api_key"},
+        "operations": {
+            "book": {
+                "fan_out": True,
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "o", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="fan_out"):
+        CarrierDefinition.model_validate(bad)
 
 
 def test_manifest_facts_are_rejected_outside_the_manifest_operation() -> None:

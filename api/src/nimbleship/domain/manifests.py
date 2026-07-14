@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.definitions import active_definition, carrier_config
-from nimbleship.domain.facts import manifest_facts, warehouse_facts
+from nimbleship.domain.facts import manifest_facts, shipment_facts, warehouse_facts
 from nimbleship.engine.execute import StepRecord, execute_operation
 from nimbleship.models import (
     CarrierTraffic,
@@ -129,16 +129,14 @@ def send_manifest(
             "published definition; it cannot be manifested"
         )
     consignments = manifest_consignments(session, manifest)
-    facts: dict[str, object] = {
-        "manifest": manifest_facts(manifest, consignments),
-        "config": carrier_config(session, manifest.carrier),
-    }
+    config = carrier_config(session, manifest.carrier)
+    warehouse_facts_value: dict[str, object] | None = None
     if manifest.warehouse is not None:
         warehouse = session.execute(
             select(Warehouse).where(Warehouse.code == manifest.warehouse)
         ).scalar_one_or_none()
         if warehouse is not None:
-            facts["warehouse"] = warehouse_facts(warehouse)
+            warehouse_facts_value = warehouse_facts(warehouse)
 
     def record(step_record: StepRecord) -> None:
         session.add(
@@ -153,18 +151,38 @@ def send_manifest(
             )
         )
 
-    result = execute_operation(
-        definition, "manifest", facts, http_client, record, uploaders
-    )
+    def run(facts: dict[str, object]) -> dict[str, object]:
+        if warehouse_facts_value is not None:
+            facts["warehouse"] = warehouse_facts_value
+        return execute_operation(
+            definition, "manifest", facts, http_client, record, uploaders
+        ).outputs
+
+    operation = definition.operations["manifest"]
+    emitted: list[tuple[Consignment, dict[str, object]]] = []
+    if operation.fan_out:
+        # One document per consignment, each rendered from that consignment's
+        # own shipment facts (including the SSCCs stored at booking). A failure
+        # partway raises before any consignment is marked manifested; the whole
+        # manifest retries, and uploads are overwrite-idempotent so re-sending
+        # the documents that already landed is safe.
+        for consignment in consignments:
+            outputs = run({"shipment": shipment_facts(consignment), "config": config})
+            emitted.append((consignment, outputs))
+    else:
+        batch = run(
+            {"manifest": manifest_facts(manifest, consignments), "config": config}
+        )
+        emitted = [(consignment, batch) for consignment in consignments]
 
     manifest.status = "sent"
     manifest.sent_at = datetime.now(UTC)
-    # The carrier's extracted outputs are author-named, so they live under
-    # their own key: splatting them alongside the internal audit fields
-    # would let an extraction named "manifest_id" overwrite the link back to
-    # the Manifest row.
-    extracted = {key: str(value) for key, value in result.outputs.items()}
-    for consignment in consignments:
+    for consignment, outputs in emitted:
+        # The carrier's extracted outputs are author-named, so they live under
+        # their own key: splatting them alongside the internal audit fields
+        # would let an extraction named "manifest_id" overwrite the link back
+        # to the Manifest row.
+        extracted = {key: str(value) for key, value in outputs.items()}
         session.add(
             OrderEvent(
                 order_number=consignment.order_number,

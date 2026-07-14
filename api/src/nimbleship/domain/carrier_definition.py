@@ -28,8 +28,13 @@ UPLOAD_TRANSPORTS = ("ftp_upload", "sftp_upload")
 FILENAME_PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
 
 
-def operation_fact_roots(operation: str) -> tuple[str, ...]:
-    return MANIFEST_FACT_ROOTS if operation == "manifest" else FACT_ROOTS
+def operation_fact_roots(operation: str, fan_out: bool = False) -> tuple[str, ...]:
+    # A fan-out manifest renders once per consignment from that consignment's
+    # own shipment.* facts, so it uses the shipment roots, not the batch
+    # manifest.* roots.
+    if operation == "manifest" and not fan_out:
+        return MANIFEST_FACT_ROOTS
+    return FACT_ROOTS
 
 
 class JoinTransform(BaseModel):
@@ -331,6 +336,11 @@ class LabelSpec(BaseModel):
 class Operation(BaseModel):
     steps: list[Step] = []
     label: LabelSpec | None = None
+    # Manifest operations only: emit one document per consignment (rendered
+    # from each consignment's shipment.* facts) rather than one batch document
+    # from manifest.* facts. CarrierDefinition rejects it on any other
+    # operation.
+    fan_out: bool = False
 
     @model_validator(mode="after")
     def _requires_steps_or_local_render(self) -> "Operation":
@@ -405,6 +415,15 @@ class CarrierDefinition(BaseModel):
     operations: dict[str, Operation]
 
     @model_validator(mode="after")
+    def _fan_out_is_manifest_only(self) -> "CarrierDefinition":
+        for op_name, operation in self.operations.items():
+            if operation.fan_out and op_name != "manifest":
+                raise ValueError(
+                    f"operation '{op_name}': fan_out is only for the manifest operation"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _sources_resolve(self) -> "CarrierDefinition":
         # The auth secret is a source path too: a typo there must fail at
         # authoring like any other unknown fact (refuter, PR #26). One auth
@@ -415,14 +434,17 @@ class CarrierDefinition(BaseModel):
         if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
             common = (
                 set.intersection(
-                    *(set(operation_fact_roots(op)) for op in self.operations)
+                    *(
+                        set(operation_fact_roots(op_name, operation.fan_out))
+                        for op_name, operation in self.operations.items()
+                    )
                 )
                 if self.operations
                 else set(FACT_ROOTS)
             )
             _validate_source(self.auth.secret, {}, False, "auth", tuple(sorted(common)))
         for op_name, operation in self.operations.items():
-            roots = operation_fact_roots(op_name)
+            roots = operation_fact_roots(op_name, operation.fan_out)
             earlier: dict[str, set[str]] = {}
             for step in operation.steps:
                 where = f"{op_name}.{step.name}"
