@@ -498,6 +498,56 @@ def test_renders_each_loops_over_collections() -> None:
     ]
 
 
+def test_pluck_collects_a_scalar_list_from_a_collection() -> None:
+    # each yields a list of objects; pluck yields a list of bare scalars - the
+    # shape an API wanting ["a", "b"] (a Dachser ssccs array) needs.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dachser",
+            "name": "Dachser",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "labels",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "ssccs",
+                                        "source": "shipment.parcels",
+                                        "pluck": "carrier_barcode",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    facts = {
+        "shipment": {
+            "parcels": [
+                {"carrier_barcode": "003403268501294000019"},
+                {"carrier_barcode": "003403268501294000026"},
+            ]
+        },
+        "config": {"url": "https://api.dachser.example/labels"},
+    }
+
+    [request] = http_renders(definition, "book", facts)
+
+    assert request.body["ssccs"] == [
+        "003403268501294000019",
+        "003403268501294000026",
+    ]
+
+
 def test_auth_query_key_lands_in_query_not_body() -> None:
     [request] = http_renders(DEFINITION, "book", FACTS)
 

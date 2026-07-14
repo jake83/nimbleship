@@ -285,17 +285,74 @@ def test_plugin_is_exclusive_with_source_and_const(
             CarrierDefinition.model_validate(_with_entries(entry))
 
 
-def test_plugin_entries_take_no_transform_or_each(
+def test_plugin_entries_take_no_transform_each_or_pluck(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setitem(FIELD_PLUGINS, "test_static", _StaticPlugin())
     for extra in (
         {"transform": {"name": "uppercase"}},
         {"each": [{"target": "y", "source": "item.value"}]},
+        {"pluck": "value"},
     ):
         entry: dict[str, object] = {"target": "x", "plugin": "test_static", **extra}
-        with pytest.raises(ValidationError, match="no transform or each"):
+        with pytest.raises(ValidationError, match="no transform, each, or pluck"):
             CarrierDefinition.model_validate(_with_entries(entry))
+
+
+def test_pluck_collects_scalars_and_stands_alone_on_its_source() -> None:
+    # A valid pluck entry validates.
+    CarrierDefinition.model_validate(
+        _with_entries(
+            {
+                "target": "ssccs",
+                "source": "shipment.parcels",
+                "pluck": "carrier_barcode",
+            }
+        )
+    )
+    # pluck needs a collection source: with none, the exactly-one-origin rule
+    # rejects it (pluck is a modifier, not a value origin).
+    with pytest.raises(ValidationError, match="exactly one of source"):
+        CarrierDefinition.model_validate(
+            _with_entries({"target": "ssccs", "pluck": "carrier_barcode"})
+        )
+    # pluck is exclusive with each and transform.
+    for extra in (
+        {"each": [{"target": "y", "source": "item.value"}]},
+        {"transform": {"name": "uppercase"}},
+    ):
+        entry: dict[str, object] = {
+            "target": "ssccs",
+            "source": "shipment.parcels",
+            "pluck": "carrier_barcode",
+            **extra,
+        }
+        with pytest.raises(ValidationError, match="pluck takes no each or transform"):
+            CarrierDefinition.model_validate(_with_entries(entry))
+    # An empty pluck path would render-fail every booking; caught at authoring.
+    with pytest.raises(ValidationError, match="pluck needs a field path"):
+        CarrierDefinition.model_validate(
+            _with_entries(
+                {"target": "ssccs", "source": "shipment.parcels", "pluck": "  "}
+            )
+        )
+
+
+def test_pluck_is_rejected_in_an_xml_target() -> None:
+    with pytest.raises(ValidationError, match="pluck is not supported in xml"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Order",
+                mapping=[
+                    {
+                        "target": "SSCC",
+                        "source": "shipment.parcels",
+                        "pluck": "carrier_barcode",
+                    }
+                ],
+            )
+        )
 
 
 def test_conflicting_nested_targets_are_rejected_at_authoring() -> None:
