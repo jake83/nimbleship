@@ -300,13 +300,13 @@ def test_plugin_entries_take_no_transform_each_or_pluck(
 
 
 def test_pluck_collects_scalars_and_stands_alone_on_its_source() -> None:
-    # A valid pluck entry validates.
+    # A valid pluck entry validates; its path is item-rooted like an each entry.
     CarrierDefinition.model_validate(
         _with_entries(
             {
                 "target": "ssccs",
                 "source": "shipment.parcels",
-                "pluck": "carrier_barcode",
+                "pluck": "item.carrier_barcode",
             }
         )
     )
@@ -314,7 +314,15 @@ def test_pluck_collects_scalars_and_stands_alone_on_its_source() -> None:
     # rejects it (pluck is a modifier, not a value origin).
     with pytest.raises(ValidationError, match="exactly one of source"):
         CarrierDefinition.model_validate(
-            _with_entries({"target": "ssccs", "pluck": "carrier_barcode"})
+            _with_entries({"target": "ssccs", "pluck": "item.carrier_barcode"})
+        )
+    # A bare (non-item-rooted) path is the each-convention footgun: rejected at
+    # authoring, not on the first booking.
+    with pytest.raises(ValidationError, match="unknown source root"):
+        CarrierDefinition.model_validate(
+            _with_entries(
+                {"target": "ssccs", "source": "shipment.parcels", "pluck": "carrier"}
+            )
         )
     # pluck is exclusive with each and transform.
     for extra in (
@@ -324,18 +332,11 @@ def test_pluck_collects_scalars_and_stands_alone_on_its_source() -> None:
         entry: dict[str, object] = {
             "target": "ssccs",
             "source": "shipment.parcels",
-            "pluck": "carrier_barcode",
+            "pluck": "item.carrier_barcode",
             **extra,
         }
         with pytest.raises(ValidationError, match="pluck takes no each or transform"):
             CarrierDefinition.model_validate(_with_entries(entry))
-    # An empty pluck path would render-fail every booking; caught at authoring.
-    with pytest.raises(ValidationError, match="pluck needs a field path"):
-        CarrierDefinition.model_validate(
-            _with_entries(
-                {"target": "ssccs", "source": "shipment.parcels", "pluck": "  "}
-            )
-        )
 
 
 def test_pluck_is_rejected_in_an_xml_target() -> None:
@@ -348,7 +349,32 @@ def test_pluck_is_rejected_in_an_xml_target() -> None:
                     {
                         "target": "SSCC",
                         "source": "shipment.parcels",
-                        "pluck": "carrier_barcode",
+                        "pluck": "item.carrier_barcode",
+                    }
+                ],
+            )
+        )
+
+
+def test_pluck_nested_inside_an_xml_each_is_rejected() -> None:
+    # The xml-pluck guard must catch a pluck at any depth, not just the top
+    # level: _validate_xml_targets recurses into each inner mappings.
+    with pytest.raises(ValidationError, match="pluck is not supported in xml"):
+        CarrierDefinition.model_validate(
+            _ftp_step(
+                content_type="xml",
+                root_element="Order",
+                mapping=[
+                    {
+                        "target": "Line",
+                        "source": "shipment.parcels",
+                        "each": [
+                            {
+                                "target": "Codes",
+                                "source": "item.subparcels",
+                                "pluck": "item.code",
+                            }
+                        ],
                     }
                 ],
             )

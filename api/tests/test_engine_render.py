@@ -520,7 +520,7 @@ def test_pluck_collects_a_scalar_list_from_a_collection() -> None:
                                     {
                                         "target": "ssccs",
                                         "source": "shipment.parcels",
-                                        "pluck": "carrier_barcode",
+                                        "pluck": "item.carrier_barcode",
                                     }
                                 ],
                             },
