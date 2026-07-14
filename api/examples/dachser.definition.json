@@ -2,8 +2,8 @@
   "notes": [
     "Dachser: the proving ladder's final rung (ADR 0010). book is a REST /labels call (X-API-Key header) that sends the per-parcel SSCCs and returns a base64 PDF label; manifest is a fan-out SFTP EDI file, one ForwardingOrderInformation XML per order, carrying the same SSCCs.",
     "The SSCCs are minted per parcel at booking (the allocate block) from config.sscc_prefix and stored on each parcel's carrier_barcode. The book body collects them with pluck (a JSON array of strings); the manifest emits one PackageIdentification/SSCCBarCode per parcel with each.",
-    "Carrier Config keys: labels_url, labels_api_key (REST); sscc_prefix (13-digit GS1 company prefix); division, product, dispatch_branch_number, incoterm, test_flag; partner_id, partner_gln, consignor_partner_id, forwarding_gln (EDI partner identity); consignor_name/street/city/postcode/country (the shipping depot, a per-install account fact - fan-out manifests render from shipment.* and config.* only, never warehouse.*); sftp_remote_dir (the EDI drop directory).",
-    "Deliberately omitted until the fact model carries them (they render null/empty today, not wrong): ship date and document date (the renderer is pure and has no 'now' - a dispatch-supplied shipment.ship_date fact will fill them), the consignee city (the model has flat address_lines, no city split), parcel dimensions/volume and goods description/value/currency, the recipient contact phone/email, and the total shipment weight. The real filename is KUNDE<documentId>.xml; order_number is the per-order identity here.",
+    "Carrier Config keys: labels_url, labels_api_key (REST); sscc_prefix (13-digit GS1 company prefix); division, product, dispatch_branch_number, incoterm, test_flag; partner_id, partner_gln, consignor_partner_id, forwarding_gln (EDI partner identity); consignor_name/street/city/postcode/country (the shipping depot, a per-install account fact - fan-out manifests render from shipment.* and config.* only, never warehouse.*); sftp_remote_dir plus sftp_host, sftp_port, sftp_username, sftp_password and sftp_host_key (the SFTP drop connection - the host key is pinned fail-closed, see ADR 0010).",
+    "Deliberately omitted until the fact model carries them (they render null/empty today, not wrong): ship date and document date (the renderer is pure and has no 'now' - a dispatch-supplied shipment.ship_date fact will fill them), the consignee city (the model has flat address_lines, no city split), parcel dimensions/volume and goods description/value/currency, the recipient contact phone/email, and the total shipment weight (shipmentWeight joins the book body only when a total-weight fact lands - a unit with no value is worse than omitting it). The real filename is KUNDE<documentId>.xml; order_number is the per-order identity here.",
     "The Voila gateway and the separate transport-order send are a distinct optional integration, out of scope like DigiDocs."
   ],
   "carrier": "dachser",
@@ -35,7 +35,6 @@
               { "target": "shipment.division", "source": "config.division" },
               { "target": "shipment.product", "source": "config.product" },
               { "target": "shipment.forwarder.id", "source": "config.dispatch_branch_number" },
-              { "target": "shipment.shipmentWeight.unit", "const": "KG" },
               { "target": "shipment.consignor.externalId", "source": "config.partner_id" },
               { "target": "shipment.consignor.partnerGLN", "source": "config.partner_gln" },
               { "target": "shipment.consignor.names.0", "source": "config.consignor_name" },

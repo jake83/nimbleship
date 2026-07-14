@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
+import paramiko
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -25,9 +26,15 @@ from nimbleship.models import (
     ManifestConsignment,
     Parcel,
 )
+from nimbleship.uploaders import _connection, _sftp_host_key
 
 DACHSER = Path(__file__).parent.parent / "examples" / "dachser.definition.json"
 FAKE_PDF = b"%PDF-1.4 a real-looking dachser label"
+
+# A real key serialised to the OpenSSH line a carrier pins in sftp_host_key, so
+# the fail-closed parsing is exercised for real.
+_HOST_KEY = paramiko.ECDSAKey.generate()
+_HOST_KEY_LINE = f"{_HOST_KEY.get_name()} {_HOST_KEY.get_base64()}"
 
 # A 13-digit GS1 company prefix leaves a 4-digit serial; the first two parcels
 # mint serials 1 and 2, each closed by its GS1 mod-10 check digit. All fixture
@@ -54,6 +61,11 @@ DACHSER_CONFIG: dict[str, object] = {
     "consignor_postcode": "TE1 1ST",
     "consignor_country": "GB",
     "sftp_remote_dir": "/dachser/in",
+    "sftp_host": "sftp.dachser.example",
+    "sftp_port": 22,
+    "sftp_username": "nimbleship",
+    "sftp_password": "SECRET-PW",
+    "sftp_host_key": _HOST_KEY_LINE,
 }
 
 CONSIGNMENT = {
@@ -246,3 +258,15 @@ def test_dachser_fan_out_manifest_is_one_xml_per_order_carrying_the_ssccs(
     # PackageIdentification each - the point of fanning out per order.
     assert f"<SSCCBarCode>{SSCC_1}</SSCCBarCode>" in first
     assert f"<SSCCBarCode>{SSCC_2}</SSCCBarCode>" in first
+
+
+def test_dachser_config_carries_the_sftp_connection_facts() -> None:
+    # The fan-out manifest drops on SFTP; the real SftpFileUploader (not the
+    # stub above) reads these connection facts and pins the host key fail-closed
+    # - a definition missing them would send zero manifests, failing at
+    # trailer-close. Drive the real parsers to prove the config is complete.
+    host, port, username, password = _connection(DACHSER_CONFIG, "sftp", 22)
+    assert host == "sftp.dachser.example"
+    assert port == 22
+    assert username and password
+    assert _sftp_host_key(DACHSER_CONFIG) == _HOST_KEY
