@@ -150,6 +150,16 @@ def _render_entry(entry: MappingEntry, facts: Facts, for_execution: bool) -> Ren
             _render_mapping(entry.each, {**facts, "item": item}, for_execution)
             for item in value
         ]
+    if entry.pluck is not None:
+        # each yields a list of objects; pluck reads one item-relative source
+        # from each element into a list of scalars (a JSON string array). The
+        # path is item-rooted like an each inner entry (e.g. item.carrier_barcode).
+        if not isinstance(value, list):
+            raise ValueError(f"'{entry.source}' is not a collection")
+        return [
+            _resolve(entry.pluck, {**facts, "item": item}, for_execution)
+            for item in value
+        ]
     if entry.transform is not None:
         value = apply_transform(entry.transform, value)
     if isinstance(value, str | list | dict) or value is None:

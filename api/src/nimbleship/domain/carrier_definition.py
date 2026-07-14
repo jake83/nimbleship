@@ -147,6 +147,11 @@ class MappingEntry(BaseModel):
     transform: Transform | None = None
     # Loop over a collection source; inner entries read from the `item.` root.
     each: list["MappingEntry"] | None = None
+    # Collect one item-rooted source from each element of a collection source
+    # into a list of scalars (where each yields a list of objects). The value
+    # is a path read per item, item-rooted like an each inner entry, e.g.
+    # "item.carrier_barcode".
+    pluck: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_value_origin(self) -> "MappingEntry":
@@ -155,13 +160,13 @@ class MappingEntry(BaseModel):
             raise ValueError(
                 f"mapping '{self.target}': exactly one of source, const, or plugin"
             )
-        if self.const is not None and (self.transform or self.each):
+        if self.const is not None and (self.transform or self.each or self.pluck):
             raise ValueError(
-                f"mapping '{self.target}': const takes no transform or each"
+                f"mapping '{self.target}': const takes no transform, each, or pluck"
             )
-        if self.plugin is not None and (self.transform or self.each):
+        if self.plugin is not None and (self.transform or self.each or self.pluck):
             raise ValueError(
-                f"mapping '{self.target}': plugin takes no transform or each"
+                f"mapping '{self.target}': plugin takes no transform, each, or pluck"
             )
         if self.plugin is not None and self.plugin not in field_plugin_names():
             raise ValueError(
@@ -170,6 +175,14 @@ class MappingEntry(BaseModel):
         if self.each is not None and self.transform is not None:
             raise ValueError(
                 f"mapping '{self.target}': each and transform are exclusive"
+            )
+        # pluck consumes the collection source (guaranteed present by the
+        # exactly-one-origin rule above), and a per-item transform is not
+        # modelled, so pluck stands alone on its source. Its path is validated
+        # as an item-rooted source by _validate_entry, like an each inner entry.
+        if self.pluck is not None and (self.each is not None or self.transform):
+            raise ValueError(
+                f"mapping '{self.target}': pluck takes no each or transform"
             )
         return self
 
@@ -195,6 +208,11 @@ def _validate_xml_targets(entries: list[MappingEntry]) -> None:
     list position, not a name). Nested each-loops are checked recursively so
     an attribute inside a repeated element is covered too."""
     for entry in entries:
+        if entry.pluck is not None:
+            # pluck emits a list of scalars, which in XML would be repeated
+            # text-only elements - a shape not modelled here; use each with a
+            # nested element instead.
+            raise ValueError(f"mapping '{entry.target}': pluck is not supported in xml")
         segments = entry.target.split(".")
         for segment in segments[:-1]:
             if segment.startswith("@"):
@@ -581,5 +599,11 @@ class CarrierDefinition(BaseModel):
     ) -> None:
         if entry.source is not None:
             _validate_source(entry.source, known_steps, in_each, where, roots)
+        if entry.pluck is not None:
+            # pluck binds `item` over its collection source, so its path is an
+            # item-rooted source like an each inner entry - validated the same
+            # way, so a bare or misrooted path (e.g. "carrier_barcode") fails at
+            # authoring, not on the first booking.
+            _validate_source(entry.pluck, known_steps, True, f"{where}: pluck", roots)
         for inner in entry.each or []:
             self._validate_entry(inner, known_steps, True, where, roots)
