@@ -341,6 +341,36 @@ def test_a_base64_label_that_is_not_a_pdf_fails_the_booking(
     assert retry.status_code == 409
 
 
+def test_a_label_failure_losing_a_duplicate_race_409s_not_500(
+    app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import nimbleship.routers.consignments as consignments_module
+
+    _publish_label_carrier(client)
+    # A first booking persists the consignment for this order.
+    encoded = base64.b64encode(FAKE_PDF).decode()
+    _carrier_answers(
+        app, lambda request: httpx.Response(200, text=_label_carrier_response(encoded))
+    )
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 201
+
+    # A racing duplicate whose label also fails: the pre-check misses the
+    # committed row, the carrier call succeeds, the label is bad, and the
+    # preserve-booking commit hits the unique constraint. It must 409 (the
+    # order is already recorded), not 500.
+    not_a_pdf = base64.b64encode(b"<html>error</html>").decode()
+    _carrier_answers(
+        app,
+        lambda request: httpx.Response(200, text=_label_carrier_response(not_a_pdf)),
+    )
+    monkeypatch.setattr(
+        consignments_module, "_order_exists", lambda session, order_number: False
+    )
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+    assert response.status_code == 409
+
+
 def test_a_line_wrapped_base64_label_still_decodes(
     app: FastAPI, client: TestClient
 ) -> None:

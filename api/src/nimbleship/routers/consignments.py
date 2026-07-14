@@ -512,8 +512,17 @@ def create_consignment(
                             detail={"carrier": selected.carrier},
                         )
                     )
-                    session.flush()
-                    session.commit()
+                    try:
+                        session.flush()
+                        session.commit()
+                    except IntegrityError as dup:
+                        # A duplicate submission won the row while this one was
+                        # on the carrier's line: the order is already recorded,
+                        # so surface the 409 (like the success path) rather than
+                        # a 500 - the booking is not lost, it is the winner's.
+                        raise HTTPException(
+                            409, "a consignment already exists for this order"
+                        ) from dup
                 raise
         else:
             pdf = render_labels(
