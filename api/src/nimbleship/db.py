@@ -12,6 +12,7 @@ from nimbleship.config import get_settings
 #   815_004  proposition seeding       (domain/propositions.py)
 #   815_005  definition writes         (domain/definitions.py)
 #   815_006  carrier number sequences  (engine/plugins/number_range.py)
+#   815_007  carrier config writes     (domain/definitions.py)
 
 
 class Base(DeclarativeBase):

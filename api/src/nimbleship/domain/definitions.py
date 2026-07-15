@@ -27,13 +27,21 @@ _DROPOUT_DEFINITION: dict[str, object] = {
     },
 }
 
-# Key registered in the advisory-lock list in nimbleship/db.py.
+# Keys registered in the advisory-lock list in nimbleship/db.py.
 _DEFINITIONS_LOCK_KEY = 815_005
+_CONFIG_LOCK_KEY = 815_007
+
+
+def _advisory_xact_lock(session: Session, key: int) -> None:
+    # Held to the end of the transaction, so a read-modify-write under it runs
+    # against a snapshot no concurrent writer can slip past. No-op off Postgres
+    # (dev/test SQLite serialises writers anyway).
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(select(func.pg_advisory_xact_lock(key)))
 
 
 def _serialise_definition_writes(session: Session) -> None:
-    if session.get_bind().dialect.name == "postgresql":
-        session.execute(select(func.pg_advisory_xact_lock(_DEFINITIONS_LOCK_KEY)))
+    _advisory_xact_lock(session, _DEFINITIONS_LOCK_KEY)
 
 
 def _seed_dropout_if_fresh(session: Session) -> None:
@@ -209,6 +217,9 @@ def missing_config_keys(
 def upsert_carrier_config(
     session: Session, carrier: str, data: dict[str, object]
 ) -> None:
+    # Serialised against the merge below: a PUT racing a PATCH must not let the
+    # merge write back a snapshot that predates the replace.
+    _advisory_xact_lock(session, _CONFIG_LOCK_KEY)
     row = session.get(CarrierConfig, carrier)
     if row is None:
         session.add(CarrierConfig(carrier=carrier, data=data))
@@ -220,11 +231,13 @@ def upsert_carrier_config(
 def merge_carrier_config(
     session: Session, carrier: str, patch: dict[str, object]
 ) -> dict[str, object]:
-    """Shallow-merge a partial update into the stored config and return the
-    result. A full-replace PUT would drop keys the patch omits - keys a live
-    definition may still need - so a partial update (rotating one secret) goes
-    through here instead. A patch value wins; a top-level key it omits survives.
-    Nested keys are replaced wholesale, not deep-merged."""
+    """Shallow-merges patch into the stored config: a patch value wins, an
+    omitted top-level key survives. Nested values are replaced wholesale, not
+    deep-merged."""
+    # A read-modify-write, so lock first: two concurrent merges would otherwise
+    # each read the same row and the last commit would silently lose the other's
+    # key - the clobber this endpoint exists to prevent.
+    _advisory_xact_lock(session, _CONFIG_LOCK_KEY)
     row = session.get(CarrierConfig, carrier)
     merged = {**row.data, **patch} if row is not None else dict(patch)
     if row is None:
