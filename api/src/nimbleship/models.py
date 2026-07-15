@@ -234,6 +234,10 @@ class CarrierNumberSequence(Base):
     # Nullable for rows created before the column existed; they backfill on
     # their next allocation.
     policy: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # The wrap_after bound fixed at creation: stored so a later allocation with
+    # a different bound is refused, never silently wrapping early or issuing an
+    # out-of-range number. Nullable/backfilled like policy.
+    wrap_after: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class CarrierTraffic(Base):

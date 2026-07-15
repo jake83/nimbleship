@@ -100,9 +100,9 @@ def allocate_number(
     `reorder_threshold` is set, a structured warning is logged once the
     remaining count reaches it.
 
-    A range's `policy` is stored on its row at creation: a later call with a
-    different policy is refused, so an exhausted `halt` range can never be
-    reissued by a stray `wrap` call.
+    `policy` and `wrap_after` are fixed on the row at creation: a later policy
+    switch, or a shrinking `wrap_after`, is refused - an exhausted halt range
+    must never be reissued, nor a live range wrapped early. Widening is allowed.
 
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
@@ -110,7 +110,11 @@ def allocate_number(
     handing out a duplicate."""
     _serialise_allocations(session)
     existing = session.execute(
-        select(CarrierNumberSequence.next_value, CarrierNumberSequence.policy).where(
+        select(
+            CarrierNumberSequence.next_value,
+            CarrierNumberSequence.policy,
+            CarrierNumberSequence.wrap_after,
+        ).where(
             CarrierNumberSequence.carrier == carrier,
             CarrierNumberSequence.name == name,
         )
@@ -125,16 +129,20 @@ def allocate_number(
             )
         # A fresh range: claiming value 1 and creating the counter are one
         # insert, so a concurrent first caller trips the primary key. The
-        # policy is stored so it cannot later be switched.
+        # policy and wrap_after are stored so neither can later be switched.
         session.add(
             CarrierNumberSequence(
-                carrier=carrier, name=name, next_value=2, policy=policy
+                carrier=carrier,
+                name=name,
+                next_value=2,
+                policy=policy,
+                wrap_after=wrap_after,
             )
         )
         session.flush()
         _warn_if_low(carrier, name, 1, wrap_after, reorder_threshold)
         return "1"
-    current, stored_policy = existing
+    current, stored_policy, stored_wrap_after = existing
     # A range's policy is fixed at creation: reusing its name with a different
     # policy is refused, so an exhausted halt range can never be cycled by a
     # stray wrap call. A row created before the policy column is null and
@@ -143,6 +151,14 @@ def allocate_number(
         raise ValueError(
             f"number range '{name}' for carrier '{carrier}' was created with "
             f"policy '{stored_policy}', not '{policy}'"
+        )
+    # Shrinking is refused: numbers issued beyond the smaller ceiling would
+    # wrap early and reissue. Widening is safe and adopts the new bound.
+    if stored_wrap_after is not None and stored_wrap_after > wrap_after:
+        raise ValueError(
+            f"number range '{name}' for carrier '{carrier}' cannot shrink from "
+            f"wrap_after {stored_wrap_after} to {wrap_after}: numbers already "
+            "issued beyond the new bound would be reissued"
         )
     if policy == "halt":
         # `current` is the value about to be claimed and `wrap_after` the last
@@ -153,8 +169,15 @@ def allocate_number(
                 f"number range '{name}' for carrier '{carrier}' is exhausted "
                 f"at {wrap_after}: provision a new range"
             )
+        claimed_value = current
         following = current + 1
+    elif current > wrap_after:
+        # A counter already past the bound (a legacy null-bound row, or a fresh
+        # small range) wraps to 1 rather than issue an out-of-range number.
+        claimed_value = 1
+        following = 2
     else:
+        claimed_value = current
         following = 1 if current >= wrap_after else current + 1
     claimed: CursorResult[object] = session.execute(  # type: ignore[assignment]
         update(CarrierNumberSequence)
@@ -163,15 +186,15 @@ def allocate_number(
             CarrierNumberSequence.name == name,
             CarrierNumberSequence.next_value == current,
         )
-        .values(next_value=following, policy=policy)
+        .values(next_value=following, policy=policy, wrap_after=wrap_after)
     )
     if claimed.rowcount != 1:
         raise ValueError(
             f"number range '{name}' for carrier '{carrier}' was claimed by "
             "a concurrent request"
         )
-    _warn_if_low(carrier, name, current, wrap_after, reorder_threshold)
-    return str(current)
+    _warn_if_low(carrier, name, claimed_value, wrap_after, reorder_threshold)
+    return str(claimed_value)
 
 
 # An SSCC is 18 digits: a 17-digit body (carrier prefix + serial) and one
