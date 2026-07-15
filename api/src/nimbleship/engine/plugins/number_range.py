@@ -103,7 +103,8 @@ def allocate_number(
     `policy` is fixed at creation; a later switch is refused. A `wrap` range's
     `wrap_after` may grow but never shrink (a smaller ceiling would reissue
     numbers already past it). A `halt` range's capacity is fixed outright: any
-    `wrap_after` change is refused - if exhausted, provision a new range.
+    `wrap_after` change is refused, and a legacy halt row with no recorded bound
+    is refused outright - if exhausted or unbounded, provision a new range.
 
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
@@ -152,6 +153,15 @@ def allocate_number(
         raise ValueError(
             f"number range '{name}' for carrier '{carrier}' was created with "
             f"policy '{stored_policy}', not '{policy}'"
+        )
+    if policy == "halt" and stored_wrap_after is None:
+        # A legacy halt row has no recorded bound: it never backfills on the
+        # exhausted path (the raise precedes the write), so a later larger
+        # wrap_after would revive it. Unusable, so RangeExhausted (the caller's
+        # clean-failure contract) - provision a new range.
+        raise RangeExhausted(
+            f"number range '{name}' for carrier '{carrier}' is a halt range with "
+            "no recorded capacity: provision a new range with a fixed bound"
         )
     if stored_wrap_after is not None and stored_wrap_after != wrap_after:
         if policy == "halt":
