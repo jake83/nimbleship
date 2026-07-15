@@ -707,3 +707,36 @@ def test_golden_replay_refuses_an_active_with_an_unknown_step_output(
 
     assert replay.status_code == 409
     assert "no longer valid" in replay.text
+
+
+def test_golden_replay_refuses_a_stale_draft(app: FastAPI, client: TestClient) -> None:
+    # The draft role carries the same staleness risk as the active: a draft
+    # valid when created can break a since-tightened rule. Replay flags it (409),
+    # not 500 at load.
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="stepcarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=_stepcarrier_def("steps.step1.real_ref"),
+            )
+        )
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="stepcarrier",
+                version=2,
+                status="draft",
+                author="test",
+                data=_stepcarrier_def("steps.step1.typoed_ref"),
+            )
+        )
+        session.commit()
+
+    replay = client.post(
+        "/api/carriers/stepcarrier/definitions/versions/2/replay", json={}
+    )
+
+    assert replay.status_code == 409
+    assert "draft version 2 is no longer valid" in replay.text

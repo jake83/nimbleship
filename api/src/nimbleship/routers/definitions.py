@@ -270,21 +270,28 @@ def golden_replay(
     row = get_version(session, carrier, version)
     if row is None:
         raise HTTPException(404, "no such definition version")
-    draft = definition_for(row)
     active_row = active_definition_row(session, carrier)
     if active_row is None:
         raise HTTPException(409, "no active definition to replay against")
-    # Unlike booking's lenient load, replay diffs the active as a baseline, so a
-    # since-tightened rule's placeholder token must be caught here, not diffed.
+    # Replay renders both definitions offline; one invalid under current rules
+    # would diff as placeholder noise. Validate both strictly (booking tolerates
+    # a stale active leniently; replay must not) and flag it, not 500 or garbage.
     try:
-        definition_for(active_row)
+        draft = definition_for(row)
+    except ValidationError as error:
+        raise HTTPException(
+            409,
+            f"draft version {version} is no longer valid under current rules; "
+            "fix it before replaying",
+        ) from error
+    try:
+        active = definition_for(active_row)
     except ValidationError as error:
         raise HTTPException(
             409,
             f"active definition version {active_row.version} is no longer valid "
             "under current rules; republish it before replaying",
         ) from error
-    active = CarrierDefinition.load(active_row.data)
     config = carrier_config(session, carrier)
 
     query = (
