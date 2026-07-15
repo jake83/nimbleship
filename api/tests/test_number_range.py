@@ -144,6 +144,45 @@ def test_a_range_cannot_shrink_its_wrap_after_but_can_widen_it(
     assert row is not None and row.wrap_after == 200
 
 
+def test_a_halt_range_cannot_change_its_wrap_after_at_all(session: Session) -> None:
+    # A halt range's capacity is fixed at creation - unlike a wrap range it may
+    # not even widen.
+    allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
+    row = session.get(CarrierNumberSequence, ("dachser", "sscc"))
+    assert row is not None and row.wrap_after == 3
+
+    with pytest.raises(ValueError, match="fixed capacity"):
+        allocate_number(session, "dachser", "sscc", wrap_after=5, policy="halt")
+    with pytest.raises(ValueError, match="fixed capacity"):
+        allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
+
+    # The stored bound is untouched by the refused calls, so the range still
+    # halts exactly at its original 3 - never revived past it.
+    assert [
+        allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
+        for _ in range(2)
+    ] == ["2", "3"]
+    with pytest.raises(RangeExhausted):
+        allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
+
+
+def test_widening_an_exhausted_halt_range_does_not_revive_it(
+    session: Session,
+) -> None:
+    # The scenario that matters most: bumping the bound must not revive an
+    # exhausted halt range - those numbers are live codes.
+    for _ in range(2):
+        allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
+    with pytest.raises(RangeExhausted):
+        allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
+
+    with pytest.raises(ValueError, match="fixed capacity"):
+        allocate_number(session, "dachser", "sscc", wrap_after=1000, policy="halt")
+
+    with pytest.raises(RangeExhausted):
+        allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
+
+
 def test_a_wrap_range_never_issues_an_out_of_range_legacy_counter(
     session: Session,
 ) -> None:
