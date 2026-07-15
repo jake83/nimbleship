@@ -131,11 +131,12 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      docs/ROADMAP.md - may be queued for GitHub auto-merge at creation
      (`gh pr merge <n> --auto --squash`), so it lands the moment the required
      CI checks pass without a triage read. The AI review still runs; a finding
-     it posts after the merge rides a follow-up PR. Two limits: get ALL
-     intended content in BEFORE enabling auto-merge - a later push races the
-     merge and is squash-dropped (see "Finalize once" below) - and past ~200
-     changed lines take the read-then-merge flow anyway, since an unbounded
-     unreviewed diff is not low-stakes however mechanical. When in doubt about
+     it posts after the merge rides a follow-up PR. Two limits: land all
+     content before `--auto` fires - a commit pushed while it still waits is
+     safe (`--auto` re-arms on the new head and includes it), but one pushed
+     after it merges is stranded and rides a new PR, like any post-merge work;
+     and past ~200 changed lines take the read-then-merge flow anyway, since an
+     unbounded unreviewed diff is not low-stakes however mechanical. When in doubt about
      the class, it is not low-stakes: use "Everything else". The required
      checks (the ci.yml jobs, not the usage-limiting reviewer/refuter) and the
      "Allow auto-merge" toggle are applied by `.github/setup-branch-protection.sh`.
