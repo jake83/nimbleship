@@ -274,7 +274,9 @@ def golden_replay(
     active_row = active_definition_row(session, carrier)
     if active_row is None:
         raise HTTPException(409, "no active definition to replay against")
-    active = definition_for(active_row)
+    # The active is a published baseline, loaded as booking loads it; the draft
+    # stays strict - it is the thing being authored.
+    active = CarrierDefinition.load(active_row.data)
     config = carrier_config(session, carrier)
 
     query = (

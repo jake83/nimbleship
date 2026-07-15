@@ -585,3 +585,54 @@ def test_the_active_endpoint_loads_a_stored_definition_leniently(
 
     assert response.status_code == 200
     assert response.json()["version"] == 1
+
+
+def test_golden_replay_survives_a_leniently_loadable_active_definition(
+    app: FastAPI, client: TestClient
+) -> None:
+    # Replay loads the active baseline the lenient way booking does, so a
+    # published def that breaks a since-tightened rule does not 500 at load.
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="csvcarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=_CSV_PLUCK_DEFINITION,
+            )
+        )
+        session.commit()
+    valid_draft = {
+        **_CSV_PLUCK_DEFINITION,
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "upload",
+                        "transport": "ftp_upload",
+                        "request": {
+                            "url": "config.dir",
+                            "filename": "{shipment.order_number}.csv",
+                            "content_type": "csv",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+    draft = client.post(
+        "/api/carriers/csvcarrier/definitions/drafts",
+        json={"author": "jake", "definition": valid_draft},
+    ).json()
+
+    replay = client.post(
+        f"/api/carriers/csvcarrier/definitions/versions/{draft['version']}/replay",
+        json={},
+    )
+
+    assert replay.status_code == 200
