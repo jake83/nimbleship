@@ -258,10 +258,9 @@ def _diff_renders(
 def _replay_definition(
     row: CarrierDefinitionVersion, role: str, remedy: str
 ) -> CarrierDefinition:
-    # Replay renders only the book operation, so validate just that: staleness
-    # in an operation replay does not render (a track or manifest broken by a
-    # since-tightened rule) must not block a healthy book replay, and a stale
-    # book op flags a clean 409 rather than a 500 at load or a placeholder diff.
+    # Replay renders only the book operation, so validate only that view:
+    # staleness elsewhere (a since-tightened track or manifest rule) must not
+    # block a healthy book replay.
     data = row.data
     ops = data.get("operations") if isinstance(data, dict) else None
     if isinstance(ops, dict) and "book" in ops:
