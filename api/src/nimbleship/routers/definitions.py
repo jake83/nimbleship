@@ -21,6 +21,7 @@ from nimbleship.domain.definitions import (
     definition_for,
     get_version,
     list_versions,
+    merge_carrier_config,
     missing_config_keys,
     publish,
     upsert_carrier_config,
@@ -450,4 +451,15 @@ def put_config(
     upsert_carrier_config(session, carrier, payload)
     active = active_definition(session, carrier)
     missing = missing_config_keys(active, payload) if active is not None else []
+    return ConfigSaveOut(carrier=carrier, status="saved", missing=missing)
+
+
+@router.patch("/config")
+def patch_config(
+    carrier: str, payload: dict[str, object], session: SessionDep
+) -> ConfigSaveOut:
+    # Merge, so rotating one value keeps the rest - a PUT replaces the whole row.
+    merged = merge_carrier_config(session, carrier, payload)
+    active = active_definition(session, carrier)
+    missing = missing_config_keys(active, merged) if active is not None else []
     return ConfigSaveOut(carrier=carrier, status="saved", missing=missing)

@@ -524,6 +524,47 @@ def test_put_config_reports_nothing_missing_without_an_active_definition(
     assert response.json()["missing"] == []
 
 
+def test_patch_config_merges_keeping_keys_the_payload_omits(
+    client: TestClient,
+) -> None:
+    # The live definition needs api_key and base_url. Rotating just api_key via
+    # PATCH must keep base_url - a PUT would replace the row and drop it, which
+    # the empty missing report here confirms did not happen.
+    _publish_v1_with_config(client)
+
+    response = client.patch("/api/carriers/testcarrier/config", json={"api_key": "K-2"})
+
+    assert response.status_code == 200
+    assert response.json()["missing"] == []
+
+
+def test_patch_config_creates_the_config_when_none_exists(
+    client: TestClient,
+) -> None:
+    response = client.patch("/api/carriers/newcarrier/config", json={"api_key": "K-1"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "carrier": "newcarrier",
+        "status": "saved",
+        "missing": [],
+    }
+
+
+def test_patch_config_reports_keys_still_missing_after_the_merge(
+    client: TestClient,
+) -> None:
+    # A partial patch that does not complete the config still reports what the
+    # active definition lacks, measured against the merged result.
+    _publish_v1_with_config(client)
+    client.put("/api/carriers/testcarrier/config", json={})
+
+    response = client.patch("/api/carriers/testcarrier/config", json={"api_key": "K-1"})
+
+    assert response.status_code == 200
+    assert response.json()["missing"] == ["base_url"]
+
+
 def _add_history(app: FastAPI, order_number: str, carrier: str) -> None:
     with app.state.session_factory() as session:
         session.add(

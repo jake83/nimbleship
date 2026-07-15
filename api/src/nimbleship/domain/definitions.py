@@ -215,3 +215,21 @@ def upsert_carrier_config(
     else:
         row.data = data
     session.flush()
+
+
+def merge_carrier_config(
+    session: Session, carrier: str, patch: dict[str, object]
+) -> dict[str, object]:
+    """Shallow-merge a partial update into the stored config and return the
+    result. A full-replace PUT would drop keys the patch omits - keys a live
+    definition may still need - so a partial update (rotating one secret) goes
+    through here instead. A patch value wins; a top-level key it omits survives.
+    Nested keys are replaced wholesale, not deep-merged."""
+    row = session.get(CarrierConfig, carrier)
+    merged = {**row.data, **patch} if row is not None else dict(patch)
+    if row is None:
+        session.add(CarrierConfig(carrier=carrier, data=merged))
+    else:
+        row.data = merged
+    session.flush()
+    return merged
