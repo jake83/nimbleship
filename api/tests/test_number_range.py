@@ -195,10 +195,10 @@ def test_a_halt_row_with_no_recorded_bound_is_refused(session: Session) -> None:
     )
     session.flush()
 
-    with pytest.raises(ValueError, match="no recorded capacity"):
+    with pytest.raises(RangeExhausted, match="no recorded capacity"):
         allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
     # The exact revival the guard closes: a larger bound must not resurrect it.
-    with pytest.raises(ValueError, match="no recorded capacity"):
+    with pytest.raises(RangeExhausted, match="no recorded capacity"):
         allocate_number(session, "dachser", "sscc", wrap_after=1000, policy="halt")
 
 
