@@ -368,6 +368,54 @@ def test_xml_refuses_a_character_not_permitted_in_xml(note: str) -> None:
         render_operation(definition, "book", facts)
 
 
+def test_xml_preserves_a_carriage_return_in_element_text() -> None:
+    # A parser normalises a raw CR (and CRLF) in element text to LF on read;
+    # a rendered CR must be a character reference to survive the round trip,
+    # or free-text EDI data is silently corrupted.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "dachser",
+            "name": "Dachser",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "edi",
+                            "transport": "sftp_upload",
+                            "request": {
+                                "url": "config.sftp_remote_dir",
+                                "filename": "{shipment.order_number}.xml",
+                                "content_type": "xml",
+                                "root_element": "Order",
+                                "mapping": [
+                                    {"target": "Notes", "source": "shipment.notes"}
+                                ],
+                            },
+                        }
+                    ],
+                    "label": {"source": "local_render", "template": "a6"},
+                }
+            },
+        }
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "1", "notes": "line1\r\nline2\rline3"},
+        "config": {"sftp_remote_dir": "/inbox"},
+    }
+
+    [rendered] = render_operation(definition, "book", facts)
+
+    assert isinstance(rendered, RenderedUpload)
+    # No raw CR a parser would normalise away; it is a character reference.
+    assert "\r" not in rendered.content
+    assert "&#13;" in rendered.content
+    # Round-trip: the parsed text is the original, CRs intact.
+    parsed = ET.fromstring(rendered.content)
+    notes = parsed.find("Notes")
+    assert notes is not None and notes.text == "line1\r\nline2\rline3"
+
+
 def test_xml_escapes_special_characters_in_text_and_attributes() -> None:
     definition = CarrierDefinition.model_validate(
         {

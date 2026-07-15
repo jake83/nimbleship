@@ -280,7 +280,12 @@ def _render_xml(
     language (ADR 0009/0010)."""
     root = ET.Element(root_element)
     _build_xml(root, _render_mapping(entries, facts, for_execution))
-    return f"{XML_PROLOG}\n{ET.tostring(root, encoding='unicode')}"
+    body = ET.tostring(root, encoding="unicode")
+    # ElementTree escapes a CR in attribute values but writes it raw in element
+    # text, where a parser normalises it to LF on read - silent EDI corruption.
+    # Encode text CRs as a character reference so they round-trip; attribute
+    # CRs are already `&#13;`, so no raw CR remains to touch.
+    return f"{XML_PROLOG}\n{body.replace(chr(13), '&#13;')}"
 
 
 def _render_upload(step: Step, facts: Facts, for_execution: bool) -> RenderedUpload:
