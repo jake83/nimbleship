@@ -138,11 +138,14 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      unreviewed diff is not low-stakes however mechanical. When in doubt about
      the class, it is not low-stakes: use "Everything else". The required
      checks (the ci.yml jobs, not the usage-limiting reviewer/refuter) and the
-     "Allow auto-merge" toggle are applied by `.github/setup-branch-protection.sh`;
-     admins bypass the checks, so a triaged `--admin` logic merge still goes
-     through. Green checks alone never justify a merge outside this class,
-     because a passing refuter still posts findings that must be triaged (PR #69
-     did).
+     "Allow auto-merge" toggle are applied by `.github/setup-branch-protection.sh`.
+     ci is required for everyone (enforce_admins), so ci-green is an inviolable
+     precondition - no one, agent included, merges red ci. Because the AI jobs
+     are NOT required checks, a triaged logic PR still merges on ci-green with a
+     plain `gh pr merge --squash`, even when a usage-limited reviewer/refuter
+     left its own non-required check red. Green checks alone never justify a
+     merge outside this class, because a passing refuter still posts findings
+     that must be triaged (PR #69 did).
    Stacked PRs: merge the base PR and DELETE its branch first so GitHub
    retargets the stacked PR to main - otherwise it merges into a dead
    branch and its content silently never reaches main.

@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Repo config backing the auto-merge convention (CLAUDE.md, dev loop step 4).
-# This state lives out-of-band in GitHub; captured here so it is reviewable and
-# reproducible. Idempotent - safe to re-run.
+# GitHub state backing CLAUDE.md's auto-merge convention (dev loop step 4),
+# captured here to stay reviewable and reproducible. Idempotent.
 set -euo pipefail
 REPO="${1:-jake83/nimbleship}"
 
-# Allow GitHub auto-merge, and delete branches once merged.
 gh api -X PATCH "repos/$REPO" \
   -F allow_auto_merge=true -F delete_branch_on_merge=true >/dev/null
 
 # Protect main: require only the ci.yml jobs (NOT the reviewer/refuter jobs,
-# which usage-limit and would block every merge), with admin bypass so a
-# triaged `--admin` logic merge still goes through.
+# which usage-limit and would block every merge). enforce_admins keeps ci an
+# inviolable gate for everyone - no one merges red ci - while a triaged logic
+# PR still merges on ci-green, since the AI jobs are not required checks.
 gh api -X PUT "repos/$REPO/branches/main/protection" --input - >/dev/null <<'JSON'
 {
   "required_status_checks": {
@@ -22,7 +21,7 @@ gh api -X PUT "repos/$REPO/branches/main/protection" --input - >/dev/null <<'JSO
       "Container images build"
     ]
   },
-  "enforce_admins": false,
+  "enforce_admins": true,
   "required_pull_request_reviews": null,
   "restrictions": null
 }
