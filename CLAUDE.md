@@ -125,6 +125,30 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      settled or needs a human call, do not merge; ask. No GitHub review
      approval exists on a solo repo, so the squash-merge commit itself
      records the sign-off, with the wrap-up comment as its rationale.
+   - **Low-stakes auto-merge** (owner-granted 2026-07-15): a PR whose every
+     change is a non-governance documentation file - a README or a doc that is
+     not CLAUDE.md, CONTEXT.md, an ADR, or docs/ROADMAP.md, and never source,
+     tests, schema, or an API contract - may be queued for GitHub auto-merge at
+     creation (`gh pr merge <n> --auto --squash`), so it lands the moment the
+     required CI checks pass without a triage read. The AI review still runs; a
+     finding it posts after the merge rides a follow-up PR. Test-only PRs are
+     deliberately excluded: CI cannot tell an intact test from one with a
+     silently dropped assertion (this repo has hit that three times), and the
+     review that can is non-blocking, so tests keep the read-then-merge flow.
+     A commit pushed after `--auto` merges is stranded and rides a new PR, like
+     any post-merge work (one pushed while it still waits is safe - `--auto`
+     re-arms on the new head). Past ~200 changed lines, take read-then-merge
+     anyway. When in doubt about the class, it is not low-stakes: use
+     "Everything else". The required
+     checks (the ci.yml jobs, not the usage-limiting reviewer/refuter) and the
+     "Allow auto-merge" toggle are applied by `.github/setup-branch-protection.sh`.
+     ci is required for everyone (enforce_admins), so ci-green is an inviolable
+     precondition - no one, agent included, merges red ci. Because the AI jobs
+     are NOT required checks, a triaged logic PR still merges on ci-green with a
+     plain `gh pr merge --squash`, even when a usage-limited reviewer/refuter
+     left its own non-required check red. Green checks alone never justify a
+     merge outside this class, because a passing refuter still posts findings
+     that must be triaged (PR #69 did).
    Stacked PRs: merge the base PR and DELETE its branch first so GitHub
    retargets the stacked PR to main - otherwise it merges into a dead
    branch and its content silently never reaches main.
