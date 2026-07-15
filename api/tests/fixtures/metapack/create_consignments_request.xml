@@ -1,0 +1,45 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/"
+               xmlns:tns="urn:DeliveryManager/services"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <soap:Body soap:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+        <tns:createConsignments>
+            <consignments href="#id1"/>
+        </tns:createConsignments>
+        <soapenc:Array id="id1" xmlns:q1="urn:DeliveryManager/types" soapenc:arrayType="q1:Consignment[1]">
+            <Item href="#id2"/>
+        </soapenc:Array>
+        <q2:Consignment id="id2" xsi:type="q2:Consignment" xmlns:q2="urn:DeliveryManager/types">
+            <IOSSNumber xsi:type="xsd:string">IM0000000000</IOSSNumber>
+            <carrierConsignmentCode xsi:nil="true"/>
+            <consignmentValue xsi:type="xsd:double">83.73</consignmentValue>
+            <consignmentValueCurrencyCode xsi:type="xsd:string">EUR</consignmentValueCurrencyCode>
+            <consignmentWeight xsi:type="xsd:double">2.5</consignmentWeight>
+            <custom1 xsi:type="xsd:string">ECONOMY</custom1>
+            <orderNumber xsi:type="xsd:string">95000254580</orderNumber>
+            <parcels href="#id3"/>
+            <recipientAddress href="#id5"/>
+            <recipientName xsi:type="xsd:string">Jane Doe</recipientName>
+            <senderCode xsi:type="xsd:string">DEPOT1</senderCode>
+        </q2:Consignment>
+        <soapenc:Array id="id3" xmlns:q3="urn:DeliveryManager/types" soapenc:arrayType="q3:Parcel[2]">
+            <Item href="#id6"/>
+            <Item href="#id7"/>
+        </soapenc:Array>
+        <q5:Address id="id5" xsi:type="q5:Address" xmlns:q5="urn:DeliveryManager/types">
+            <countryCode xsi:type="xsd:string">GB</countryCode>
+            <line1 xsi:type="xsd:string">10 Downing Street</line1>
+            <line2 xsi:type="xsd:string">London</line2>
+            <postCode xsi:type="xsd:string">SW1A 2AA</postCode>
+        </q5:Address>
+        <q6:Parcel id="id6" xsi:type="q6:Parcel" xmlns:q6="urn:DeliveryManager/types">
+            <number xsi:type="xsd:int">1</number>
+            <parcelWeight xsi:type="xsd:double">1.3</parcelWeight>
+        </q6:Parcel>
+        <q7:Parcel id="id7" xsi:type="q7:Parcel" xmlns:q7="urn:DeliveryManager/types">
+            <number xsi:type="xsd:int">2</number>
+            <parcelWeight xsi:type="xsd:double">1.2</parcelWeight>
+        </q7:Parcel>
+    </soap:Body>
+</soap:Envelope>
