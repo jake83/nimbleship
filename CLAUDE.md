@@ -98,14 +98,23 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      still runs - and merge on green. The label is the ONLY thing that skips
      AI review; never apply it outside this definition, and when in doubt drop
      it and take the full loop.
-   - **Everything else**: apply `needs-human-review` and assign the repo
-     owner (GitHub cannot request a review from the PR author, so the flag
-     is label + assignee). An agent NEVER merges a non-trivial PR - this is
-     law, not enforced by GitHub, so it must never be broken. When in doubt,
-     a PR is not trivial. The human's merge IS the approval: no GitHub
-     review approval exists on a solo repo (an author cannot approve their
-     own PR); findings arrive in conversation or PR comments, and the merge
-     commit records the sign-off.
+   - **Everything else**: the agent self-merges once the AI review loop has
+     settled - CI green (ci.yml lint/type/test/build), the reviewer and
+     refuter jobs run, and every finding triaged per "Handling review
+     feedback" and the two-round rule (fixed, rebutted, or tracked as a
+     follow-up in the wrap-up). A usage-limited reviewer does not block: the
+     refuter's clean pass plus the local review stands in, per "a clean
+     machine pass is not required". Squash-merge and delete the branch.
+     This authority is owner-granted (2026-07-15) to keep development moving
+     without a human merge gate, and is revocable: the owner can reinstate
+     the gate at any time. It REPLACES the former "an agent NEVER merges"
+     law for as long as it stands. What still stops for the human is a
+     QUESTION, never a merge: a design decision, an ADR-level trade-off, a
+     grilling session, anything needing an answer the code and this file
+     cannot supply - surface it and wait. When unsure whether a finding is
+     settled or needs a human call, do not merge; ask. No GitHub review
+     approval exists on a solo repo, so the squash-merge commit itself
+     records the sign-off, with the wrap-up comment as its rationale.
    Stacked PRs: merge the base PR and DELETE its branch first so GitHub
    retargets the stacked PR to main - otherwise it merges into a dead
    branch and its content silently never reaches main.
@@ -166,10 +175,11 @@ caught fix-introduced bugs three separate times, so it stays):
    current tip (real correctness or security, including silent-wrong
    behaviour) earns another consolidated fix push and one more
    verification round. This should be rare.
-4. **The human is the terminator**: after round 2 (or a blocking round),
-   the PR goes to the human with the wrap-up in hand - what was fixed,
-   what was rebutted, what is tracked. The human's merge closes the loop;
-   a clean machine pass is not required and not waited for.
+4. **The wrap-up terminates the loop**: after round 2 (or a blocking round),
+   the agent posts the wrap-up - what was fixed, what was rebutted, what is
+   tracked - and then self-merges per step 4's owner-granted authority (a
+   clean machine pass is not required and not waited for). It goes to the
+   human instead only when a QUESTION remains open, per step 4.
 
 Standing rules that survive the amendment:
 - Findings against superseded commits are rebutted with the fix reference
