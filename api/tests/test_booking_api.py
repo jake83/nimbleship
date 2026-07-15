@@ -577,3 +577,52 @@ def test_an_unconfigured_sscc_prefix_is_a_loud_config_error(
     created = client.post("/api/consignments", json=CONSIGNMENT)
     assert created.status_code == 500
     assert "not configured" in created.text
+
+
+def test_a_minted_sscc_is_not_overwritten_by_a_response_barcode(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A carrier that both mints SSCCs (allocate) and returns barcodes in its
+    # response: the minted code is the one physically applied and sent, so a
+    # response barcode must never clobber it.
+    _publish_sscc_carrier(client)
+    # A deep copy typed as Any so the nested extract list is indexable; add a
+    # barcodes extraction to the otherwise-standard SSCC definition.
+    with_barcodes = json.loads(json.dumps(SSCC_DEFINITION))
+    with_barcodes["operations"]["book"]["steps"][0]["response"]["extract"].append(
+        {"name": "barcodes", "path": "carrier_barcodes"}
+    )
+    version = client.post(
+        "/api/carriers/ssccarrier/definitions/drafts",
+        json={"author": "jake", "definition": with_barcodes},
+    ).json()["version"]
+    assert (
+        client.post(
+            f"/api/carriers/ssccarrier/definitions/versions/{version}/publish"
+        ).status_code
+        == 200
+    )
+
+    encoded = base64.b64encode(FAKE_PDF).decode()
+    _carrier_answers(
+        app,
+        lambda request: httpx.Response(
+            200,
+            text=json.dumps(
+                {
+                    "shipment_number": "SS-1",
+                    "label_pdf": encoded,
+                    "carrier_barcodes": ["RESP-1", "RESP-2"],
+                }
+            ),
+        ),
+    )
+
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 201
+
+    detail = client.get("/api/consignments/95000254580").json()
+    # The minted SSCCs survive; the response barcodes never clobber them.
+    assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_1, SSCC_2]
+    # The response barcodes are still kept on the booked event, losing nothing.
+    [booked] = [e for e in detail["events"] if e["stage"] == "booked"]
+    assert booked["detail"]["barcodes"] == ["RESP-1", "RESP-2"]

@@ -6,6 +6,7 @@ recording uploader - zero real network."""
 
 import base64
 import json
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -249,15 +250,50 @@ def test_dachser_fan_out_manifest_is_one_xml_per_order_carrying_the_ssccs(
     assert [remote for remote, _, _ in uploader.calls] == ["/dachser/in", "/dachser/in"]
     assert [name for _, name, _ in uploader.calls] == ["ORD-1001.xml", "ORD-1002.xml"]
 
-    first = uploader.calls[0][2]
-    assert '<ShipmentHeader CustomerShipmentReference="ORD-1001">' in first
-    assert '<ShipmentAddress AddressType="CZ">' in first
-    assert '<ShipmentAddress AddressType="CN">' in first
-    assert "<PartnerName>Test Recipient</PartnerName>" in first
-    # The per-parcel SSCCs minted at booking reach the EDI, one
-    # PackageIdentification each - the point of fanning out per order.
-    assert f"<SSCCBarCode>{SSCC_1}</SSCCBarCode>" in first
-    assert f"<SSCCBarCode>{SSCC_2}</SSCCBarCode>" in first
+    # Parse the tree and assert its structure and key values, not just
+    # fragments, so a swapped field or a broken block fails here.
+    root = ET.fromstring(uploader.calls[0][2])
+
+    def text_at(element: ET.Element, path: str) -> str:
+        found = element.find(path)
+        assert found is not None, path
+        return found.text or ""
+
+    assert root.tag == "ForwardingOrderInformation"
+    # DocumentHeader carries the EDI partner identity from config.
+    assert (
+        text_at(root, "DocumentHeader/EDISender/PartnerInformation/PartnerID")
+        == (DACHSER_CONFIG["partner_id"])
+    )
+    assert (
+        text_at(root, "DocumentHeader/EDIReceiver/PartnerInformation/PartnerGLN")
+        == DACHSER_CONFIG["partner_gln"]
+    )
+
+    header = root.find("Transport/ShipmentHeader")
+    assert header is not None
+    assert header.get("CustomerShipmentReference") == "ORD-1001"
+    # The three address blocks, in order, are consignor / consignee / forwarder.
+    addresses = header.findall("ShipmentAddress")
+    assert [a.get("AddressType") for a in addresses] == ["CZ", "CN", "FW"]
+    assert (
+        text_at(addresses[2], "PartnerInformation/PartnerGLN")
+        == (DACHSER_CONFIG["forwarding_gln"])
+    )
+    assert text_at(header, "Division") == DACHSER_CONFIG["division"]
+
+    # One ShipmentLine per parcel, each carrying its gross weight.
+    lines = header.findall("ShipmentLine")
+    assert len(lines) == 2
+    weight = lines[0].find("Measurements/Weight")
+    assert weight is not None and weight.get("Code") == "GRO"
+    assert text_at(weight, "Measurement/Value") == "22.50"
+    assert text_at(weight, "Measurement/Unit") == "KGM"
+
+    # One PackageIdentification per parcel carrying its minted SSCC - the point
+    # of fanning out per order.
+    packages = header.findall("PackageIdentification")
+    assert [text_at(p, "SSCCBarCode") for p in packages] == [SSCC_1, SSCC_2]
 
 
 def test_dachser_config_carries_the_sftp_connection_facts() -> None:

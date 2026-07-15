@@ -415,6 +415,23 @@ def test_each_pluck_or_split_in_a_csv_mapping_is_rejected() -> None:
             )
 
 
+def test_a_scalar_transform_validates_in_a_csv_mapping() -> None:
+    # The csv guard rejects only the list-producing modifiers; a scalar
+    # transform (uppercase) is a fine column and must not be over-rejected.
+    CarrierDefinition.model_validate(
+        _ftp_step(
+            content_type="csv",
+            mapping=[
+                {
+                    "target": "postcode",
+                    "source": "shipment.postcode",
+                    "transform": {"name": "uppercase"},
+                }
+            ],
+        )
+    )
+
+
 def test_conflicting_nested_targets_are_rejected_at_authoring() -> None:
     bad = _with_entries(
         {"target": "consignment", "const": "flat"},
