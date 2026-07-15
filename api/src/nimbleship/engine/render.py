@@ -156,10 +156,18 @@ def _render_entry(entry: MappingEntry, facts: Facts, for_execution: bool) -> Ren
         # path is item-rooted like an each inner entry (e.g. item.carrier_barcode).
         if not isinstance(value, list):
             raise ValueError(f"'{entry.source}' is not a collection")
-        return [
-            _resolve(entry.pluck, {**facts, "item": item}, for_execution)
-            for item in value
-        ]
+        plucked: list[object] = []
+        for item in value:
+            scalar = _resolve(entry.pluck, {**facts, "item": item}, for_execution)
+            # pluck's contract is a scalar per item; a path landing on a
+            # compound value would ship a nested list silently.
+            if isinstance(scalar, list | dict):
+                raise ValueError(
+                    f"pluck '{entry.pluck}' resolved a {type(scalar).__name__}, "
+                    "not a scalar"
+                )
+            plucked.append(scalar)
+        return plucked
     if entry.transform is not None:
         value = apply_transform(entry.transform, value)
     if isinstance(value, str | list | dict) or value is None:
