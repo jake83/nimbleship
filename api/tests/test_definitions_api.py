@@ -740,3 +740,53 @@ def test_golden_replay_refuses_a_stale_draft(app: FastAPI, client: TestClient) -
 
     assert replay.status_code == 409
     assert "draft version 2 is no longer valid" in replay.text
+
+
+def test_golden_replay_ignores_staleness_in_an_operation_it_does_not_render(
+    app: FastAPI, client: TestClient
+) -> None:
+    # Replay renders only the book op, so staleness in an unrelated operation
+    # (here a track step referencing an unknown prior step, which a tightened
+    # rule now rejects) must not block a healthy book replay.
+    stale_track_active = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "track": {
+                "steps": [
+                    {
+                        "name": "status",
+                        "transport": "http",
+                        "request": {
+                            "method": "GET",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [{"target": "x", "source": "steps.nope.out"}],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="testcarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=stale_track_active,
+            )
+        )
+        session.commit()
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    replay = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/replay",
+        json={},
+    )
+
+    assert replay.status_code == 200

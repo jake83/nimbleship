@@ -28,7 +28,7 @@ from nimbleship.engine.render import (
     RenderedUpload,
     render_operation,
 )
-from nimbleship.models import Consignment, Warehouse
+from nimbleship.models import CarrierDefinitionVersion, Consignment, Warehouse
 
 router = APIRouter(prefix="/carriers/{carrier}", tags=["definitions"])
 
@@ -255,6 +255,27 @@ def _diff_renders(
     return differences
 
 
+def _replay_definition(
+    row: CarrierDefinitionVersion, role: str, remedy: str
+) -> CarrierDefinition:
+    # Replay renders only the book operation, so validate just that: staleness
+    # in an operation replay does not render (a track or manifest broken by a
+    # since-tightened rule) must not block a healthy book replay, and a stale
+    # book op flags a clean 409 rather than a 500 at load or a placeholder diff.
+    data = row.data
+    ops = data.get("operations") if isinstance(data, dict) else None
+    if isinstance(ops, dict) and "book" in ops:
+        data = {**data, "operations": {"book": ops["book"]}}
+    try:
+        return CarrierDefinition.model_validate(data)
+    except ValidationError as error:
+        raise HTTPException(
+            409,
+            f"{role} version {row.version} is no longer valid under current "
+            f"rules; {remedy}",
+        ) from error
+
+
 @router.post("/definitions/versions/{version}/replay")
 def golden_replay(
     carrier: str, version: int, payload: ReplayIn, session: SessionDep
@@ -273,25 +294,10 @@ def golden_replay(
     active_row = active_definition_row(session, carrier)
     if active_row is None:
         raise HTTPException(409, "no active definition to replay against")
-    # Replay renders both definitions offline; one invalid under current rules
-    # would diff as placeholder noise. Validate both strictly (booking tolerates
-    # a stale active leniently; replay must not) and flag it, not 500 or garbage.
-    try:
-        draft = definition_for(row)
-    except ValidationError as error:
-        raise HTTPException(
-            409,
-            f"draft version {version} is no longer valid under current rules; "
-            "fix it before replaying",
-        ) from error
-    try:
-        active = definition_for(active_row)
-    except ValidationError as error:
-        raise HTTPException(
-            409,
-            f"active definition version {active_row.version} is no longer valid "
-            "under current rules; republish it before replaying",
-        ) from error
+    draft = _replay_definition(row, "draft", "fix it before replaying")
+    active = _replay_definition(
+        active_row, "active definition", "republish it before replaying"
+    )
     config = carrier_config(session, carrier)
 
     query = (
