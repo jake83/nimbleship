@@ -9,7 +9,7 @@ authoring time - never at booking time.
 import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
 from nimbleship.engine.field_plugins import field_plugin_names
 
@@ -26,6 +26,21 @@ UPLOAD_TRANSPORTS = ("ftp_upload", "sftp_upload")
 
 # Placeholder in a filename template, e.g. {shipment.order_number}.
 FILENAME_PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
+
+# Validation-context key marking a LOAD (a stored, already-published
+# definition being read at booking) rather than AUTHORING (a draft heading for
+# publish). Authoring runs every rule; load skips the authoring-POLICY rules so
+# tightening one never strands a definition that was valid when published. A
+# rule is authoring-policy (skippable) only when a stored violator still loads
+# to something safe: a shape/placement rule. A rule whose violation would crash
+# the render or produce an unsafe side effect (an unresolvable source, a
+# wrapping SSCC) stays strict on load - there the clean load-time rejection IS
+# the safe outcome. See CarrierDefinition.load and ADR 0009.
+LENIENT_LOAD = "lenient_load"
+
+
+def _is_lenient(info: ValidationInfo) -> bool:
+    return bool(info.context and info.context.get(LENIENT_LOAD))
 
 
 def operation_fact_roots(operation: str, fan_out: bool = False) -> tuple[str, ...]:
@@ -274,10 +289,12 @@ class RequestSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _csv_shape(self) -> "RequestSpec":
+    def _csv_shape(self, info: ValidationInfo) -> "RequestSpec":
         # A csv column holds a scalar; each, pluck, and the split transform each
         # render a list, which the csv renderer refuses at send. Reject at
-        # authoring instead.
+        # authoring instead. Authoring-policy: skipped on load.
+        if _is_lenient(info):
+            return self
         if self.content_type == "csv":
             for entry in self.mapping:
                 if (
@@ -382,7 +399,10 @@ class AllocationSpec(BaseModel):
     @model_validator(mode="after")
     def _sscc_never_wraps(self) -> "AllocationSpec":
         # An SSCC identifies a live physical unit, so its serial must never
-        # wrap: reissuing a live code is unsafe.
+        # wrap: reissuing a live code is unsafe. Strict even on load - skipping
+        # it would let a stored wrapping def mint a fresh wrapping range and
+        # reissue live codes (the sequence-row policy lock guards only ranges
+        # that already exist). A clean load-time rejection is the safe failure.
         if self.kind == "sscc" and self.policy != "halt":
             raise ValueError(
                 "an sscc allocation must use policy 'halt': wrapping would "
@@ -500,13 +520,29 @@ def _validate_source(
 
 
 class CarrierDefinition(BaseModel):
+    # Extra top-level keys (e.g. a `notes` array) are commentary living in the
+    # source definition file to explain it to a human author. They are ignored
+    # here and never persist onto the model, so nothing at runtime may read
+    # them - they are not a schema field.
     carrier: str = Field(max_length=64)
     name: str = Field(max_length=255)
     auth: Auth
     operations: dict[str, Operation]
 
+    @classmethod
+    def load(cls, data: object) -> "CarrierDefinition":
+        # Validate a stored, already-published definition for LOAD (booking):
+        # structural rules only. The authoring-policy rules are skipped so that
+        # tightening one never strands a definition that was valid at publish -
+        # only rules the engine cannot render around stay strict. Drafts and
+        # publish use plain model_validate, which enforces every rule. ADR 0009.
+        return cls.model_validate(data, context={LENIENT_LOAD: True})
+
     @model_validator(mode="after")
-    def _fan_out_shape(self) -> "CarrierDefinition":
+    def _fan_out_shape(self, info: ValidationInfo) -> "CarrierDefinition":
+        # Authoring-policy: skipped on load.
+        if _is_lenient(info):
+            return self
         for op_name, operation in self.operations.items():
             if not operation.fan_out:
                 continue
@@ -528,7 +564,10 @@ class CarrierDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _allocate_shape(self) -> "CarrierDefinition":
+    def _allocate_shape(self, info: ValidationInfo) -> "CarrierDefinition":
+        # Authoring-policy: skipped on load.
+        if _is_lenient(info):
+            return self
         for op_name, operation in self.operations.items():
             if not operation.allocate:
                 continue
@@ -555,6 +594,10 @@ class CarrierDefinition(BaseModel):
 
     @model_validator(mode="after")
     def _sources_resolve(self) -> "CarrierDefinition":
+        # Strict even on load: an unresolvable source names a fact the engine
+        # cannot render, so skipping this would defer a clean failure into an
+        # uncaught render error mid-booking - after SSCC minting has committed.
+        # Structural, not authoring-policy.
         # The auth secret is a source path too: a typo there must fail at
         # authoring like any other unknown fact (refuter, PR #26). One auth
         # block serves every operation, so its secret must resolve in every

@@ -97,3 +97,44 @@ operations, number-range plugin). Fagans proves the ftp_upload transport
 when convenient; Dachser (SSCC + SFTP EDI + DigiDocs) is its own mini-epic
 at the end; DPD and PalletTrack are deliberately left as the first real
 customers of the Phase 5 AI onboarding flow.
+
+## Authoring validation vs load validation (amended 2026-07-15)
+
+A definition is validated at two distinct moments, and they are not the same
+gate. **Authoring** - drafting or publishing - runs every rule via
+`CarrierDefinition.model_validate`: unknown facts, malformed transforms, and
+authoring-policy rules (a csv column must be scalar, a fan-out must be a
+manifest on an upload transport, an allocate must sit on the book operation)
+all fail here, before the row is ever stored. **Load** - reading a stored,
+already-published definition at booking time - runs through
+`CarrierDefinition.load`, which validates structure only and skips the
+authoring-policy rules.
+
+The split exists because the two moments answer different questions. Authoring
+asks "should this be allowed into the system?" and enforces current policy in
+full. Load asks "can the engine render this?" - and a definition that was
+valid when published can always be rendered, whatever an authoring-policy rule
+later tightens to. Without the split, tightening a policy rule would
+retroactively strand live definitions that were legitimate when stored, so a
+policy change could silently break booking for an in-flight carrier.
+
+A rule is authoring-policy (skippable on load) only when a stored violator
+still loads to something safe - a shape or placement rule the engine tolerates
+or independently guards at render. Two classes stay strict even on load,
+because for them the clean load-time rejection *is* the safe outcome and
+skipping would be worse than stranding: rules whose violation the engine cannot
+render around (an unresolvable source names a fact that does not exist, so
+skipping it defers a clean failure into an uncaught render error mid-booking,
+after SSCC minting has committed), and rules whose violation causes an unsafe
+side effect (an SSCC allocation that does not halt would let a fresh sequence
+mint a wrapping range and reissue live codes - the sequence-row policy lock
+guards only ranges that already exist). Ordinary structural rules (exactly one
+value origin per entry, legal xml targets, an upload step with a filename) are
+strict on load for the same reason: they are shapes a violation makes a bug
+wherever it surfaces, not a policy that moved under a stored row's feet.
+
+Definition files may carry top-level commentary (e.g. a `notes` array) to
+explain a carrier to a human author. It is not a schema field: the model
+ignores it, it never persists onto `CarrierDefinition`, and nothing at runtime
+may read it. Commentary that must survive belongs in the definition's stored
+provenance, not in a field the schema silently drops.

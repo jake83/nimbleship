@@ -64,7 +64,10 @@ def _seed_dropout_if_fresh(session: Session) -> None:
 
 
 def definition_for(row: CarrierDefinitionVersion) -> CarrierDefinition:
-    return CarrierDefinition.model_validate(row.data)
+    # A stored row was already vetted at publish: load leniently so tightening
+    # an authoring-policy rule cannot strand a live definition. See
+    # CarrierDefinition.load.
+    return CarrierDefinition.load(row.data)
 
 
 def active_definition_row(

@@ -6,7 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.domain.definitions import definition_for
 from nimbleship.engine.field_plugins import FIELD_PLUGINS
+from nimbleship.models import CarrierDefinitionVersion
 
 MINIMAL = {
     "carrier": "furdeco",
@@ -1230,3 +1232,100 @@ def test_xml_is_an_upload_only_content_type() -> None:
     }
     with pytest.raises(ValidationError, match="upload-only"):
         CarrierDefinition.model_validate(bad)
+
+
+# Authoring vs load (ADR 0009): drafting/publishing runs every rule
+# (model_validate); loading a stored, already-published definition at booking
+# runs structural rules only (CarrierDefinition.load), so tightening an
+# authoring-policy rule never strands a definition that was valid when stored.
+
+
+def _csv_with_pluck() -> dict[str, object]:
+    # Structurally well-formed but violates the csv authoring policy (a pluck
+    # renders a list, not a scalar column). The engine cannot render around it,
+    # but a live definition stored before that policy tightened must still load.
+    return _ftp_step(
+        content_type="csv",
+        mapping=[
+            {"target": "codes", "source": "shipment.parcels", "pluck": "item.barcode"}
+        ],
+    )
+
+
+def test_authoring_rejects_a_policy_violation_that_load_accepts() -> None:
+    bad = _csv_with_pluck()
+
+    with pytest.raises(ValidationError, match="render a list, not a scalar"):
+        CarrierDefinition.model_validate(bad)
+
+    loaded = CarrierDefinition.load(bad)
+    assert loaded.carrier == "fagans"
+
+
+def test_load_still_enforces_structural_rules() -> None:
+    # Two value origins on one entry is a shape the engine cannot resolve, so
+    # load rejects it as strictly as authoring - the split spares policy rules,
+    # never structural ones.
+    bad = _with_entries(
+        {"target": "x", "source": "shipment.order_number", "const": "y"}
+    )
+
+    with pytest.raises(ValidationError):
+        CarrierDefinition.model_validate(bad)
+    with pytest.raises(ValidationError):
+        CarrierDefinition.load(bad)
+
+
+def test_a_stored_definition_violating_a_tightened_policy_still_loads() -> None:
+    # The stranding scenario end to end: definition_for (the booking load path)
+    # reads a stored row whose data breaks the csv policy and loads it cleanly.
+    row = CarrierDefinitionVersion(
+        carrier="fagans",
+        version=1,
+        status="published",
+        author="api",
+        data=_csv_with_pluck(),
+    )
+
+    assert definition_for(row).carrier == "fagans"
+
+
+def test_load_still_rejects_a_wrapping_sscc() -> None:
+    # Unsafe side effect if skipped: a fresh sequence would mint a wrapping
+    # range and reissue live codes, so this stays strict on load too.
+    bad = _book_with_allocate(
+        [
+            {
+                "kind": "sscc",
+                "per": "parcel",
+                "prefix": "config.sscc_prefix",
+                "policy": "wrap",
+            }
+        ]
+    )
+
+    with pytest.raises(ValidationError, match="policy 'halt'"):
+        CarrierDefinition.model_validate(bad)
+    with pytest.raises(ValidationError, match="policy 'halt'"):
+        CarrierDefinition.load(bad)
+
+
+def test_load_still_rejects_an_unresolvable_source() -> None:
+    # The engine cannot render a fact that does not exist; skipping this would
+    # defer a clean failure into a render crash mid-booking, so load rejects it.
+    bad = _with_entries({"target": "x", "source": "bogus.field"})
+
+    with pytest.raises(ValidationError, match="unknown source root"):
+        CarrierDefinition.model_validate(bad)
+    with pytest.raises(ValidationError, match="unknown source root"):
+        CarrierDefinition.load(bad)
+
+
+def test_top_level_notes_are_ignored_commentary() -> None:
+    # notes is source-file commentary for a human author: ignored by the
+    # schema, never a field on the model, never read at runtime.
+    definition = CarrierDefinition.model_validate(
+        {**MINIMAL, "notes": ["explain this carrier to the next author"]}
+    )
+
+    assert not hasattr(definition, "notes")
