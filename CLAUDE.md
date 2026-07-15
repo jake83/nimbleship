@@ -67,8 +67,9 @@ jobs (reviewer + refuter).
 
 ## The development loop
 
-Every change follows this loop; step 1 applies only to fat PRs, as
-defined in step 1 itself:
+Every change follows this loop, except a trivial PR (defined in step 4),
+which takes the minimal path described there instead of the adversarial
+pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
 
 1. (fat PRs only) Local code review before pushing; act on design-level
    findings while they are cheap. A PR is "fat" when it establishes
@@ -89,8 +90,14 @@ defined in step 1 itself:
      equivalent no-behaviour-change edit. Nothing touching domain logic,
      schema, API contracts, workflows, dependencies, CONTEXT.md, or ADRs is
      ever trivial, however small. Size backstop: past ~25 changed lines even
-     type-trivial changes get human eyes. Apply the `trivial` label; the
-     agent may merge on green.
+     type-trivial changes get human eyes and keep the full loop. Within it, a
+     trivial PR takes the MINIMAL path instead of the AI adversarial pass
+     (steps 2-3, wasteful on this class): a local code-review at medium effort
+     before pushing (standing in for the pipeline), then the `trivial` label -
+     which skips the reviewer/refuter jobs while ci.yml (lint/type/test/build)
+     still runs - and merge on green. The label is the ONLY thing that skips
+     AI review; never apply it outside this definition, and when in doubt drop
+     it and take the full loop.
    - **Everything else**: apply `needs-human-review` and assign the repo
      owner (GitHub cannot request a review from the PR author, so the flag
      is label + assignee). An agent NEVER merges a non-trivial PR - this is
