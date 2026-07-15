@@ -33,9 +33,11 @@ _CONFIG_LOCK_KEY = 815_007
 
 
 def _advisory_xact_lock(session: Session, key: int) -> None:
-    # Held to the end of the transaction, so a read-modify-write under it runs
-    # against a snapshot no concurrent writer can slip past. No-op off Postgres
-    # (dev/test SQLite serialises writers anyway).
+    # Serialises writers on Postgres (the production engine): held to the end of
+    # the transaction, so a read-modify-write under it cannot interleave with a
+    # concurrent one. A no-op on SQLite, which backs only single-writer dev and
+    # the tests - so the lock's effect is proven against Postgres
+    # (test_postgres_integration.py), never inferred from SQLite.
     if session.get_bind().dialect.name == "postgresql":
         session.execute(select(func.pg_advisory_xact_lock(key)))
 

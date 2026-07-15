@@ -26,6 +26,11 @@ from booking_race import (
 )
 from nimbleship.db import Base
 from nimbleship.domain.allocation import ServiceDeclaration
+from nimbleship.domain.definitions import (
+    carrier_config,
+    merge_carrier_config,
+    upsert_carrier_config,
+)
 from nimbleship.domain.rulebook import active_rulebook, create_draft, publish
 from nimbleship.models import CarrierTraffic, RulebookVersion
 from nimbleship.queue import defer_manifest_send
@@ -193,6 +198,45 @@ def test_concurrent_publishes_of_same_draft_pick_exactly_one_winner(
         thread.join()
 
     assert sorted(outcomes) == ["conflict", "published"]
+
+
+def test_concurrent_config_merges_do_not_lose_an_update(
+    pg_engine: Engine,
+) -> None:
+    """Two PATCH /config merges rotating different single keys must both survive.
+    merge_carrier_config is a read-modify-write; without the advisory lock the
+    two would read the same row and the last commit would clobber the other's
+    key. Barrier-synced so both are in flight together - the lock, not luck, is
+    what makes both keys survive."""
+    factory = sessionmaker(bind=pg_engine)
+    with factory() as setup:
+        upsert_carrier_config(
+            setup, "racer", {"api_key": "K-0", "base_url": "https://b0.example"}
+        )
+        setup.commit()
+
+    barrier = threading.Barrier(2, timeout=15)
+
+    def rotate(key: str, value: str) -> None:
+        with factory() as session:
+            barrier.wait()
+            merge_carrier_config(session, "racer", {key: value})
+            session.commit()
+
+    threads = [
+        threading.Thread(target=rotate, args=("api_key", "K-1")),
+        threading.Thread(target=rotate, args=("base_url", "https://b1.example")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    with factory() as check:
+        assert carrier_config(check, "racer") == {
+            "api_key": "K-1",
+            "base_url": "https://b1.example",
+        }
 
 
 def test_concurrent_first_requests_seed_exactly_once(
