@@ -9,7 +9,7 @@ authoring time - never at booking time.
 import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
 from nimbleship.engine.field_plugins import field_plugin_names
 
@@ -26,6 +26,16 @@ UPLOAD_TRANSPORTS = ("ftp_upload", "sftp_upload")
 
 # Placeholder in a filename template, e.g. {shipment.order_number}.
 FILENAME_PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
+
+# Validation context marking a booking-time LOAD of a stored definition, where
+# authoring-policy rules are skipped so tightening one never strands a live
+# carrier. Only rules whose stored violator fails cleanly at render qualify;
+# unsafe-side-effect and structural rules stay strict. See ADR 0009.
+LENIENT_LOAD = "lenient_load"
+
+
+def _is_lenient(info: ValidationInfo) -> bool:
+    return bool(info.context and info.context.get(LENIENT_LOAD))
 
 
 def operation_fact_roots(operation: str, fan_out: bool = False) -> tuple[str, ...]:
@@ -274,10 +284,12 @@ class RequestSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _csv_shape(self) -> "RequestSpec":
+    def _csv_shape(self, info: ValidationInfo) -> "RequestSpec":
         # A csv column holds a scalar; each, pluck, and the split transform each
         # render a list, which the csv renderer refuses at send. Reject at
-        # authoring instead.
+        # authoring. Skipped on load: a stored violator fails cleanly at render.
+        if _is_lenient(info):
+            return self
         if self.content_type == "csv":
             for entry in self.mapping:
                 if (
@@ -500,10 +512,18 @@ def _validate_source(
 
 
 class CarrierDefinition(BaseModel):
+    # Extra top-level keys (e.g. a `notes` array) are source-file commentary:
+    # ignored here, never persisted onto the model, not a schema field.
     carrier: str = Field(max_length=64)
     name: str = Field(max_length=255)
     auth: Auth
     operations: dict[str, Operation]
+
+    @classmethod
+    def load(cls, data: object) -> "CarrierDefinition":
+        # Validate a published definition for booking: authoring-policy rules
+        # relaxed (ADR 0009), so tightening one never strands a live carrier.
+        return cls.model_validate(data, context={LENIENT_LOAD: True})
 
     @model_validator(mode="after")
     def _fan_out_shape(self) -> "CarrierDefinition":
@@ -554,7 +574,12 @@ class CarrierDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _sources_resolve(self) -> "CarrierDefinition":
+    def _sources_resolve(self, info: ValidationInfo) -> "CarrierDefinition":
+        # Skipped on load: an unresolvable source raises at render, which the
+        # engine routes to a clean booking failure. Target conflicts are
+        # structural and stay strict - see _targets_never_conflict.
+        if _is_lenient(info):
+            return self
         # The auth secret is a source path too: a typo there must fail at
         # authoring like any other unknown fact (refuter, PR #26). One auth
         # block serves every operation, so its secret must resolve in every
@@ -592,12 +617,21 @@ class CarrierDefinition(BaseModel):
                         )
                 for entry in step.request.mapping:
                     self._validate_entry(entry, earlier, False, where, roots)
-                self._validate_targets(step.request.mapping, where)
                 earlier[step.name] = (
                     {extraction.name for extraction in step.response.extract}
                     if step.response is not None
                     else set()
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _targets_never_conflict(self) -> "CarrierDefinition":
+        # Structural, so strict even on load: a mapping-target conflict is a
+        # shape the engine cannot render around, unlike a source that fails
+        # cleanly at render.
+        for op_name, operation in self.operations.items():
+            for step in operation.steps:
+                self._validate_targets(step.request.mapping, f"{op_name}.{step.name}")
         return self
 
     def _validate_targets(self, entries: list[MappingEntry], where: str) -> None:

@@ -64,6 +64,8 @@ def _seed_dropout_if_fresh(session: Session) -> None:
 
 
 def definition_for(row: CarrierDefinitionVersion) -> CarrierDefinition:
+    # Strict: backs the publish gate and golden replay, where every rule must
+    # hold. Booking reads go through active_definition, which loads leniently.
     return CarrierDefinition.model_validate(row.data)
 
 
@@ -83,8 +85,10 @@ def active_definition_row(
 
 
 def active_definition(session: Session, carrier: str) -> CarrierDefinition | None:
+    # The booking and manifest-send runtime path: a published row loads
+    # leniently so a since-tightened rule cannot strand a live carrier.
     row = active_definition_row(session, carrier)
-    return definition_for(row) if row is not None else None
+    return CarrierDefinition.load(row.data) if row is not None else None
 
 
 def list_versions(session: Session, carrier: str) -> list[CarrierDefinitionVersion]:

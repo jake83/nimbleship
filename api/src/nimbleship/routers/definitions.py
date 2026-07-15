@@ -95,7 +95,9 @@ def active(carrier: str, session: SessionDep) -> ActiveOut:
     row = active_definition_row(session, carrier)
     if row is None:
         raise HTTPException(404, "no published definition for this carrier")
-    return ActiveOut(version=row.version, definition=definition_for(row))
+    # Show the running definition, loaded as booking loads it, so a def that
+    # books fine is never a 500 here.
+    return ActiveOut(version=row.version, definition=CarrierDefinition.load(row.data))
 
 
 @router.get("/definitions/versions")
@@ -272,7 +274,9 @@ def golden_replay(
     active_row = active_definition_row(session, carrier)
     if active_row is None:
         raise HTTPException(409, "no active definition to replay against")
-    active = definition_for(active_row)
+    # The active is a published baseline, loaded as booking loads it; the draft
+    # stays strict - it is the thing being authored.
+    active = CarrierDefinition.load(active_row.data)
     config = carrier_config(session, carrier)
 
     query = (
