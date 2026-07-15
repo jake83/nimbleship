@@ -42,6 +42,15 @@ jobs:
             implementation?), convention/ADR adherence, security, and
             maintainability.
 
+            Comment conciseness is a named check, not a nicety: CLAUDE.md
+            requires every comment and docstring to earn its place - one tight
+            sentence over a paragraph, and no comment that only restates the
+            code or repeats the docstring. Flag every added comment or
+            docstring that breaks this (quote it, give the shorter version, or
+            say it should be deleted). A multi-line block where one line would
+            do is a finding, not a style nit - the diff under review has
+            repeatedly shipped over-explained comments.
+
             State which commit you reviewed. Treat earlier review comments on
             the PR as UNVERIFIED claims: re-verify anything you repeat against
             the current commit - prior findings may already be fixed or may
