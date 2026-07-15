@@ -102,9 +102,13 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      settled - CI green (ci.yml lint/type/test/build), the reviewer and
      refuter jobs run, and every finding triaged per "Handling review
      feedback" and the two-round rule (fixed, rebutted, or tracked as a
-     follow-up in the wrap-up). A usage-limited reviewer does not block: the
-     refuter's clean pass plus the local review stands in, per "a clean
-     machine pass is not required". Squash-merge and delete the branch.
+     follow-up in the wrap-up). Self-merge needs a GENUINE review signal, not
+     merely "nothing blocked": at least ONE of the reviewer or refuter must
+     have completed a real pass. A usage-limited job that no-ops is NOT a pass
+     - if BOTH no-op (the two-gates-fail-together mode PR #22 already hit once),
+     do not merge: run a local code-review at medium effort as the stand-in, or
+     re-trigger and wait. One genuine pass, per "a clean machine pass is not
+     required", is enough; zero is not. Squash-merge and delete the branch.
      This authority is owner-granted (2026-07-15) to keep development moving
      without a human merge gate, and is revocable: the owner can reinstate
      the gate at any time. It REPLACES the former "an agent NEVER merges"
@@ -118,15 +122,17 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
    Stacked PRs: merge the base PR and DELETE its branch first so GitHub
    retargets the stacked PR to main - otherwise it merges into a dead
    branch and its content silently never reaches main.
-   Finalize once, then hands off: get ALL intended content into a PR before
-   posting `needs-human-review`, because a push that races the human's merge
-   is squash-dropped silently (it happened twice - an ADR note on PR #39 and
-   a CLAUDE.md convention on PR #40, each merged without its trailing commit).
-   Anything that arises after handoff rides a NEW PR, never a late push to the
-   handed-off one. After any merge, verify the intended commits actually
-   reached main (grep main for the change) rather than assuming the merge
-   carried them - it is the only reliable catch for this race and for the
-   dead-branch case above.
+   Finalize once, then merge: get ALL intended content into a PR before
+   merging it, because a push that races the merge is squash-dropped silently
+   (an ADR note on PR #39, a CLAUDE.md convention on PR #40, and a test fix on
+   PR #60 all stranded this way - each merged without its trailing commit).
+   Once a PR is merged, anything further rides a NEW PR, never a late push to
+   the merged branch. The race is real even under self-merge: a human may merge
+   a handed-off or in-flight PR out of band (as happened to PR #60), so before
+   pushing a follow-up commit, confirm the PR is still open. After any merge,
+   verify the intended commits actually reached main (grep main for the change)
+   rather than assuming the merge carried them - it is the only reliable catch
+   for this race and for the dead-branch case above.
    The trivial definition starts deliberately tight and is loosened only
    with evidence: when human review of a class of PRs has stopped finding
    anything for a sustained stretch, widen the definition here and record
