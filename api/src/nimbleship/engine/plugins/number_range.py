@@ -100,11 +100,10 @@ def allocate_number(
     `reorder_threshold` is set, a structured warning is logged once the
     remaining count reaches it.
 
-    `policy` is fixed on the row at creation and a later switch is refused. A
-    `wrap` range's `wrap_after` may grow but never shrink (numbers issued beyond
-    a smaller ceiling would wrap early and reissue). A `halt` range's capacity is
-    fixed entirely: ANY `wrap_after` change is refused, since a halt range must
-    stop at its original bound forever - if exhausted, provision a new range.
+    `policy` is fixed at creation; a later switch is refused. A `wrap` range's
+    `wrap_after` may grow but never shrink (a smaller ceiling would reissue
+    numbers already past it). A `halt` range's capacity is fixed outright: any
+    `wrap_after` change is refused - if exhausted, provision a new range.
 
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
@@ -156,11 +155,9 @@ def allocate_number(
         )
     if stored_wrap_after is not None and stored_wrap_after != wrap_after:
         if policy == "halt":
-            # A halt range's capacity is fixed at creation: widening would
-            # extend a range promised to stop (the exhaustion check below trusts
-            # the stored bound only if it is never moved), and shrinking would
-            # strand it early. Refuse any change; an exhausted halt range needs
-            # a new range, which for SSCC is a config prefix change.
+            # A halt range's capacity is fixed at creation, so any change is
+            # refused: a widen would extend a range promised to stop. An
+            # exhausted halt range needs a new one (for SSCC, a prefix change).
             raise ValueError(
                 f"number range '{name}' for carrier '{carrier}' is halt with a "
                 f"fixed capacity of {stored_wrap_after}: it cannot change to "
@@ -187,9 +184,8 @@ def allocate_number(
         following = current + 1
     elif current > wrap_after:
         # A counter already past its bound wraps to 1 rather than issue an
-        # out-of-range number. A standing guard, not a one-time backfill: a
-        # fresh small range (wrap_after 1) reaches it as readily as a legacy row
-        # that predates the bound column.
+        # out-of-range number. A standing guard, not a legacy-row backfill: a
+        # fresh small range (wrap_after 1) reaches it too.
         claimed_value = 1
         following = 2
     else:
