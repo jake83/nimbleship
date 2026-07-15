@@ -274,12 +274,10 @@ def golden_replay(
     active_row = active_definition_row(session, carrier)
     if active_row is None:
         raise HTTPException(409, "no active definition to replay against")
-    # Booking loads the active leniently so a since-tightened rule never strands
-    # a live carrier, but replay must not diff against a stale baseline: an
-    # unresolvable reference renders offline as a placeholder token, so every
-    # diff would be noise. Flag staleness up front rather than diff garbage.
+    # Unlike booking's lenient load, replay diffs the active as a baseline, so a
+    # since-tightened rule's placeholder token must be caught here, not diffed.
     try:
-        CarrierDefinition.model_validate(active_row.data)
+        definition_for(active_row)
     except ValidationError as error:
         raise HTTPException(
             409,

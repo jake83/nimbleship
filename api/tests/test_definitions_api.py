@@ -590,10 +590,8 @@ def test_the_active_endpoint_loads_a_stored_definition_leniently(
 def test_golden_replay_refuses_a_stale_active_definition(
     app: FastAPI, client: TestClient
 ) -> None:
-    # An active def that breaks a since-tightened rule loads (booking must not
-    # strand), but replay diffs against it as a baseline - a stale one renders
-    # unresolvable references as placeholders, so replay flags it with a clean
-    # 409 rather than 500ing at load or diffing garbage.
+    # A published def that only breaks a since-tightened rule - booking loads
+    # it, but replay flags it rather than diff a stale baseline.
     with app.state.session_factory() as session:
         session.add(
             CarrierDefinitionVersion(
@@ -684,10 +682,8 @@ def _stepcarrier_def(step2_source: str) -> dict[str, object]:
 def test_golden_replay_refuses_an_active_with_an_unknown_step_output(
     app: FastAPI, client: TestClient
 ) -> None:
-    # The placeholder case #60 names: step 2 references an output step 1 does
-    # not declare. A tightened rule rejects it, but lenient load lets it through
-    # and it renders offline as a placeholder token, not an error - so replay
-    # must flag the active (409), not diff the placeholder.
+    # step 2 references an output step 1 never declares - the placeholder case
+    # from #60, which renders offline as a token rather than an error.
     with app.state.session_factory() as session:
         session.add(
             CarrierDefinitionVersion(
