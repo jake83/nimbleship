@@ -64,8 +64,9 @@ def _seed_dropout_if_fresh(session: Session) -> None:
 
 
 def definition_for(row: CarrierDefinitionVersion) -> CarrierDefinition:
-    # Strict: backs the publish gate and golden replay, where every rule must
-    # hold. Booking reads go through active_definition, which loads leniently.
+    # Strict: backs the publish gate, where every rule must hold. Booking reads
+    # go through active_definition (lenient); golden replay validates a
+    # book-only view.
     return CarrierDefinition.model_validate(row.data)
 
 
