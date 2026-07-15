@@ -145,11 +145,8 @@ def test_a_range_cannot_shrink_its_wrap_after_but_can_widen_it(
 
 
 def test_a_halt_range_cannot_change_its_wrap_after_at_all(session: Session) -> None:
-    # A halt range's capacity is fixed at creation: unlike a wrap range it may
-    # not even widen. Widening would extend a range promised to stop at its
-    # bound - the halt exhaustion check must stay pinned to the original
-    # capacity. If a halt range is exhausted, a new range (for SSCC, a config
-    # prefix change, which keys a fresh sequence) is the only way forward.
+    # A halt range's capacity is fixed at creation - unlike a wrap range it may
+    # not even widen.
     allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
     row = session.get(CarrierNumberSequence, ("dachser", "sscc"))
     assert row is not None and row.wrap_after == 3
@@ -172,10 +169,8 @@ def test_a_halt_range_cannot_change_its_wrap_after_at_all(session: Session) -> N
 def test_widening_an_exhausted_halt_range_does_not_revive_it(
     session: Session,
 ) -> None:
-    # The scenario that matters most: bumping the bound to "unstick" an
-    # exhausted halt range must NOT resume issuing past the original capacity -
-    # those numbers are live codes. The widen is refused before it can reach
-    # the exhaustion branch, so the range stays halted.
+    # The scenario that matters most: bumping the bound must not revive an
+    # exhausted halt range - those numbers are live codes.
     for _ in range(2):
         allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
     with pytest.raises(RangeExhausted):
