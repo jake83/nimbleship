@@ -19,7 +19,9 @@ from nimbleship.engine.plugins.number_range import (
     RangeExhausted,
     _gs1_check_digit,
     allocate_number,
+    assemble_sscc,
     sscc_sequence_name,
+    sscc_serial_width,
 )
 from nimbleship.models import CarrierNumberSequence
 
@@ -264,54 +266,32 @@ def test_gs1_check_digit_matches_the_standard_algorithm() -> None:
     assert _gs1_check_digit("12345678901234567") == "5"
 
 
-def test_the_sscc_plugin_assembles_prefix_suffix_and_check_digit() -> None:
-    plugin = field_plugin("sscc")
-    facts: dict[str, object] = {
-        "config": {"sscc_prefix": "01234567890"},
-        "allocated": {"sscc_suffix": "42"},
-    }
+def test_assemble_sscc_builds_prefix_suffix_and_check_digit() -> None:
     # A fixed 18-digit reference: an 11-digit prefix and serial 42 give the
     # 17-digit body 01234567890000042, whose GS1 check digit is 5. Asserting
-    # the literal (not the plugin's own check-digit output) makes a wrong
+    # the literal (not the function's own check-digit output) makes a wrong
     # check digit fail here, not only in the algorithm test.
-    sscc = plugin.compute(facts)
+    sscc = assemble_sscc("01234567890", 42)
     assert sscc == "012345678900000425"
     assert len(sscc) == 18
 
 
-def test_the_sscc_plugin_fails_loudly_on_bad_prefix_or_suffix() -> None:
-    plugin = field_plugin("sscc")
-    good_prefix = {"sscc_prefix": "01234567890"}
-
-    with pytest.raises(ValueError, match="sscc_prefix"):
-        plugin.compute({"config": {}, "allocated": {"sscc_suffix": "1"}})
-    with pytest.raises(ValueError, match="sscc_prefix"):
-        plugin.compute(
-            {"config": {"sscc_prefix": "12x"}, "allocated": {"sscc_suffix": "1"}}
-        )
-    # A non-ASCII "digit" (superscript one) passes str.isdigit but int() would
-    # reject it, so it is refused with the prefix message, not a later crash.
-    with pytest.raises(ValueError, match="sscc_prefix"):
-        plugin.compute(
-            {
-                "config": {"sscc_prefix": "\u00b9234567890"},
-                "allocated": {"sscc_suffix": "1"},
-            }
-        )
-    # A prefix that fills all 17 body digits leaves no room for a suffix.
+def test_assemble_sscc_and_width_reject_bad_prefixes_and_serials() -> None:
+    # A non-digit or non-ASCII prefix (superscript one passes str.isdigit but
+    # int() rejects it) is refused before the check-digit sum.
+    with pytest.raises(ValueError, match="not a digit string"):
+        sscc_serial_width("12x")
+    with pytest.raises(ValueError, match="not a digit string"):
+        sscc_serial_width("\u00b9234567890")
+    # A prefix that fills all 17 body digits leaves no room for a serial.
     with pytest.raises(ValueError, match="no room"):
-        plugin.compute(
-            {"config": {"sscc_prefix": "0" * 17}, "allocated": {"sscc_suffix": "1"}}
-        )
-    # A suffix wider than the room the prefix leaves cannot fit.
+        sscc_serial_width("0" * 17)
+    # A serial wider than the room the prefix leaves, or not positive, cannot
+    # fit.
     with pytest.raises(ValueError, match="does not fit"):
-        plugin.compute({"config": good_prefix, "allocated": {"sscc_suffix": "1234567"}})
-    with pytest.raises(ValueError, match="allocate_number"):
-        plugin.compute({"config": good_prefix})
-    # The serial goes through the same ASCII-digit guard as the prefix, so a
-    # non-ASCII "digit" (superscript two) fails cleanly, not with a raw int().
-    with pytest.raises(ValueError, match="not a number"):
-        plugin.compute({"config": good_prefix, "allocated": {"sscc_suffix": "\u00b2"}})
+        assemble_sscc("01234567890", 1234567)
+    with pytest.raises(ValueError, match="does not fit"):
+        assemble_sscc("01234567890", 0)
 
 
 def test_sscc_sequences_key_on_the_prefix_so_a_new_range_starts_fresh(

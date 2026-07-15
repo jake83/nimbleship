@@ -244,9 +244,8 @@ def sscc_wrap_after(prefix: str) -> int:
 
 def assemble_sscc(prefix: str, serial: int) -> str:
     """Assemble an 18-digit SSCC: the carrier prefix, the serial zero-padded to
-    fill the 17-digit body, and the GS1 mod-10 check digit. Shared by the
-    booking dispatch (which mints one per parcel) and the SSCCField plugin, so
-    render-time and mint-time SSCCs are assembled the one way."""
+    fill the 17-digit body, and the GS1 mod-10 check digit. Used by the booking
+    dispatch, which mints one per parcel."""
     width = sscc_serial_width(prefix)
     if serial <= 0 or len(str(serial)) > width:
         raise ValueError(f"SSCC serial {serial} does not fit {width} digits")
@@ -295,33 +294,7 @@ class AllocatedNumberField:
         return _zero_pad(_allocated_number(facts, self._fact), self._fact, self._width)
 
 
-class SSCCField:
-    """Assembles an 18-digit SSCC from a carrier-provisioned prefix (config)
-    and an allocated serial (facts["allocated"]): the prefix and zero-padded
-    serial fill the 17-digit body, then the GS1 mod-10 check digit closes it.
-    The serial width is whatever the prefix leaves, so a longer prefix simply
-    means a shorter serial."""
-
-    def __init__(self, prefix_key: str, suffix_fact: str) -> None:
-        self._prefix_key = prefix_key
-        self._suffix_fact = suffix_fact
-
-    def compute(self, facts: dict[str, object]) -> object:
-        config = facts.get("config")
-        prefix = config.get(self._prefix_key) if isinstance(config, dict) else None
-        # A non-ASCII "digit" would pass str.isdigit but blow up later inside
-        # the check-digit sum's int(); _is_ascii_digits refuses it up front,
-        # the same guard _allocated_number applies to the serial.
-        if not isinstance(prefix, str) or not _is_ascii_digits(prefix):
-            raise ValueError(
-                f"config '{self._prefix_key}' is not a digit-string SSCC prefix: "
-                f"{prefix!r}"
-            )
-        return assemble_sscc(prefix, _allocated_number(facts, self._suffix_fact))
-
-
 register(
     "palletforce_consignment_number",
     AllocatedNumberField(fact="consignment_number", width=7),
 )
-register("sscc", SSCCField(prefix_key="sscc_prefix", suffix_fact="sscc_suffix"))
