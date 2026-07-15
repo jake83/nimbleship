@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -270,13 +270,28 @@ def golden_replay(
     row = get_version(session, carrier, version)
     if row is None:
         raise HTTPException(404, "no such definition version")
-    draft = definition_for(row)
     active_row = active_definition_row(session, carrier)
     if active_row is None:
         raise HTTPException(409, "no active definition to replay against")
-    # The active is a published baseline, loaded as booking loads it; the draft
-    # stays strict - it is the thing being authored.
-    active = CarrierDefinition.load(active_row.data)
+    # Replay renders both definitions offline; one invalid under current rules
+    # would diff as placeholder noise. Validate both strictly (booking tolerates
+    # a stale active leniently; replay must not) and flag it, not 500 or garbage.
+    try:
+        draft = definition_for(row)
+    except ValidationError as error:
+        raise HTTPException(
+            409,
+            f"draft version {version} is no longer valid under current rules; "
+            "fix it before replaying",
+        ) from error
+    try:
+        active = definition_for(active_row)
+    except ValidationError as error:
+        raise HTTPException(
+            409,
+            f"active definition version {active_row.version} is no longer valid "
+            "under current rules; republish it before replaying",
+        ) from error
     config = carrier_config(session, carrier)
 
     query = (

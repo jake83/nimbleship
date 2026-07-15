@@ -587,11 +587,11 @@ def test_the_active_endpoint_loads_a_stored_definition_leniently(
     assert response.json()["version"] == 1
 
 
-def test_golden_replay_survives_a_leniently_loadable_active_definition(
+def test_golden_replay_refuses_a_stale_active_definition(
     app: FastAPI, client: TestClient
 ) -> None:
-    # Replay loads the active baseline the lenient way booking does, so a
-    # published def that breaks a since-tightened rule does not 500 at load.
+    # A published def that only breaks a since-tightened rule - booking loads
+    # it, but replay flags it rather than diff a stale baseline.
     with app.state.session_factory() as session:
         session.add(
             CarrierDefinitionVersion(
@@ -635,4 +635,108 @@ def test_golden_replay_survives_a_leniently_loadable_active_definition(
         json={},
     )
 
-    assert replay.status_code == 200
+    assert replay.status_code == 409
+    assert "no longer valid" in replay.text
+
+
+# step 1 declares output `real_ref`; a two-step book op where step 2 reads it.
+_STEP1: dict[str, object] = {
+    "name": "step1",
+    "transport": "http",
+    "request": {
+        "method": "POST",
+        "url": "config.url",
+        "content_type": "json",
+        "mapping": [{"target": "o", "source": "shipment.order_number"}],
+    },
+    "response": {"format": "json", "extract": [{"name": "real_ref", "path": "id"}]},
+}
+
+
+def _stepcarrier_def(step2_source: str) -> dict[str, object]:
+    return {
+        "carrier": "stepcarrier",
+        "name": "Step Carrier",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    _STEP1,
+                    {
+                        "name": "step2",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.url",
+                            "content_type": "json",
+                            "mapping": [{"target": "r", "source": step2_source}],
+                        },
+                    },
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+
+
+def test_golden_replay_refuses_an_active_with_an_unknown_step_output(
+    app: FastAPI, client: TestClient
+) -> None:
+    # step 2 references an output step 1 never declares - the placeholder case
+    # from #60, which renders offline as a token rather than an error.
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="stepcarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=_stepcarrier_def("steps.step1.typoed_ref"),
+            )
+        )
+        session.commit()
+    draft = client.post(
+        "/api/carriers/stepcarrier/definitions/drafts",
+        json={"author": "jake", "definition": _stepcarrier_def("steps.step1.real_ref")},
+    ).json()
+
+    replay = client.post(
+        f"/api/carriers/stepcarrier/definitions/versions/{draft['version']}/replay",
+        json={},
+    )
+
+    assert replay.status_code == 409
+    assert "no longer valid" in replay.text
+
+
+def test_golden_replay_refuses_a_stale_draft(app: FastAPI, client: TestClient) -> None:
+    # The draft role carries the same staleness risk as the active: a draft
+    # valid when created can break a since-tightened rule. Replay flags it (409),
+    # not 500 at load.
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="stepcarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=_stepcarrier_def("steps.step1.real_ref"),
+            )
+        )
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="stepcarrier",
+                version=2,
+                status="draft",
+                author="test",
+                data=_stepcarrier_def("steps.step1.typoed_ref"),
+            )
+        )
+        session.commit()
+
+    replay = client.post(
+        "/api/carriers/stepcarrier/definitions/versions/2/replay", json={}
+    )
+
+    assert replay.status_code == 409
+    assert "draft version 2 is no longer valid" in replay.text
