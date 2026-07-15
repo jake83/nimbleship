@@ -381,6 +381,34 @@ def test_pluck_nested_inside_an_xml_each_is_rejected() -> None:
         )
 
 
+def test_a_malformed_source_path_is_rejected() -> None:
+    # A leading/trailing/double dot or a whitespaced segment passes the root
+    # check but resolves to nothing at render; caught at authoring.
+    for bad in ("shipment.", "shipment..order_number", "shipment.order_number "):
+        with pytest.raises(ValidationError, match="malformed source path"):
+            CarrierDefinition.model_validate(
+                _with_entries({"target": "x", "source": bad})
+            )
+
+
+def test_each_or_pluck_in_a_csv_mapping_is_rejected() -> None:
+    # A csv row is scalar columns; each/pluck render a list the csv step
+    # refuses at send, so they are rejected at authoring.
+    for modifier in (
+        {"each": [{"target": "w", "source": "item.weight_kg"}]},
+        {"pluck": "item.carrier_barcode"},
+    ):
+        entry: dict[str, object] = {
+            "target": "col",
+            "source": "shipment.parcels",
+            **modifier,
+        }
+        with pytest.raises(ValidationError, match="each and pluck render a"):
+            CarrierDefinition.model_validate(
+                _ftp_step(content_type="csv", mapping=[entry])
+            )
+
+
 def test_conflicting_nested_targets_are_rejected_at_authoring() -> None:
     bad = _with_entries(
         {"target": "consignment", "const": "flat"},

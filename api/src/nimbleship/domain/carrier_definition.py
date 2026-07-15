@@ -273,6 +273,19 @@ class RequestSpec(BaseModel):
             raise ValueError("root_element is only for content_type xml")
         return self
 
+    @model_validator(mode="after")
+    def _csv_shape(self) -> "RequestSpec":
+        # A csv row is scalar columns; each and pluck render a list, which the
+        # csv renderer refuses at send. Reject them at authoring instead.
+        if self.content_type == "csv":
+            for entry in self.mapping:
+                if entry.each is not None or entry.pluck is not None:
+                    raise ValueError(
+                        f"csv field '{entry.target}': each and pluck render a "
+                        "list, not a scalar column"
+                    )
+        return self
+
 
 class Extraction(BaseModel):
     name: str
@@ -455,6 +468,11 @@ def _validate_source(
     where: str,
     roots: tuple[str, ...] = FACT_ROOTS,
 ) -> None:
+    # A malformed path (empty segment from a leading/trailing/double dot, or a
+    # segment with surrounding whitespace) passes the root check but resolves to
+    # nothing at render, failing every booking. Reject it at authoring.
+    if any(seg == "" or seg != seg.strip() for seg in source.split(".")):
+        raise ValueError(f"{where}: malformed source path '{source}'")
     root = source.split(".", 1)[0]
     if root in roots:
         return

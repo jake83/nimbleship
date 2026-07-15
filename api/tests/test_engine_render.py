@@ -582,6 +582,47 @@ def test_pluck_collects_a_scalar_list_from_a_collection() -> None:
     ]
 
 
+def test_pluck_resolving_a_non_scalar_fails_loudly() -> None:
+    # pluck promises a list of scalars; a path landing on a compound value
+    # would ship a nested list silently, so it raises instead.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "x",
+            "name": "X",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "s",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.url",
+                                "content_type": "json",
+                                "mapping": [
+                                    {
+                                        "target": "addrs",
+                                        "source": "shipment.parcels",
+                                        "pluck": "item.address",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    facts = {
+        "shipment": {"parcels": [{"address": {"city": "London"}}]},
+        "config": {"url": "https://api.example/x"},
+    }
+
+    with pytest.raises(ValueError, match="not a scalar"):
+        http_renders(definition, "book", facts)
+
+
 def test_auth_query_key_lands_in_query_not_body() -> None:
     [request] = http_renders(DEFINITION, "book", FACTS)
 
