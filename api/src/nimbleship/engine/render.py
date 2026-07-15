@@ -180,6 +180,22 @@ def _render_filename(template: str, facts: Facts, for_execution: bool) -> str:
     return FILENAME_PLACEHOLDER.sub(_substitute, template)
 
 
+# A leading one of these makes a spreadsheet read a CSV field as a formula or
+# DDE command when a human opens the carrier's file (CSV injection, OWASP): a
+# recipient name of `=cmd|'/c calc'!A1` would execute on open. Tab and CR are
+# the DDE variants.
+_CSV_FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralise_csv_formula(value: str) -> str:
+    """Prefix a single quote to a field a spreadsheet would run as a formula,
+    so it is shown as literal text. A machine parser reads the quote as data;
+    shipping a live formula for someone at the carrier to open is the hole.
+    This does prefix a legitimate leading-`+`/`-` value (a phone, a negative),
+    which is the accepted trade for closing the injection vector."""
+    return "'" + value if value.startswith(_CSV_FORMULA_LEADERS) else value
+
+
 def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) -> str:
     """One RFC 4180 row: comma-delimited, minimal quoting, CRLF-terminated -
     the format the receiving carriers require. Rendered from the mapping
@@ -193,7 +209,7 @@ def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) 
                 f"csv field '{entry.target}' rendered a {type(value).__name__}, "
                 "not a scalar"
             )
-        row.append("" if value is None else str(value))
+        row.append("" if value is None else _neutralise_csv_formula(str(value)))
     buffer = io.StringIO()
     csv.writer(buffer).writerow(row)
     return buffer.getvalue()
