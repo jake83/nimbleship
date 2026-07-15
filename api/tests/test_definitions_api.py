@@ -497,6 +497,36 @@ def test_the_publish_gate_supplies_warehouse_facts_to_a_batch_manifest(
     assert response.status_code == 200
 
 
+def test_the_batch_manifest_gate_uses_only_this_carriers_own_consignments(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A manifest is single-carrier: the gate synthesizes it from THIS carrier's
+    # own recent consignments, never another carrier's traffic. testcarrier has
+    # no history of its own, so a broken manifest.* source has nothing to render
+    # against and the gate skips it - a neighbour's consignment must not stand in
+    # and produce a spurious 409.
+    _publish_v1_with_config(client)
+    _add_history(app, "THEIRS-00001", "othercarrier")
+
+    broken = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": _BATCH_MANIFEST,
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": broken},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 200
+
+
 def test_the_publish_gate_renders_a_fan_out_manifest(
     app: FastAPI, client: TestClient
 ) -> None:

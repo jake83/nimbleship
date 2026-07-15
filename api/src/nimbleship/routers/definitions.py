@@ -202,33 +202,53 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
         for op_name, operation in definition.operations.items()
         if operation_fact_roots(op_name, operation.fan_out) == MANIFEST_FACT_ROOTS
     ]
-    if manifest_operations and recent:
-        # A manifest is single-warehouse (one per carrier and warehouse), so a
-        # representative warehouse stands in - the first recent consignment that
-        # has one, so a warehouse-referencing manifest still renders.
-        representative_warehouse = next(
-            (c.warehouse for c in recent if c.warehouse is not None), None
+    if manifest_operations:
+        # A manifest is single-carrier, so gate against THIS carrier's own recent
+        # consignments - not the cross-carrier window above. A dedicated query,
+        # not an in-memory filter: this carrier's rows may fall outside that
+        # window entirely, and rendering a neighbour's traffic as its manifest
+        # would both weaken the gate and 409 on data that isn't theirs.
+        carrier_recent = list(
+            session.execute(
+                select(Consignment)
+                .options(selectinload(Consignment.parcels))
+                .where(Consignment.carrier == carrier)
+                .order_by(Consignment.id.desc())
+                .limit(20)
+            ).scalars()
         )
-        synthetic = Manifest(
-            carrier=carrier,
-            warehouse=representative_warehouse,
-            created_at=datetime.now(UTC),
-        )
-        manifest_batch: dict[str, object] = {
-            "manifest": manifest_facts(synthetic, list(recent)),
-            "config": config,
-        }
-        if synthetic.warehouse in warehouses:
-            manifest_batch["warehouse"] = warehouses[synthetic.warehouse]
-        for op_name in manifest_operations:
-            try:
-                render_operation(definition, op_name, manifest_batch)
-            except ValueError as error:
-                raise HTTPException(
-                    409,
-                    f"publish refused: rendering operation '{op_name}' against a "
-                    f"manifest of the recent consignments failed: {error}",
-                ) from error
+        if carrier_recent:
+            # A manifest is single-warehouse (one per carrier and warehouse), so a
+            # representative warehouse stands in - the first recent consignment
+            # that has one. Looked up directly, as it may not be in the batch above.
+            representative_warehouse = next(
+                (c.warehouse for c in carrier_recent if c.warehouse is not None),
+                None,
+            )
+            synthetic = Manifest(
+                carrier=carrier,
+                warehouse=representative_warehouse,
+                created_at=datetime.now(UTC),
+            )
+            manifest_batch: dict[str, object] = {
+                "manifest": manifest_facts(synthetic, carrier_recent),
+                "config": config,
+            }
+            if representative_warehouse is not None:
+                warehouse_row = session.execute(
+                    select(Warehouse).where(Warehouse.code == representative_warehouse)
+                ).scalar_one_or_none()
+                if warehouse_row is not None:
+                    manifest_batch["warehouse"] = warehouse_facts(warehouse_row)
+            for op_name in manifest_operations:
+                try:
+                    render_operation(definition, op_name, manifest_batch)
+                except ValueError as error:
+                    raise HTTPException(
+                        409,
+                        f"publish refused: rendering operation '{op_name}' against "
+                        f"a manifest of the recent consignments failed: {error}",
+                    ) from error
 
 
 @router.post("/definitions/versions/{version}/publish")
