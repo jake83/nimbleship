@@ -62,6 +62,102 @@ def test_a_minimal_definition_validates() -> None:
     assert step.request.mapping[0].source == "shipment.order_number"
 
 
+_CONFIG_RICH = {
+    "carrier": "acme",
+    "name": "Acme",
+    "auth": {"scheme": "query_key", "param": "key", "secret": "config.api_key"},
+    "operations": {
+        "book": {
+            "allocate": [
+                {"kind": "sscc", "per": "parcel", "prefix": "config.sscc_prefix"}
+            ],
+            "steps": [
+                {
+                    "name": "save",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.base_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"},
+                            {"target": "channel", "source": "config.channel_id"},
+                            {"target": "acct", "const": "fixed"},
+                            {
+                                "target": "lines",
+                                "source": "shipment.parcels",
+                                "each": [
+                                    {"target": "w", "source": "item.weight_kg"},
+                                    {
+                                        "target": "region",
+                                        "source": "config.region_code",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    "response": {
+                        "format": "json",
+                        "extract": [{"name": "tracking_reference", "path": "$.id"}],
+                    },
+                }
+            ],
+        },
+        "manifest": {
+            "steps": [
+                {
+                    "name": "drop",
+                    "transport": "sftp_upload",
+                    "request": {
+                        "url": "config.sftp_dir",
+                        "filename": "{config.account_number}-manifest.xml",
+                        "content_type": "xml",
+                        "root_element": "Manifest",
+                        "mapping": [
+                            {"target": "Carrier", "source": "manifest.carrier"}
+                        ],
+                    },
+                }
+            ],
+        },
+    },
+}
+
+
+def test_referenced_config_keys_collects_from_every_source_position() -> None:
+    definition = CarrierDefinition.model_validate(_CONFIG_RICH)
+
+    assert definition.referenced_config_keys() == {
+        "api_key",  # auth.secret
+        "sscc_prefix",  # allocate prefix
+        "base_url",  # step url
+        "channel_id",  # mapping source
+        "region_code",  # each-inner mapping source
+        "sftp_dir",  # upload step url
+        "account_number",  # filename placeholder
+    }
+
+
+def test_referenced_config_keys_ignores_non_config_sources() -> None:
+    # shipment/warehouse/manifest/item/steps roots and const entries carry no
+    # config requirement - only config.* references do.
+    definition = CarrierDefinition.model_validate(MINIMAL)
+
+    assert definition.referenced_config_keys() == {"api_key", "base_url"}
+
+
+def test_referenced_config_keys_is_empty_for_a_config_free_definition() -> None:
+    dropout = {
+        "carrier": "dropout",
+        "name": "Drop Out",
+        "auth": {"scheme": "none"},
+        "operations": {"book": {"label": {"source": "local_render"}}},
+    }
+    definition = CarrierDefinition.model_validate(dropout)
+
+    assert definition.referenced_config_keys() == set()
+
+
 def test_unknown_transform_is_rejected_at_authoring() -> None:
     bad = {
         **MINIMAL,

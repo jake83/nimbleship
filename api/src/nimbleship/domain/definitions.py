@@ -177,6 +177,26 @@ def carrier_config(session: Session, carrier: str) -> dict[str, object]:
     return row.data if row is not None else {}
 
 
+def missing_config_keys(
+    definition: CarrierDefinition, config_data: dict[str, object]
+) -> list[str]:
+    """The config.* keys a definition references but the config does not
+    provide. Resolved by path so a nested reference (config.credentials.host)
+    checks the whole path, matching how the render engine reads it. Sorted, for
+    a stable publish-refusal message. Unlike the render gate this is history-
+    independent: a carrier with no consignments yet still fails a missing key."""
+    missing: list[str] = []
+    for path in definition.referenced_config_keys():
+        node: object = config_data
+        for segment in path.split("."):
+            if isinstance(node, dict) and segment in node:
+                node = node[segment]
+            else:
+                missing.append(path)
+                break
+    return sorted(missing)
+
+
 def upsert_carrier_config(
     session: Session, carrier: str, data: dict[str, object]
 ) -> None:

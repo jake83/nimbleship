@@ -141,3 +141,33 @@ explain a carrier to a human author. It is not a schema field: the model
 ignores it, it never persists onto `CarrierDefinition`, and nothing at runtime
 may read it. Commentary that must survive belongs in the definition's stored
 provenance, not in a field the schema silently drops.
+
+## Config completeness: reported at save, enforced at publish (amended 2026-07-15)
+
+A definition references per-install account facts as `config.*` sources - the
+auth secret, step urls, filename placeholders, mapping sources and plucks, and
+allocate prefixes. `CarrierDefinition.referenced_config_keys()` enumerates them
+(walking the same positions the source validator does);
+`missing_config_keys(definition, config)` is the subset a stored config does not
+provide, resolved by full path so a nested `config.credentials.host` checks the
+whole path, as the render engine reads it.
+
+Completeness is checked at two moments, deliberately asymmetric:
+
+- **Publish - hard.** `publish_version` refuses a draft whose config omits any
+  referenced key, naming all of them at once. This gate is history-independent,
+  unlike the render gate beside it: the render gate proves each operation renders
+  against recent consignments but passes trivially for a carrier with no history
+  yet, so a missing key would reach production unblocked. The static check closes
+  that gap and gives a clear "config incomplete" refusal rather than the render
+  engine's per-key "no fact at config.X".
+- **Save - soft.** `PUT /config` never blocks; it saves and reports the keys the
+  active definition still needs. Config legitimately precedes its definition (a
+  fresh install is a deploy plus configuration - see CONTEXT.md, Carrier Config),
+  so a hard save-time gate would break the configure-first workflow and has
+  nothing to measure against before a definition is published.
+
+Save measures against the *active* definition only: a draft's new keys are the
+publish gate's business, and the report is early feedback, not a contract.
+Presence, not value, is the test - an empty string satisfies a key, matching how
+the engine resolves a config fact.

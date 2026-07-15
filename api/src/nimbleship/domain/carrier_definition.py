@@ -511,6 +511,16 @@ def _validate_source(
     raise ValueError(f"{where}: unknown source root '{root}'")
 
 
+_CONFIG_PREFIX = "config."
+
+
+def _config_key(source: str, into: set[str]) -> None:
+    # A bare "config" references the whole dict, not a keyed fact, so it carries
+    # no completeness requirement; only "config.<path>" names a required key.
+    if source.startswith(_CONFIG_PREFIX):
+        into.add(source[len(_CONFIG_PREFIX) :])
+
+
 class CarrierDefinition(BaseModel):
     # Extra top-level keys (e.g. a `notes` array) are source-file commentary:
     # ignored here, never persisted onto the model, not a schema field.
@@ -645,6 +655,35 @@ class CarrierDefinition(BaseModel):
                 raise ValueError(f"{where}: {error}") from error
             if entry.each:
                 self._validate_targets(entry.each, where)
+
+    def referenced_config_keys(self) -> set[str]:
+        """Every config.* key this definition references - the config a carrier
+        must supply to book with it. Walks the same source positions the source
+        validator does: the auth secret, each step's url and filename
+        placeholders, its mapping sources and plucks (through each loops), and
+        each operation's allocate prefix."""
+        keys: set[str] = set()
+        if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
+            _config_key(self.auth.secret, keys)
+        for operation in self.operations.values():
+            for spec in operation.allocate:
+                _config_key(spec.prefix, keys)
+            for step in operation.steps:
+                _config_key(step.request.url, keys)
+                if step.request.filename is not None:
+                    for match in FILENAME_PLACEHOLDER.finditer(step.request.filename):
+                        _config_key(match.group(1), keys)
+                for entry in step.request.mapping:
+                    self._collect_config_keys(entry, keys)
+        return keys
+
+    def _collect_config_keys(self, entry: MappingEntry, keys: set[str]) -> None:
+        if entry.source is not None:
+            _config_key(entry.source, keys)
+        if entry.pluck is not None:
+            _config_key(entry.pluck, keys)
+        for inner in entry.each or []:
+            self._collect_config_keys(inner, keys)
 
     def _validate_entry(
         self,
