@@ -577,3 +577,28 @@ def test_an_unconfigured_sscc_prefix_is_a_loud_config_error(
     created = client.post("/api/consignments", json=CONSIGNMENT)
     assert created.status_code == 500
     assert "not configured" in created.text
+
+
+def test_a_duplicate_race_records_the_burned_ssccs(
+    app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import nimbleship.routers.consignments as consignments_module
+
+    _publish_sscc_carrier(client)
+    _sscc_answers(app)
+    # The winner persists the consignment and mints serials 1 and 2.
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 201
+
+    # The loser's pre-check misses the row, so it mints (durably burns) serials
+    # 3 and 4, then the final flush hits the unique constraint. The 409 is
+    # right, but the burned codes must not vanish - they land on the order's
+    # timeline for reconciliation.
+    monkeypatch.setattr(
+        consignments_module, "_order_exists", lambda session, order_number: False
+    )
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 409
+
+    detail = client.get("/api/consignments/95000254580").json()
+    [burn] = [e for e in detail["events"] if e["stage"] == "sscc_burned"]
+    assert burn["detail"]["carrier"] == "ssccarrier"
+    assert burn["detail"]["ssccs"] == [SSCC_3, SSCC_4]

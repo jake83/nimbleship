@@ -172,6 +172,30 @@ def _base64_pdf_label(
     return pdf
 
 
+def _record_sscc_burn(
+    session: Session, order_number: str, carrier: str | None, ssccs: list[str]
+) -> None:
+    """Record SSCCs a losing duplicate submission minted before its 409 rolled
+    the consignment back. The codes are durably burned (halt never reissues),
+    so the event lands on the order's timeline in its own transaction - like the
+    traffic rows - rather than vanishing with the rolled-back request."""
+    if not ssccs:
+        return
+    with Session(session.get_bind()) as event_session:
+        event_session.add(
+            OrderEvent(
+                order_number=order_number,
+                stage="sscc_burned",
+                detail={
+                    "carrier": carrier,
+                    "ssccs": ssccs,
+                    "reason": "duplicate order race",
+                },
+            )
+        )
+        event_session.commit()
+
+
 def _config_key(source: str) -> str:
     # An allocate prefix is a schema-enforced config.* source; the bare key
     # follows the first dot.
@@ -425,6 +449,11 @@ def create_consignment(
     ]
     session.add(consignment)
 
+    # SSCCs minted before the carrier call are durably burned in their own
+    # transaction; if this request then loses a duplicate-order race, they are
+    # spent with no consignment to carry them, so the 409 paths record them.
+    minted_ssccs: list[str] = []
+
     if selected is None:
         session.add(
             OrderEvent(
@@ -483,6 +512,11 @@ def create_consignment(
             with session.no_autoflush:
                 config = carrier_config(session, selected.carrier or "")
             _mint_parcel_allocations(session, consignment, book.allocate, config)
+            minted_ssccs = [
+                parcel.carrier_barcode
+                for parcel in consignment.parcels
+                if parcel.carrier_barcode is not None
+            ]
         outputs: dict[str, object] = {}
         if book.steps:
             outputs = _book_with_carrier(
@@ -518,6 +552,12 @@ def create_consignment(
                         # A duplicate won the row while this one was on the
                         # carrier's line: surface the 409 (like the success
                         # path), not a 500 - the order is the winner's.
+                        _record_sscc_burn(
+                            session,
+                            payload.order_number,
+                            selected.carrier,
+                            minted_ssccs,
+                        )
                         raise HTTPException(
                             409, "a consignment already exists for this order"
                         ) from dup
@@ -548,6 +588,9 @@ def create_consignment(
     except IntegrityError as error:
         # Losing a duplicate race: the unique constraint is the last line of
         # defence behind the _order_exists pre-check (refuter finding, PR #6).
+        _record_sscc_burn(
+            session, payload.order_number, consignment.carrier, minted_ssccs
+        )
         raise HTTPException(
             409, "a consignment already exists for this order"
         ) from error
