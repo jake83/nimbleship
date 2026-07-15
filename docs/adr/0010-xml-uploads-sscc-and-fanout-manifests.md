@@ -74,9 +74,11 @@ cluster):
   in the table as an audit of what was issued. No separate reset action to
   forget, and a spent range cannot be resumed by accident.
 
-SSCC assembly (prefix + zero-padded suffix + check digit) is a
-computed-field plugin, mirroring `AllocatedNumberField`; the mod-10
-algorithm is the only new engine code. A **soft threshold warning**
+SSCC assembly (prefix + zero-padded suffix + check digit) lives in one
+routine, `assemble_sscc`; the mod-10 algorithm is the only new engine code.
+(An initial render-time computed-field-plugin form, mirroring
+`AllocatedNumberField`, was superseded by the dispatch mint below and
+removed.) A **soft threshold warning**
 ("range running low") is emitted as a structured log with a queryable
 remaining-count; delivering it (email/Teams) is deferred to Phase 7
 observability - the dispatch path must not depend on a notification channel.
@@ -89,7 +91,7 @@ the carrier call it mints one SSCC per parcel and stores the assembled code
 on the parcel's `carrier_barcode`; the book render and the fan-out manifest
 then both read it as `item.carrier_barcode`, so one stored value feeds both
 and mint-time and read-time never diverge. `assemble_sscc` is the single
-assembly routine, shared with the computed-field plugin. The schema pins the
+assembly routine. The schema pins the
 block: at most one entry (a parcel has one carrier barcode), `book`-only, a
 `config.*` prefix, and `halt` for `sscc` (a wrapping SSCC would reissue a
 live code). Minting commits in **its own transaction** (like the traffic
@@ -185,7 +187,7 @@ assembles Dachser:
 2. XML upload rendering: `content_type: "xml"`, `root_element`, the
    `@`-attribute convention, repeated elements via `each`.
 3. SSCC: the `halt` allocator policy, prefix-keyed sequences, the GS1
-   check-digit computed-field plugin, remaining-count + threshold log.
+   check-digit assembly routine, remaining-count + threshold log.
 4. Per-consignment (fan-out) manifests in the manifest engine.
 5. The Dachser definition (REST `/labels` book with `base64_pdf` label +
    SSCC; SFTP XML-EDI fan-out manifest) + `base64_pdf` label source.
