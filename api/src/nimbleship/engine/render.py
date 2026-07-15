@@ -180,19 +180,15 @@ def _render_filename(template: str, facts: Facts, for_execution: bool) -> str:
     return FILENAME_PLACEHOLDER.sub(_substitute, template)
 
 
-# A leading one of these makes a spreadsheet read a CSV field as a formula or
-# DDE command when a human opens the carrier's file (CSV injection, OWASP): a
-# recipient name of `=cmd|'/c calc'!A1` would execute on open. Tab and CR are
-# the DDE variants.
+# A leading one of these makes a spreadsheet run a CSV field as a formula or
+# DDE command on open (CSV injection, OWASP).
 _CSV_FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
 
 
 def _neutralise_csv_formula(value: str) -> str:
-    """Prefix a single quote to a field a spreadsheet would run as a formula,
-    so it is shown as literal text. A machine parser reads the quote as data;
-    shipping a live formula for someone at the carrier to open is the hole.
-    This does prefix a legitimate leading-`+`/`-` value (a phone, a negative),
-    which is the accepted trade for closing the injection vector."""
+    """Prefix a quote to a formula-leading field so a spreadsheet shows it as
+    text. The trade: a legitimate leading +/- value (a phone, a negative) is
+    quoted too, accepted to close the vector."""
     return "'" + value if value.startswith(_CSV_FORMULA_LEADERS) else value
 
 
