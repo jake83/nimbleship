@@ -498,12 +498,11 @@ def create_consignment(
                 )
             except HTTPException:
                 if book.steps:
-                    # The carrier call already created the shipment (and
-                    # committed its traffic), so a label we cannot decode must
-                    # not discard the booking: that would leave the shipment at
-                    # the carrier with no local record, and a retry would
-                    # double-book. Persist the consignment with the failure on
-                    # its timeline - a retry POST then 409s - before re-raising.
+                    # The carrier call already created the shipment, so a label
+                    # we cannot decode must not discard the booking: the shipment
+                    # would live at the carrier with no local record, and a retry
+                    # would double-book. Persist it as failed (a retry then 409s)
+                    # before re-raising.
                     consignment.status = "label_failed"
                     session.add(
                         OrderEvent(
@@ -516,10 +515,9 @@ def create_consignment(
                         session.flush()
                         session.commit()
                     except IntegrityError as dup:
-                        # A duplicate submission won the row while this one was
-                        # on the carrier's line: the order is already recorded,
-                        # so surface the 409 (like the success path) rather than
-                        # a 500 - the booking is not lost, it is the winner's.
+                        # A duplicate won the row while this one was on the
+                        # carrier's line: surface the 409 (like the success
+                        # path), not a 500 - the order is the winner's.
                         raise HTTPException(
                             409, "a consignment already exists for this order"
                         ) from dup
