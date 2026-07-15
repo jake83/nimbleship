@@ -1,7 +1,8 @@
 """The Legacy Interface's HTTP surface (ADR 0002): SOAP endpoints the WMS
-posts to, gated by HTTP Basic Auth. Each endpoint parses the dialect, calls
-the same domain operations as the JSON API, and serialises the reply back -
-no business logic of its own."""
+posts to, gated by HTTP Basic Auth. Each endpoint translates the dialect onto
+the domain's shape and serialises the reply back, with no business logic of its
+own. Per ADR 0011 the create and allocate calls stage; only paperwork will call
+the domain core (the same operations the JSON API uses)."""
 
 import secrets
 from typing import Annotated

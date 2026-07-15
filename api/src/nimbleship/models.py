@@ -318,9 +318,8 @@ class LegacyConsignmentStaging(Base):
 
     __tablename__ = "legacy_consignment_staging"
 
-    # The autoincrement id is the source of the iterable consignment code
-    # (NS + zero-padded id) minted at create - a NimbleShip-native handle, not a
-    # MetaPack-style DMC code.
+    # The autoincrement id is the source of the consignment code (see
+    # legacy/staging.py, which owns the format).
     id: Mapped[int] = mapped_column(primary_key=True)
     # Set from the id immediately after insert, so it is null only transiently
     # within the minting transaction; unique holds because SQL does not collide

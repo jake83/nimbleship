@@ -21,6 +21,7 @@ def _create_consignments(request: soap.SoapRequest, session: Session) -> bytes:
     if array is None:
         raise soap.SoapFault("createConsignments: no consignments element")
     staged: list[tuple[str, str, int]] = []
+    seen_orders: set[str] = set()
     for item in array.findall("Item"):
         consignment = request.follow(item)
         data = _consignment_data(request, consignment)
@@ -30,6 +31,16 @@ def _create_consignments(request: soap.SoapRequest, session: Session) -> bytes:
         # "None" key that would collapse distinct shipments together.
         if not isinstance(order_number, str) or not order_number:
             raise soap.SoapFault("createConsignments: a consignment has no orderNumber")
+        # Two items in one batch sharing an order number are distinct shipments
+        # colliding, not an idempotent resend of a whole call; faulted, so the
+        # second does not silently overwrite the first's staging row and reuse
+        # its code.
+        if order_number in seen_orders:
+            raise soap.SoapFault(
+                f"createConsignments: duplicate orderNumber '{order_number}' in "
+                "one batch"
+            )
+        seen_orders.add(order_number)
         parcels = data["parcels"]
         parcel_count = len(parcels) if isinstance(parcels, list) else 0
         code = staging.stage_created(session, data)

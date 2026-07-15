@@ -123,6 +123,76 @@ def test_create_consignments_faults_and_stages_nothing_without_an_order_number(
         assert not list(session.execute(select(LegacyConsignmentStaging)).scalars())
 
 
+_TWO_ITEMS_SAME_ORDER = (
+    b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+    b' xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/"'
+    b' xmlns:tns="urn:DeliveryManager/services">'
+    b"<soap:Body>"
+    b'<tns:createConsignments><consignments href="#id1"/></tns:createConsignments>'
+    b'<soapenc:Array id="id1"><Item href="#id2"/><Item href="#id3"/></soapenc:Array>'
+    b'<q:Consignment id="id2" xmlns:q="urn:DeliveryManager/types">'
+    b"<orderNumber>SAME-ORDER</orderNumber></q:Consignment>"
+    b'<q:Consignment id="id3" xmlns:q="urn:DeliveryManager/types">'
+    b"<orderNumber>SAME-ORDER</orderNumber></q:Consignment>"
+    b"</soap:Body></soap:Envelope>"
+)
+
+
+def test_create_consignments_faults_on_a_duplicate_order_in_one_batch(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # Two items in one batch sharing an order number are distinct shipments
+    # colliding; faulting keeps the second from overwriting the first's row and
+    # handing both the same code. The whole batch rolls back.
+    response = client.post(
+        "/ConsignmentService",
+        content=_TWO_ITEMS_SAME_ORDER,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "duplicate orderNumber" in response.text
+    with app.state.session_factory() as session:
+        assert not list(session.execute(select(LegacyConsignmentStaging)).scalars())
+
+
+def test_malformed_xml_returns_a_soap_fault(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=b"<soap:Envelope><unclosed>",
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "Fault" in response.text
+
+
+def test_a_forbidden_xml_entity_returns_a_soap_fault_not_a_500(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # defusedxml blocks the entity declaration (the XXE/expansion attack class);
+    # the edge must still answer with the dialect's fault, not an unhandled 500.
+    body = (
+        b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e "x">]>'
+        b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+        b"<soap:Body/></soap:Envelope>"
+    )
+
+    response = client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "Fault" in response.text
+
+
 def test_the_edge_rejects_an_oversized_body(
     client: TestClient, wms_auth: tuple[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

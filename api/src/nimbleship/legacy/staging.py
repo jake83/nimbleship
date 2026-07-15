@@ -19,10 +19,7 @@ def _serialise_staging_writes(session: Session) -> None:
 
 
 def _code_for(staging_id: int) -> str:
-    # A NimbleShip-native iterable handle, not a MetaPack DMC code. Minted at
-    # create and echoed back; the WMS reuses it on allocate and paperwork, so a
-    # code only exists once create has run - which is why create precedes
-    # allocate in the lifecycle (ADR 0011).
+    # NimbleShip-native iterable handle, not a MetaPack DMC code (ADR 0011).
     return f"NS{staging_id:07d}"
 
 

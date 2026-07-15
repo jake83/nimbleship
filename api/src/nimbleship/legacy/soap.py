@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import defusedxml.ElementTree as DET
+from defusedxml.common import DefusedXmlException
 
 SOAP_ENV = "http://schemas.xmlsoap.org/soap/envelope/"
 SERVICES = "urn:DeliveryManager/services"
@@ -56,7 +57,14 @@ def parse_request(body: bytes) -> SoapRequest:
     try:
         root: ET.Element = DET.fromstring(body)
     except ET.ParseError as error:
-        raise SoapFault(f"malformed XML: {error}") from error
+        # The message is not echoed: a parse error can carry a fragment of the
+        # untrusted input.
+        raise SoapFault("malformed XML") from error
+    except DefusedXmlException as error:
+        # defusedxml raises this (not ParseError) for a DOCTYPE, entity, or
+        # external reference - the attacks it blocks. Turn it into a fault too,
+        # so the security path returns the dialect's error shape, not a 500.
+        raise SoapFault("forbidden XML construct") from error
     body_el = root.find(_BODY)
     if body_el is None:
         raise SoapFault("no SOAP Body")
