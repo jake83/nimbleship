@@ -567,6 +567,33 @@ def test_a_render_failure_at_booking_is_a_502_after_minting_not_an_uncaught_500(
     assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_1, SSCC_2]
 
 
+def test_a_render_failure_losing_a_duplicate_race_409s_not_500(
+    app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import nimbleship.routers.consignments as consignments_module
+
+    bad = copy.deepcopy(SSCC_DEFINITION)
+    mapping = bad["operations"]["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
+    mapping.append({"target": "phantom", "source": "shipment.nonexistent_field"})
+    _publish_sscc_carrier(client, definition=bad)
+    _sscc_answers(app)
+
+    # A first booking render-fails and persists the booking_failed row.
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 502
+
+    # A racing duplicate whose render also fails: the pre-check misses the
+    # committed row, minting commits, render raises - now routed through the
+    # CarrierCallError channel - and the booking_failed commit hits the unique
+    # constraint. It must 409, not 500. This is the last uncaught-500 path the
+    # render guard leaves open on its own: closed only together with the
+    # booking_failed commit guard.
+    monkeypatch.setattr(
+        consignments_module, "_order_exists", lambda session, order_number: False
+    )
+
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 409
+
+
 def test_the_book_request_carries_the_minted_ssccs(
     app: FastAPI, client: TestClient
 ) -> None:
