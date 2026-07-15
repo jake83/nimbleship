@@ -27,13 +27,23 @@ _DROPOUT_DEFINITION: dict[str, object] = {
     },
 }
 
-# Key registered in the advisory-lock list in nimbleship/db.py.
+# Keys registered in the advisory-lock list in nimbleship/db.py.
 _DEFINITIONS_LOCK_KEY = 815_005
+_CONFIG_LOCK_KEY = 815_007
+
+
+def _advisory_xact_lock(session: Session, key: int) -> None:
+    # Serialises writers on Postgres (the production engine): held to the end of
+    # the transaction, so a read-modify-write under it cannot interleave with a
+    # concurrent one. A no-op on SQLite, which backs only single-writer dev and
+    # the tests - so the lock's effect is proven against Postgres
+    # (test_postgres_integration.py), never inferred from SQLite.
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(select(func.pg_advisory_xact_lock(key)))
 
 
 def _serialise_definition_writes(session: Session) -> None:
-    if session.get_bind().dialect.name == "postgresql":
-        session.execute(select(func.pg_advisory_xact_lock(_DEFINITIONS_LOCK_KEY)))
+    _advisory_xact_lock(session, _DEFINITIONS_LOCK_KEY)
 
 
 def _seed_dropout_if_fresh(session: Session) -> None:
@@ -209,9 +219,32 @@ def missing_config_keys(
 def upsert_carrier_config(
     session: Session, carrier: str, data: dict[str, object]
 ) -> None:
+    # Serialised against the merge below: a PUT racing a PATCH must not let the
+    # merge write back a snapshot that predates the replace.
+    _advisory_xact_lock(session, _CONFIG_LOCK_KEY)
     row = session.get(CarrierConfig, carrier)
     if row is None:
         session.add(CarrierConfig(carrier=carrier, data=data))
     else:
         row.data = data
     session.flush()
+
+
+def merge_carrier_config(
+    session: Session, carrier: str, patch: dict[str, object]
+) -> dict[str, object]:
+    """Shallow-merges patch into the stored config: a patch value wins, an
+    omitted top-level key survives. Nested values are replaced wholesale, not
+    deep-merged."""
+    # A read-modify-write, so lock first: two concurrent merges would otherwise
+    # each read the same row and the last commit would silently lose the other's
+    # key - the clobber this endpoint exists to prevent.
+    _advisory_xact_lock(session, _CONFIG_LOCK_KEY)
+    row = session.get(CarrierConfig, carrier)
+    merged = {**row.data, **patch} if row is not None else dict(patch)
+    if row is None:
+        session.add(CarrierConfig(carrier=carrier, data=merged))
+    else:
+        row.data = merged
+    session.flush()
+    return merged

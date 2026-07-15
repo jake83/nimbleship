@@ -6,7 +6,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from nimbleship.models import CarrierDefinitionVersion, Consignment, Warehouse
+from nimbleship.models import (
+    CarrierConfig,
+    CarrierDefinitionVersion,
+    Consignment,
+    Warehouse,
+)
 
 TEST_CARRIER_DEFINITION = {
     "carrier": "testcarrier",
@@ -522,6 +527,55 @@ def test_put_config_reports_nothing_missing_without_an_active_definition(
 
     assert response.status_code == 200
     assert response.json()["missing"] == []
+
+
+def test_patch_config_merges_keeping_keys_the_payload_omits(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The live definition needs api_key and base_url. Rotating just api_key via
+    # PATCH must overwrite it and keep base_url - a PUT would replace the row and
+    # drop base_url. Asserting the stored row pins both the new value and the
+    # survivor (the missing report alone can't tell an update from a no-op).
+    _publish_v1_with_config(client)
+
+    response = client.patch("/api/carriers/testcarrier/config", json={"api_key": "K-2"})
+
+    assert response.status_code == 200
+    assert response.json()["missing"] == []
+    with app.state.session_factory() as session:
+        stored = session.get(CarrierConfig, "testcarrier")
+        assert stored is not None
+        assert stored.data == {
+            "api_key": "K-2",
+            "base_url": "https://api.test.example",
+        }
+
+
+def test_patch_config_creates_the_config_when_none_exists(
+    client: TestClient,
+) -> None:
+    response = client.patch("/api/carriers/newcarrier/config", json={"api_key": "K-1"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "carrier": "newcarrier",
+        "status": "saved",
+        "missing": [],
+    }
+
+
+def test_patch_config_reports_keys_still_missing_after_the_merge(
+    client: TestClient,
+) -> None:
+    # A partial patch that does not complete the config still reports what the
+    # active definition lacks, measured against the merged result.
+    _publish_v1_with_config(client)
+    client.put("/api/carriers/testcarrier/config", json={})
+
+    response = client.patch("/api/carriers/testcarrier/config", json={"api_key": "K-1"})
+
+    assert response.status_code == 200
+    assert response.json()["missing"] == ["base_url"]
 
 
 def _add_history(app: FastAPI, order_number: str, carrier: str) -> None:
