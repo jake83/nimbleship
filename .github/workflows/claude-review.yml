@@ -14,7 +14,12 @@ concurrency:
 jobs:
   reviewer:
     name: Reviewer
-    if: '!github.event.pull_request.draft'
+    # A `trivial` label skips the adversarial pass: comment/docstring/cosmetic
+    # PRs get a local code-review instead (see CLAUDE.md's development loop).
+    # ci.yml (lint/type/test/build) still runs on every PR regardless.
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && !contains(github.event.pull_request.labels.*.name, 'trivial') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,7 +67,12 @@ jobs:
 
   refuter:
     name: Refuter
-    if: '!github.event.pull_request.draft'
+    # A `trivial` label skips the adversarial pass: comment/docstring/cosmetic
+    # PRs get a local code-review instead (see CLAUDE.md's development loop).
+    # ci.yml (lint/type/test/build) still runs on every PR regardless.
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && !contains(github.event.pull_request.labels.*.name, 'trivial') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
