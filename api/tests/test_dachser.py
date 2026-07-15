@@ -204,10 +204,12 @@ def _seed_dachser_manifest(app: FastAPI) -> int:
                 service="DACHSER-RD",
                 allocation={},
             )
+            # Distinct per-parcel weights so the manifest test can catch a
+            # per-item rendering bug that collapses them to one value.
             consignment.parcels = [
                 Parcel(
                     sequence=i + 1,
-                    weight_kg="22.50",
+                    weight_kg=("22.50", "3.10")[i],
                     barcode=f"{order}-{i + 1}",
                     carrier_barcode=sscc,
                 )
@@ -282,13 +284,18 @@ def test_dachser_fan_out_manifest_is_one_xml_per_order_carrying_the_ssccs(
     )
     assert text_at(header, "Division") == DACHSER_CONFIG["division"]
 
-    # One ShipmentLine per parcel, each carrying its gross weight.
+    # One ShipmentLine per parcel, each carrying its OWN gross weight - the two
+    # fixture parcels have distinct weights so a per-item rendering bug that
+    # collapsed them to one value would fail here.
     lines = header.findall("ShipmentLine")
     assert len(lines) == 2
-    weight = lines[0].find("Measurements/Weight")
-    assert weight is not None and weight.get("Code") == "GRO"
-    assert text_at(weight, "Measurement/Value") == "22.50"
-    assert text_at(weight, "Measurement/Unit") == "KGM"
+    for line in lines:
+        weight = line.find("Measurements/Weight")
+        assert weight is not None and weight.get("Code") == "GRO"
+        assert text_at(weight, "Measurement/Unit") == "KGM"
+    assert [
+        text_at(line, "Measurements/Weight/Measurement/Value") for line in lines
+    ] == ["22.50", "3.10"]
 
     # One PackageIdentification per parcel carrying its minted SSCC - the point
     # of fanning out per order.
