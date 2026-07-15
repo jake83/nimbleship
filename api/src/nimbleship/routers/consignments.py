@@ -293,11 +293,19 @@ def _book_with_carrier(
                 detail={"carrier": consignment.carrier, "error": str(error)},
             )
         )
-        session.flush()
         # Commit explicitly: raising unwinds the session dependency before
         # its normal commit, and a failure's timeline must survive the 502
         # (the traffic already committed in its own transaction above).
-        session.commit()
+        try:
+            session.flush()
+            session.commit()
+        except IntegrityError as dup:
+            # A duplicate won the row while this one was on the carrier's line:
+            # surface the 409 (like the success path), not a 500 - the order is
+            # the winner's.
+            raise HTTPException(
+                409, "a consignment already exists for this order"
+            ) from dup
         raise HTTPException(502, str(error)) from error
 
     # The extraction names "tracking_reference" and "barcodes" are the

@@ -187,6 +187,33 @@ def test_a_failed_carrier_call_is_a_502_with_the_carrier_message(
         assert consignment.status == "booking_failed"
 
 
+def test_a_carrier_failure_losing_a_duplicate_race_409s_not_500(
+    app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import nimbleship.routers.consignments as consignments_module
+
+    _publish_furdeco(client)
+    # A first booking persists the consignment for this order.
+    _carrier_answers(app, lambda request: httpx.Response(200, text=BOOKING_RESPONSE))
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 201
+
+    # A racing duplicate whose carrier call fails: the pre-check misses the
+    # committed row, the call errors (CarrierCallError), and the booking_failed
+    # commit hits the unique constraint. It must 409, not 500.
+    _carrier_answers(app, lambda request: httpx.Response(200, text=ERROR_RESPONSE))
+    monkeypatch.setattr(
+        consignments_module, "_order_exists", lambda session, order_number: False
+    )
+
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 409
+
+    # The loser's call really reached the carrier, so its traffic survives the
+    # 409 (committed in its own transaction): both the winner's and loser's
+    # rows persist.
+    with app.state.session_factory() as session:
+        assert len(session.execute(select(CarrierTraffic)).scalars().all()) == 2
+
+
 def test_extra_carrier_barcodes_are_kept_in_the_booked_event(
     app: FastAPI, client: TestClient
 ) -> None:
