@@ -587,11 +587,13 @@ def test_the_active_endpoint_loads_a_stored_definition_leniently(
     assert response.json()["version"] == 1
 
 
-def test_golden_replay_survives_a_leniently_loadable_active_definition(
+def test_golden_replay_refuses_a_stale_active_definition(
     app: FastAPI, client: TestClient
 ) -> None:
-    # Replay loads the active baseline the lenient way booking does, so a
-    # published def that breaks a since-tightened rule does not 500 at load.
+    # An active def that breaks a since-tightened rule loads (booking must not
+    # strand), but replay diffs against it as a baseline - a stale one renders
+    # unresolvable references as placeholders, so replay flags it with a clean
+    # 409 rather than 500ing at load or diffing garbage.
     with app.state.session_factory() as session:
         session.add(
             CarrierDefinitionVersion(
@@ -635,4 +637,77 @@ def test_golden_replay_survives_a_leniently_loadable_active_definition(
         json={},
     )
 
-    assert replay.status_code == 200
+    assert replay.status_code == 409
+    assert "no longer valid" in replay.text
+
+
+# step 1 declares output `real_ref`; a two-step book op where step 2 reads it.
+_STEP1: dict[str, object] = {
+    "name": "step1",
+    "transport": "http",
+    "request": {
+        "method": "POST",
+        "url": "config.url",
+        "content_type": "json",
+        "mapping": [{"target": "o", "source": "shipment.order_number"}],
+    },
+    "response": {"format": "json", "extract": [{"name": "real_ref", "path": "id"}]},
+}
+
+
+def _stepcarrier_def(step2_source: str) -> dict[str, object]:
+    return {
+        "carrier": "stepcarrier",
+        "name": "Step Carrier",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    _STEP1,
+                    {
+                        "name": "step2",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.url",
+                            "content_type": "json",
+                            "mapping": [{"target": "r", "source": step2_source}],
+                        },
+                    },
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+
+
+def test_golden_replay_refuses_an_active_with_an_unknown_step_output(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The placeholder case #60 names: step 2 references an output step 1 does
+    # not declare. A tightened rule rejects it, but lenient load lets it through
+    # and it renders offline as a placeholder token, not an error - so replay
+    # must flag the active (409), not diff the placeholder.
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="stepcarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=_stepcarrier_def("steps.step1.typoed_ref"),
+            )
+        )
+        session.commit()
+    draft = client.post(
+        "/api/carriers/stepcarrier/definitions/drafts",
+        json={"author": "jake", "definition": _stepcarrier_def("steps.step1.real_ref")},
+    ).json()
+
+    replay = client.post(
+        f"/api/carriers/stepcarrier/definitions/versions/{draft['version']}/replay",
+        json={},
+    )
+
+    assert replay.status_code == 409
+    assert "no longer valid" in replay.text

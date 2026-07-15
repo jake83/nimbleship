@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -274,8 +274,18 @@ def golden_replay(
     active_row = active_definition_row(session, carrier)
     if active_row is None:
         raise HTTPException(409, "no active definition to replay against")
-    # The active is a published baseline, loaded as booking loads it; the draft
-    # stays strict - it is the thing being authored.
+    # Booking loads the active leniently so a since-tightened rule never strands
+    # a live carrier, but replay must not diff against a stale baseline: an
+    # unresolvable reference renders offline as a placeholder token, so every
+    # diff would be noise. Flag staleness up front rather than diff garbage.
+    try:
+        CarrierDefinition.model_validate(active_row.data)
+    except ValidationError as error:
+        raise HTTPException(
+            409,
+            f"active definition version {active_row.version} is no longer valid "
+            "under current rules; republish it before replaying",
+        ) from error
     active = CarrierDefinition.load(active_row.data)
     config = carrier_config(session, carrier)
 
