@@ -100,11 +100,9 @@ def allocate_number(
     `reorder_threshold` is set, a structured warning is logged once the
     remaining count reaches it.
 
-    A range's `policy` and `wrap_after` are stored on its row at creation: a
-    later `policy` switch, or a `wrap_after` that shrinks the bound, is refused,
-    so an exhausted `halt` range can never be reissued by a stray `wrap` call,
-    nor a live range wrapped early by a narrowed bound. Widening `wrap_after`
-    (more capacity) is allowed and adopted.
+    `policy` and `wrap_after` are fixed on the row at creation: a later policy
+    switch, or a shrinking `wrap_after`, is refused - an exhausted halt range
+    must never be reissued, nor a live range wrapped early. Widening is allowed.
 
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
@@ -154,10 +152,8 @@ def allocate_number(
             f"number range '{name}' for carrier '{carrier}' was created with "
             f"policy '{stored_policy}', not '{policy}'"
         )
-    # Shrinking the bound is refused: numbers already issued beyond the smaller
-    # ceiling would be wrapped early and reissued. Widening is safe - the live
-    # counter is still under the larger ceiling - and adopts the new bound on
-    # this allocation (the UPDATE below stores it).
+    # Shrinking is refused: numbers issued beyond the smaller ceiling would
+    # wrap early and reissue. Widening is safe and adopts the new bound.
     if stored_wrap_after is not None and stored_wrap_after > wrap_after:
         raise ValueError(
             f"number range '{name}' for carrier '{carrier}' cannot shrink from "
@@ -176,9 +172,8 @@ def allocate_number(
         claimed_value = current
         following = current + 1
     elif current > wrap_after:
-        # A legacy null-bound row whose counter sits beyond the bound (a
-        # reduced wrap_after): wrap now rather than hand out an out-of-range
-        # number, which a stored bound would otherwise have refused above.
+        # A counter already past the bound (a legacy null-bound row, or a fresh
+        # small range) wraps to 1 rather than issue an out-of-range number.
         claimed_value = 1
         following = 2
     else:
