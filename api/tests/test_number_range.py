@@ -122,18 +122,24 @@ def test_a_legacy_row_without_a_policy_backfills_on_allocation(
     assert row is not None and row.policy == "wrap"
 
 
-def test_a_ranges_wrap_after_is_stored_and_a_later_change_is_refused(
+def test_a_range_cannot_shrink_its_wrap_after_but_can_widen_it(
     session: Session,
 ) -> None:
     allocate_number(session, "palletforce", "c", wrap_after=100, policy="wrap")
-    # The bound is fixed on the row at creation.
+    # The bound is stored on the row at creation.
     row = session.get(CarrierNumberSequence, ("palletforce", "c"))
     assert row is not None and row.wrap_after == 100
 
-    # A later call with a different bound is refused, so a live range is never
-    # wrapped early or issued an out-of-range number by a changed bound.
-    with pytest.raises(ValueError, match="created with wrap_after 100"):
+    # Shrinking is refused: numbers already issued beyond the smaller bound
+    # would be wrapped early and reissued.
+    with pytest.raises(ValueError, match="cannot shrink"):
         allocate_number(session, "palletforce", "c", wrap_after=50, policy="wrap")
+
+    # Widening is safe (the live counter is still under the larger ceiling) and
+    # adopts the new bound.
+    assert allocate_number(session, "palletforce", "c", wrap_after=200) == "2"
+    row = session.get(CarrierNumberSequence, ("palletforce", "c"))
+    assert row is not None and row.wrap_after == 200
 
 
 def test_a_wrap_range_never_issues_an_out_of_range_legacy_counter(

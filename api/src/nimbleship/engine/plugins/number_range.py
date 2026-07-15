@@ -101,9 +101,10 @@ def allocate_number(
     remaining count reaches it.
 
     A range's `policy` and `wrap_after` are stored on its row at creation: a
-    later call with a different value is refused, so an exhausted `halt` range
-    can never be reissued by a stray `wrap` call, nor a live range wrapped
-    early by a changed bound.
+    later `policy` switch, or a `wrap_after` that shrinks the bound, is refused,
+    so an exhausted `halt` range can never be reissued by a stray `wrap` call,
+    nor a live range wrapped early by a narrowed bound. Widening `wrap_after`
+    (more capacity) is allowed and adopted.
 
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
@@ -153,13 +154,15 @@ def allocate_number(
             f"number range '{name}' for carrier '{carrier}' was created with "
             f"policy '{stored_policy}', not '{policy}'"
         )
-    # wrap_after is fixed the same way: a changed bound would wrap a live range
-    # early or (for a legacy null-bound row) issue an out-of-range number, so a
-    # mismatch is refused rather than silently applied.
-    if stored_wrap_after is not None and stored_wrap_after != wrap_after:
+    # Shrinking the bound is refused: numbers already issued beyond the smaller
+    # ceiling would be wrapped early and reissued. Widening is safe - the live
+    # counter is still under the larger ceiling - and adopts the new bound on
+    # this allocation (the UPDATE below stores it).
+    if stored_wrap_after is not None and stored_wrap_after > wrap_after:
         raise ValueError(
-            f"number range '{name}' for carrier '{carrier}' was created with "
-            f"wrap_after {stored_wrap_after}, not {wrap_after}"
+            f"number range '{name}' for carrier '{carrier}' cannot shrink from "
+            f"wrap_after {stored_wrap_after} to {wrap_after}: numbers already "
+            "issued beyond the new bound would be reissued"
         )
     if policy == "halt":
         # `current` is the value about to be claimed and `wrap_after` the last
