@@ -408,12 +408,101 @@ _FAN_OUT_MANIFEST = {
 }
 
 
+_BATCH_MANIFEST = {
+    "steps": [
+        {
+            "name": "declare",
+            "transport": "http",
+            "request": {
+                "method": "POST",
+                "url": "config.base_url",
+                "content_type": "json",
+                "mapping": [{"target": "count", "source": "manifest.nope"}],
+            },
+        }
+    ],
+}
+
+
+def test_the_publish_gate_renders_a_batch_manifest(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A non-fan-out manifest renders once from a synthesized manifest of the
+    # recent consignments, so the gate covers it too: a broken manifest.* source
+    # - valid at draft (roots only) - is caught here, not first at trailer-close.
+    _publish_v1_with_config(client)
+    _add_history(app, "95000254580", "testcarrier")
+
+    broken = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": _BATCH_MANIFEST,
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": broken},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "'manifest'" in response.text
+    assert "manifest.nope" in response.text
+
+
+def test_the_publish_gate_supplies_warehouse_facts_to_a_batch_manifest(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A batch manifest may reference warehouse.*; the gate renders only if it
+    # supplies a representative warehouse's facts (the first recent consignment
+    # that has one), so a valid warehouse-referencing manifest publishes.
+    _publish_v1_with_config(client)
+    _add_warehoused_history(app, "W-00001", "testcarrier", "DEPOT1")
+
+    with_depot_manifest = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": {
+                "steps": [
+                    {
+                        "name": "declare",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "depot", "source": "warehouse.code"}
+                            ],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": with_depot_manifest},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 200
+
+
 def test_the_publish_gate_renders_a_fan_out_manifest(
     app: FastAPI, client: TestClient
 ) -> None:
-    # A fan-out manifest renders per consignment, so the gate covers it (a
-    # batch manifest is skipped): its broken shipment source - which validates
-    # at draft time, roots only - is caught here at publish.
+    # A fan-out manifest renders per consignment, so the gate covers it like a
+    # book op: its broken shipment source - which validates at draft time, roots
+    # only - is caught here at publish.
     _publish_v1_with_config(client)
     client.put(
         "/api/carriers/testcarrier/config",

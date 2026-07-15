@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from nimbleship.db import get_session
 from nimbleship.domain.carrier_definition import (
     FACT_ROOTS,
+    MANIFEST_FACT_ROOTS,
     CarrierDefinition,
     operation_fact_roots,
 )
@@ -22,13 +23,18 @@ from nimbleship.domain.definitions import (
     publish,
     upsert_carrier_config,
 )
-from nimbleship.domain.facts import shipment_facts, warehouse_facts
+from nimbleship.domain.facts import manifest_facts, shipment_facts, warehouse_facts
 from nimbleship.engine.render import (
     RenderedStep,
     RenderedUpload,
     render_operation,
 )
-from nimbleship.models import CarrierDefinitionVersion, Consignment, Warehouse
+from nimbleship.models import (
+    CarrierDefinitionVersion,
+    Consignment,
+    Manifest,
+    Warehouse,
+)
 
 router = APIRouter(prefix="/carriers/{carrier}", tags=["definitions"])
 
@@ -133,8 +139,9 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
     """ADR 0009's publish gate: renders must succeed (diffs are the
     author's business; render errors are not) against recent consignments,
     for every declared operation - a broken track or cancel mapping must
-    not publish behind a healthy book. Zero history passes trivially -
-    there is nothing to render."""
+    not publish behind a healthy book. Shipment-context operations gate per
+    consignment; a non-fan-out manifest gates once against a synthesized
+    manifest of them. Zero history passes trivially - nothing to render."""
     if not definition.operations:
         return
     config = carrier_config(session, carrier)
@@ -148,11 +155,9 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
         .scalars()
         .all()
     )
-    # A manifest operation without fan_out renders from a synthetic manifest
-    # over many consignments, not one shipment, so shipment facts cannot gate
-    # it; rendering it offline needs manifest facts and is a tracked follow-up.
     # A fan-out manifest renders per consignment from shipment.* facts, so it
-    # gates like a book operation.
+    # gates like a book operation here; a non-fan-out manifest renders once from
+    # the whole batch and gates separately, below.
     shipment_operations = [
         op_name
         for op_name, operation in definition.operations.items()
@@ -187,6 +192,42 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
                     409,
                     f"publish refused: rendering operation '{op_name}' "
                     f"against order {consignment.order_number} failed: {error}",
+                ) from error
+
+    # A non-fan-out manifest renders once from a synthesized manifest over the
+    # batch, so gate it against manifest facts built as send_manifest builds
+    # them - a broken manifest.* mapping is caught here, not at trailer-close.
+    manifest_operations = [
+        op_name
+        for op_name, operation in definition.operations.items()
+        if operation_fact_roots(op_name, operation.fan_out) == MANIFEST_FACT_ROOTS
+    ]
+    if manifest_operations and recent:
+        # A manifest is single-warehouse (one per carrier and warehouse), so a
+        # representative warehouse stands in - the first recent consignment that
+        # has one, so a warehouse-referencing manifest still renders.
+        representative_warehouse = next(
+            (c.warehouse for c in recent if c.warehouse is not None), None
+        )
+        synthetic = Manifest(
+            carrier=carrier,
+            warehouse=representative_warehouse,
+            created_at=datetime.now(UTC),
+        )
+        manifest_batch: dict[str, object] = {
+            "manifest": manifest_facts(synthetic, list(recent)),
+            "config": config,
+        }
+        if synthetic.warehouse in warehouses:
+            manifest_batch["warehouse"] = warehouses[synthetic.warehouse]
+        for op_name in manifest_operations:
+            try:
+                render_operation(definition, op_name, manifest_batch)
+            except ValueError as error:
+                raise HTTPException(
+                    409,
+                    f"publish refused: rendering operation '{op_name}' against a "
+                    f"manifest of the recent consignments failed: {error}",
                 ) from error
 
 
