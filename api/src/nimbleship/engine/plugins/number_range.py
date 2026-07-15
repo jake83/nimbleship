@@ -100,9 +100,11 @@ def allocate_number(
     `reorder_threshold` is set, a structured warning is logged once the
     remaining count reaches it.
 
-    `policy` and `wrap_after` are fixed on the row at creation: a later policy
-    switch, or a shrinking `wrap_after`, is refused - an exhausted halt range
-    must never be reissued, nor a live range wrapped early. Widening is allowed.
+    `policy` is fixed on the row at creation and a later switch is refused. A
+    `wrap` range's `wrap_after` may grow but never shrink (numbers issued beyond
+    a smaller ceiling would wrap early and reissue). A `halt` range's capacity is
+    fixed entirely: ANY `wrap_after` change is refused, since a halt range must
+    stop at its original bound forever - if exhausted, provision a new range.
 
     Same hardening shape as the definition rails' publish: Postgres
     serialises allocators on an advisory lock, and the guarded UPDATE is
@@ -152,14 +154,26 @@ def allocate_number(
             f"number range '{name}' for carrier '{carrier}' was created with "
             f"policy '{stored_policy}', not '{policy}'"
         )
-    # Shrinking is refused: numbers issued beyond the smaller ceiling would
-    # wrap early and reissue. Widening is safe and adopts the new bound.
-    if stored_wrap_after is not None and stored_wrap_after > wrap_after:
-        raise ValueError(
-            f"number range '{name}' for carrier '{carrier}' cannot shrink from "
-            f"wrap_after {stored_wrap_after} to {wrap_after}: numbers already "
-            "issued beyond the new bound would be reissued"
-        )
+    if stored_wrap_after is not None and stored_wrap_after != wrap_after:
+        if policy == "halt":
+            # A halt range's capacity is fixed at creation: widening would
+            # extend a range promised to stop (the exhaustion check below trusts
+            # the stored bound only if it is never moved), and shrinking would
+            # strand it early. Refuse any change; an exhausted halt range needs
+            # a new range, which for SSCC is a config prefix change.
+            raise ValueError(
+                f"number range '{name}' for carrier '{carrier}' is halt with a "
+                f"fixed capacity of {stored_wrap_after}: it cannot change to "
+                f"{wrap_after} - provision a new range instead"
+            )
+        # A wrap range may grow its ceiling but not shrink it: numbers issued
+        # beyond a smaller ceiling would wrap early and reissue.
+        if stored_wrap_after > wrap_after:
+            raise ValueError(
+                f"number range '{name}' for carrier '{carrier}' cannot shrink from "
+                f"wrap_after {stored_wrap_after} to {wrap_after}: numbers already "
+                "issued beyond the new bound would be reissued"
+            )
     if policy == "halt":
         # `current` is the value about to be claimed and `wrap_after` the last
         # claimable one, so the counter only passes it after the last value was
@@ -172,8 +186,10 @@ def allocate_number(
         claimed_value = current
         following = current + 1
     elif current > wrap_after:
-        # A counter already past the bound (a legacy null-bound row, or a fresh
-        # small range) wraps to 1 rather than issue an out-of-range number.
+        # A counter already past its bound wraps to 1 rather than issue an
+        # out-of-range number. A standing guard, not a one-time backfill: a
+        # fresh small range (wrap_after 1) reaches it as readily as a legacy row
+        # that predates the bound column.
         claimed_value = 1
         following = 2
     else:
