@@ -180,6 +180,18 @@ def _render_filename(template: str, facts: Facts, for_execution: bool) -> str:
     return FILENAME_PLACEHOLDER.sub(_substitute, template)
 
 
+# A leading one of these makes a spreadsheet run a CSV field as a formula or
+# DDE command on open (CSV injection, OWASP).
+_CSV_FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralise_csv_formula(value: str) -> str:
+    """Prefix a quote to a formula-leading field so a spreadsheet shows it as
+    text. The trade: a legitimate leading +/- value (a phone, a negative) is
+    quoted too, accepted to close the vector."""
+    return "'" + value if value.startswith(_CSV_FORMULA_LEADERS) else value
+
+
 def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) -> str:
     """One RFC 4180 row: comma-delimited, minimal quoting, CRLF-terminated -
     the format the receiving carriers require. Rendered from the mapping
@@ -193,7 +205,7 @@ def _render_csv(entries: list[MappingEntry], facts: Facts, for_execution: bool) 
                 f"csv field '{entry.target}' rendered a {type(value).__name__}, "
                 "not a scalar"
             )
-        row.append("" if value is None else str(value))
+        row.append("" if value is None else _neutralise_csv_formula(str(value)))
     buffer = io.StringIO()
     csv.writer(buffer).writerow(row)
     return buffer.getvalue()

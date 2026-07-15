@@ -181,6 +181,40 @@ def test_csv_content_is_one_ordered_row_rfc4180_quoted() -> None:
     )
 
 
+def test_csv_neutralises_a_formula_injection_field() -> None:
+    # A recipient name a spreadsheet would execute as a formula is prefixed
+    # with a quote so the carrier's file shows it as literal text.
+    facts = {
+        "shipment": {
+            "order_number": "95000254580",
+            "recipient_name": "=cmd|'/c calc'!A1",
+            "address_lines": ["10 Downing Street", "London"],
+        },
+        "warehouse": {"code": "L2"},
+        "config": {"account_code": "LIM2", "ftp_remote_dir": "/outbound"},
+    }
+
+    [rendered] = render_operation(UPLOAD_DEFINITION, "book", facts)
+
+    assert isinstance(rendered, RenderedUpload)
+    # The field is prefixed with a quote so a spreadsheet shows it as text; the
+    # payload has no comma, so csv adds no quoting of its own.
+    assert ",'=cmd|'/c calc'!A1," in rendered.content
+    # No field is left starting with a bare formula character.
+    assert not any(field.startswith("=") for field in rendered.content.split(","))
+
+
+def test_csv_leaves_an_ordinary_field_untouched() -> None:
+    [rendered] = render_operation(UPLOAD_DEFINITION, "book", UPLOAD_FACTS)
+
+    assert isinstance(rendered, RenderedUpload)
+    # No leading formula character, so no quote is added (regression guard for
+    # the neutraliser over-triggering).
+    assert rendered.content == (
+        'LIM2,DMC95000254580,John Doe,"10 Downing Street, London"\r\n'
+    )
+
+
 def test_upload_render_is_deterministic_and_secret_free() -> None:
     first = render_operation(UPLOAD_DEFINITION, "book", UPLOAD_FACTS)
     second = render_operation(UPLOAD_DEFINITION, "book", UPLOAD_FACTS)
