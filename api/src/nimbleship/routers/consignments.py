@@ -492,9 +492,38 @@ def create_consignment(
             # The carrier returned the label as a base64 PDF in its book
             # response; the extraction the label names carries it.
             assert label_spec.from_extract is not None  # schema-guaranteed
-            pdf = _base64_pdf_label(
-                outputs, label_spec.from_extract, selected.carrier or ""
-            )
+            try:
+                pdf = _base64_pdf_label(
+                    outputs, label_spec.from_extract, selected.carrier or ""
+                )
+            except HTTPException:
+                if book.steps:
+                    # The carrier call already created the shipment (and
+                    # committed its traffic), so a label we cannot decode must
+                    # not discard the booking: that would leave the shipment at
+                    # the carrier with no local record, and a retry would
+                    # double-book. Persist the consignment with the failure on
+                    # its timeline - a retry POST then 409s - before re-raising.
+                    consignment.status = "label_failed"
+                    session.add(
+                        OrderEvent(
+                            order_number=payload.order_number,
+                            stage="label_failed",
+                            detail={"carrier": selected.carrier},
+                        )
+                    )
+                    try:
+                        session.flush()
+                        session.commit()
+                    except IntegrityError as dup:
+                        # A duplicate submission won the row while this one was
+                        # on the carrier's line: the order is already recorded,
+                        # so surface the 409 (like the success path) rather than
+                        # a 500 - the booking is not lost, it is the winner's.
+                        raise HTTPException(
+                            409, "a consignment already exists for this order"
+                        ) from dup
+                raise
         else:
             pdf = render_labels(
                 LabelRequest(
