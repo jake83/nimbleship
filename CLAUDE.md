@@ -125,18 +125,24 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      settled or needs a human call, do not merge; ask. No GitHub review
      approval exists on a solo repo, so the squash-merge commit itself
      records the sign-off, with the wrap-up comment as its rationale.
-     Auto-merge (owner-granted 2026-07-15) for the LOW-STAKES class only: a PR
-     whose every change is test-only or non-governance documentation (never
-     CLAUDE.md, CONTEXT.md, an ADR, or any source) may be queued for GitHub
-     auto-merge at creation - `gh pr merge <n> --auto --squash` - so it lands
-     hands-off the moment the required CI checks pass, without waiting on a
-     triage read. The AI review still runs; a finding it posts after the merge
-     rides a follow-up PR (acceptable for this class). Everything else keeps
-     the read-then-merge flow above: green checks alone never justify a merge,
+   - **Low-stakes auto-merge** (owner-granted 2026-07-15): a PR whose every
+     change is test-only or non-governance documentation - never source,
+     schema, an API contract, CLAUDE.md, CONTEXT.md, an ADR, or
+     docs/ROADMAP.md - may be queued for GitHub auto-merge at creation
+     (`gh pr merge <n> --auto --squash`), so it lands the moment the required
+     CI checks pass without a triage read. The AI review still runs; a finding
+     it posts after the merge rides a follow-up PR. Two limits: get ALL
+     intended content in BEFORE enabling auto-merge - a later push races the
+     merge and is squash-dropped (see "Finalize once" below) - and past ~200
+     changed lines take the read-then-merge flow anyway, since an unbounded
+     unreviewed diff is not low-stakes however mechanical. When in doubt about
+     the class, it is not low-stakes: use "Everything else". The required
+     checks (the ci.yml jobs, not the usage-limiting reviewer/refuter) and the
+     "Allow auto-merge" toggle are applied by `.github/setup-branch-protection.sh`;
+     admins bypass the checks, so a triaged `--admin` logic merge still goes
+     through. Green checks alone never justify a merge outside this class,
      because a passing refuter still posts findings that must be triaged (PR #69
-     did). Branch protection requires the ci.yml jobs (not the usage-limiting
-     reviewer/refuter), and admins bypass it, so a triaged logic-PR merge still
-     goes through with `--admin`.
+     did).
    Stacked PRs: merge the base PR and DELETE its branch first so GitHub
    retargets the stacked PR to main - otherwise it merges into a dead
    branch and its content silently never reaches main.
