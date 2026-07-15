@@ -415,6 +415,29 @@ def test_publish_config_gate_holds_without_any_consignment_history(
     assert "config incomplete" in response.text
 
 
+def test_publish_gate_treats_a_null_config_value_as_missing(
+    client: TestClient,
+) -> None:
+    # A null value is present in the dict but renders as the literal "None", so
+    # the gate must treat it as absent, not as a provided key.
+    client.put(
+        "/api/carriers/testcarrier/config",
+        json={"api_key": "K-1", "base_url": None},
+    )
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "config incomplete" in response.text
+    assert "base_url" in response.text
+
+
 def test_publish_gate_covers_a_plugin_auths_config_keys(client: TestClient) -> None:
     # A plugin auth reads token_url/client_id/client_secret straight from config;
     # they are not config.* sources, so the gate must still require them or an

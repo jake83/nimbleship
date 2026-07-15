@@ -180,14 +180,13 @@ def carrier_config(session: Session, carrier: str) -> dict[str, object]:
 def missing_config_keys(
     definition: CarrierDefinition, config_data: dict[str, object]
 ) -> list[str]:
-    """The config.* keys a definition references but the config does not
-    provide. Resolved by path so a nested reference (config.credentials.host)
-    checks the whole path, matching how the render engine reads it. Sorted, for
-    a stable publish-refusal message. Unlike the render gate this is history-
-    independent: a carrier with no consignments yet still fails a missing key."""
+    """The config.* keys a definition references that config lacks, resolved by
+    path like the render engine reads it. Sorted for a stable message;
+    history-independent unlike the render gate."""
     missing: list[str] = []
     for path in definition.referenced_config_keys():
         node: object = config_data
+        resolved = True
         for segment in path.split("."):
             if isinstance(node, dict) and segment in node:
                 node = node[segment]
@@ -198,8 +197,12 @@ def missing_config_keys(
             ):
                 node = node[int(segment)]
             else:
-                missing.append(path)
+                resolved = False
                 break
+        # A null value is present but renders as the literal "None", so it is
+        # not a provided key - treat it as absent, like a missing one.
+        if not resolved or node is None:
+            missing.append(path)
     return sorted(missing)
 
 

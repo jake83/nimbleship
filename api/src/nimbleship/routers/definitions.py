@@ -274,9 +274,8 @@ def publish_version(carrier: str, version: int, session: SessionDep) -> VersionO
     if row is None:
         raise HTTPException(404, "no such definition version")
     definition = definition_for(row)
-    # Config completeness gates ahead of the render gate: it names every missing
-    # key at once, and unlike the render gate holds even for a carrier with no
-    # consignments yet - the render gate passes trivially with nothing to render.
+    # Ahead of the render gate: it names every missing key at once and holds
+    # even with no history, which the render gate passes trivially.
     missing = missing_config_keys(definition, carrier_config(session, carrier))
     if missing:
         raise HTTPException(

@@ -657,12 +657,10 @@ class CarrierDefinition(BaseModel):
                 self._validate_targets(entry.each, where)
 
     def referenced_config_keys(self) -> set[str]:
-        """The config keys a carrier must supply to book with this definition.
-        Covers config.* sources at every position the source validator checks
-        (auth secret, step urls, filename placeholders, mapping sources and
-        plucks through each loops, allocate prefixes) plus the keys a plugin
-        auth reads straight from config - which are not config.* sources, so
-        only the plugin itself can name them."""
+        """The config keys a carrier must supply to book with this definition:
+        every config.* source the validator checks, plus a plugin auth's own
+        keys - which are not config.* sources, so only the plugin can name
+        them."""
         keys: set[str] = set()
         if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
             _config_key(self.auth.secret, keys)

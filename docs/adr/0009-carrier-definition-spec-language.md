@@ -173,8 +173,9 @@ Completeness is checked at two moments, deliberately asymmetric:
 
 Save measures against the *active* definition only: a draft's new keys are the
 publish gate's business, and the report is early feedback, not a contract. The
-gate tests presence, not value - a present-but-empty key satisfies it, matching
-how the engine resolves a `config.*` fact (an empty string renders fine). A
-plugin auth may hold its own values to a higher bar at execution (OAuth rejects
-a blank `client_secret`); that value check is the plugin's, layered on the
-gate's presence check, not a contradiction of it.
+gate tests presence, not value, with one exception: a `null` value counts as
+absent, since the engine renders it as the literal `"None"` rather than a usable
+value. An empty string does satisfy a key (it renders as itself). A plugin auth
+may hold its own values to a higher bar at execution (OAuth rejects a blank
+`client_secret`); that value check is the plugin's, layered on the gate's
+presence check, not a contradiction of it.
