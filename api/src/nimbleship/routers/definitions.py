@@ -219,10 +219,27 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
         )
         if carrier_recent:
             # A manifest is single-warehouse (one per carrier and warehouse), so a
-            # representative warehouse stands in - the first recent consignment
-            # that has one. Looked up directly, as it may not be in the batch above.
+            # representative warehouse stands in for a warehouse.* reference. The
+            # code is a denormalised string that can outlive its Warehouse row, so
+            # resolve every candidate first and pick the most recent that still
+            # exists - dropping the fact for a stale newest code would 409 a
+            # manifest that renders fine against an older, live depot.
+            carrier_warehouses = {
+                warehouse.code: warehouse_facts(warehouse)
+                for warehouse in session.execute(
+                    select(Warehouse).where(
+                        Warehouse.code.in_(
+                            {c.warehouse for c in carrier_recent if c.warehouse}
+                        )
+                    )
+                ).scalars()
+            }
             representative_warehouse = next(
-                (c.warehouse for c in carrier_recent if c.warehouse is not None),
+                (
+                    c.warehouse
+                    for c in carrier_recent
+                    if c.warehouse in carrier_warehouses
+                ),
                 None,
             )
             synthetic = Manifest(
@@ -235,11 +252,9 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
                 "config": config,
             }
             if representative_warehouse is not None:
-                warehouse_row = session.execute(
-                    select(Warehouse).where(Warehouse.code == representative_warehouse)
-                ).scalar_one_or_none()
-                if warehouse_row is not None:
-                    manifest_batch["warehouse"] = warehouse_facts(warehouse_row)
+                manifest_batch["warehouse"] = carrier_warehouses[
+                    representative_warehouse
+                ]
             for op_name in manifest_operations:
                 try:
                     render_operation(definition, op_name, manifest_batch)
