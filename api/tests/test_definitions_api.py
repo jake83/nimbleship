@@ -4,6 +4,7 @@ the test step - draft renders diffed against the active definition's."""
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from nimbleship.models import CarrierDefinitionVersion, Consignment, Warehouse
 
@@ -408,12 +409,187 @@ _FAN_OUT_MANIFEST = {
 }
 
 
+_BATCH_MANIFEST = {
+    "steps": [
+        {
+            "name": "declare",
+            "transport": "http",
+            "request": {
+                "method": "POST",
+                "url": "config.base_url",
+                "content_type": "json",
+                "mapping": [{"target": "count", "source": "manifest.nope"}],
+            },
+        }
+    ],
+}
+
+
+def test_the_publish_gate_renders_a_batch_manifest(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A non-fan-out manifest renders once from a synthesized manifest of the
+    # recent consignments, so the gate covers it too: a broken manifest.* source
+    # - valid at draft (roots only) - is caught here, not first at trailer-close.
+    _publish_v1_with_config(client)
+    _add_history(app, "95000254580", "testcarrier")
+
+    broken = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": _BATCH_MANIFEST,
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": broken},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "'manifest'" in response.text
+    assert "manifest.nope" in response.text
+
+
+def test_the_publish_gate_supplies_warehouse_facts_to_a_batch_manifest(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A batch manifest may reference warehouse.*; the gate renders only if it
+    # supplies a representative warehouse's facts (the first recent consignment
+    # that has one), so a valid warehouse-referencing manifest publishes.
+    _publish_v1_with_config(client)
+    _add_warehoused_history(app, "W-00001", "testcarrier", "DEPOT1")
+
+    with_depot_manifest = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": {
+                "steps": [
+                    {
+                        "name": "declare",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "depot", "source": "warehouse.code"}
+                            ],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": with_depot_manifest},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 200
+
+
+def test_the_batch_manifest_gate_uses_only_this_carriers_own_consignments(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A manifest is single-carrier: the gate synthesizes it from THIS carrier's
+    # own recent consignments, never another carrier's traffic. testcarrier has
+    # no history of its own, so a broken manifest.* source has nothing to render
+    # against and the gate skips it - a neighbour's consignment must not stand in
+    # and produce a spurious 409.
+    _publish_v1_with_config(client)
+    _add_history(app, "THEIRS-00001", "othercarrier")
+
+    broken = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": _BATCH_MANIFEST,
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": broken},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 200
+
+
+def test_the_batch_manifest_gate_skips_a_stale_representative_warehouse(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A consignment's warehouse code is a denormalised string that can outlive
+    # its Warehouse row. The most recent code may be stale while an older one is
+    # live; the gate must supply the live depot's facts, not drop them because
+    # the newest code no longer resolves - else a warehouse.* manifest 409s a
+    # publish that would render fine.
+    _publish_v1_with_config(client)
+    _add_warehoused_history(app, "OLD-00001", "testcarrier", "DEPOT1")
+    _add_history(app, "NEW-00001", "testcarrier")
+    with app.state.session_factory() as session:
+        newest = (
+            session.execute(
+                select(Consignment).where(Consignment.order_number == "NEW-00001")
+            )
+            .scalars()
+            .one()
+        )
+        newest.warehouse = "GHOST-DEPOT"  # more recent, but no Warehouse row exists
+        session.commit()
+
+    with_depot_manifest = {
+        **TEST_CARRIER_DEFINITION,
+        "operations": {
+            "book": TEST_CARRIER_DEFINITION["operations"]["book"],  # type: ignore[index]
+            "manifest": {
+                "steps": [
+                    {
+                        "name": "declare",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "depot", "source": "warehouse.code"}
+                            ],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": with_depot_manifest},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 200, response.text
+
+
 def test_the_publish_gate_renders_a_fan_out_manifest(
     app: FastAPI, client: TestClient
 ) -> None:
-    # A fan-out manifest renders per consignment, so the gate covers it (a
-    # batch manifest is skipped): its broken shipment source - which validates
-    # at draft time, roots only - is caught here at publish.
+    # A fan-out manifest renders per consignment, so the gate covers it like a
+    # book op: its broken shipment source - which validates at draft time, roots
+    # only - is caught here at publish.
     _publish_v1_with_config(client)
     client.put(
         "/api/carriers/testcarrier/config",
