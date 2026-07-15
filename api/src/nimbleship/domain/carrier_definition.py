@@ -575,8 +575,9 @@ class CarrierDefinition(BaseModel):
 
     @model_validator(mode="after")
     def _sources_resolve(self, info: ValidationInfo) -> "CarrierDefinition":
-        # Skipped on load: an unresolvable source or target conflict raises at
-        # render, which the engine routes to a clean booking failure.
+        # Skipped on load: an unresolvable source raises at render, which the
+        # engine routes to a clean booking failure. Target conflicts are
+        # structural and stay strict - see _targets_never_conflict.
         if _is_lenient(info):
             return self
         # The auth secret is a source path too: a typo there must fail at
@@ -616,12 +617,21 @@ class CarrierDefinition(BaseModel):
                         )
                 for entry in step.request.mapping:
                     self._validate_entry(entry, earlier, False, where, roots)
-                self._validate_targets(step.request.mapping, where)
                 earlier[step.name] = (
                     {extraction.name for extraction in step.response.extract}
                     if step.response is not None
                     else set()
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _targets_never_conflict(self) -> "CarrierDefinition":
+        # Structural, so strict even on load: a mapping-target conflict is a
+        # shape the engine cannot render around, unlike a source that fails
+        # cleanly at render.
+        for op_name, operation in self.operations.items():
+            for step in operation.steps:
+                self._validate_targets(step.request.mapping, f"{op_name}.{step.name}")
         return self
 
     def _validate_targets(self, entries: list[MappingEntry], where: str) -> None:

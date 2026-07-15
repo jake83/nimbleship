@@ -1310,6 +1310,20 @@ def test_load_still_enforces_structural_rules() -> None:
         CarrierDefinition.load(bad)
 
 
+def test_load_still_rejects_a_target_conflict() -> None:
+    # A mapping-target conflict is structural - the engine cannot render around
+    # two entries fighting over one target - so it stays strict on load.
+    bad = _with_entries(
+        {"target": "x", "source": "shipment.order_number"},
+        {"target": "x", "source": "shipment.recipient_name"},
+    )
+
+    with pytest.raises(ValidationError, match="mapping targets conflict"):
+        CarrierDefinition.model_validate(bad)
+    with pytest.raises(ValidationError, match="mapping targets conflict"):
+        CarrierDefinition.load(bad)
+
+
 def test_load_still_rejects_a_wrapping_sscc() -> None:
     # An SSCC that does not halt is an unsafe side effect (a fresh sequence
     # would mint a wrapping range and reissue live codes), not a clean booking
