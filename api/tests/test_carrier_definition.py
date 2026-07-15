@@ -382,28 +382,34 @@ def test_pluck_nested_inside_an_xml_each_is_rejected() -> None:
 
 
 def test_a_malformed_source_path_is_rejected() -> None:
-    # A leading/trailing/double dot or a whitespaced segment passes the root
-    # check but resolves to nothing at render; caught at authoring.
-    for bad in ("shipment.", "shipment..order_number", "shipment.order_number "):
+    # An empty segment (leading/trailing/double dot) or any segment carrying
+    # whitespace (embedded too) resolves to nothing at render; caught here.
+    for bad in (
+        "shipment.",
+        "shipment..order_number",
+        "shipment.order_number ",
+        "shipment.order number",
+    ):
         with pytest.raises(ValidationError, match="malformed source path"):
             CarrierDefinition.model_validate(
                 _with_entries({"target": "x", "source": bad})
             )
 
 
-def test_each_or_pluck_in_a_csv_mapping_is_rejected() -> None:
-    # A csv row is scalar columns; each/pluck render a list the csv step
+def test_each_pluck_or_split_in_a_csv_mapping_is_rejected() -> None:
+    # A csv row is scalar columns; each/pluck/split render a list the csv step
     # refuses at send, so they are rejected at authoring.
     for modifier in (
         {"each": [{"target": "w", "source": "item.weight_kg"}]},
         {"pluck": "item.carrier_barcode"},
+        {"transform": {"name": "split", "on": ","}},
     ):
         entry: dict[str, object] = {
             "target": "col",
             "source": "shipment.parcels",
             **modifier,
         }
-        with pytest.raises(ValidationError, match="each and pluck render a"):
+        with pytest.raises(ValidationError, match="render a list, not a scalar"):
             CarrierDefinition.model_validate(
                 _ftp_step(content_type="csv", mapping=[entry])
             )

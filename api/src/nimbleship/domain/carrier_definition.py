@@ -275,14 +275,19 @@ class RequestSpec(BaseModel):
 
     @model_validator(mode="after")
     def _csv_shape(self) -> "RequestSpec":
-        # A csv row is scalar columns; each and pluck render a list, which the
-        # csv renderer refuses at send. Reject them at authoring instead.
+        # A csv column holds a scalar; each, pluck, and the split transform each
+        # render a list, which the csv renderer refuses at send. Reject at
+        # authoring instead.
         if self.content_type == "csv":
             for entry in self.mapping:
-                if entry.each is not None or entry.pluck is not None:
+                if (
+                    entry.each is not None
+                    or entry.pluck is not None
+                    or (entry.transform is not None and entry.transform.name == "split")
+                ):
                     raise ValueError(
-                        f"csv field '{entry.target}': each and pluck render a "
-                        "list, not a scalar column"
+                        f"csv field '{entry.target}': each, pluck, and split "
+                        "render a list, not a scalar column"
                     )
         return self
 
@@ -469,9 +474,9 @@ def _validate_source(
     roots: tuple[str, ...] = FACT_ROOTS,
 ) -> None:
     # A malformed path (empty segment from a leading/trailing/double dot, or a
-    # segment with surrounding whitespace) passes the root check but resolves to
-    # nothing at render, failing every booking. Reject it at authoring.
-    if any(seg == "" or seg != seg.strip() for seg in source.split(".")):
+    # segment carrying whitespace - no fact key does) passes the root check but
+    # resolves to nothing at render, failing every booking. Reject at authoring.
+    if any(not seg or re.search(r"\s", seg) for seg in source.split(".")):
         raise ValueError(f"{where}: malformed source path '{source}'")
     root = source.split(".", 1)[0]
     if root in roots:
