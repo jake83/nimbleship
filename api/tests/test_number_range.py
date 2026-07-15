@@ -183,6 +183,25 @@ def test_widening_an_exhausted_halt_range_does_not_revive_it(
         allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
 
 
+def test_a_halt_row_with_no_recorded_bound_is_refused(session: Session) -> None:
+    # A legacy halt row predating the wrap_after column has no recorded
+    # capacity. Its bound never backfills on the exhausted path (the raise
+    # precedes the write), so a later larger wrap_after would revive it. Refuse
+    # any allocation instead - a halt range needs a fixed bound.
+    session.add(
+        CarrierNumberSequence(
+            carrier="dachser", name="sscc", next_value=10, policy="halt"
+        )
+    )
+    session.flush()
+
+    with pytest.raises(ValueError, match="no recorded capacity"):
+        allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
+    # The exact revival the guard closes: a larger bound must not resurrect it.
+    with pytest.raises(ValueError, match="no recorded capacity"):
+        allocate_number(session, "dachser", "sscc", wrap_after=1000, policy="halt")
+
+
 def test_a_wrap_range_never_issues_an_out_of_range_legacy_counter(
     session: Session,
 ) -> None:
@@ -274,7 +293,15 @@ def range_logs() -> Iterator[_RecordingHandler]:
 def test_a_low_range_emits_a_structured_warning_with_a_remaining_count(
     session: Session, range_logs: _RecordingHandler
 ) -> None:
-    session.add(CarrierNumberSequence(carrier="dachser", name="sscc", next_value=98))
+    session.add(
+        CarrierNumberSequence(
+            carrier="dachser",
+            name="sscc",
+            next_value=98,
+            policy="halt",
+            wrap_after=100,
+        )
+    )
     session.flush()
 
     allocate_number(

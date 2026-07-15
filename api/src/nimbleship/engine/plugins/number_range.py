@@ -153,6 +153,14 @@ def allocate_number(
             f"number range '{name}' for carrier '{carrier}' was created with "
             f"policy '{stored_policy}', not '{policy}'"
         )
+    if policy == "halt" and stored_wrap_after is None:
+        # A legacy halt row has no recorded bound: it never backfills on the
+        # exhausted path (the raise precedes the write), so a later larger
+        # wrap_after would revive it. Refuse it - provision a new range.
+        raise ValueError(
+            f"number range '{name}' for carrier '{carrier}' is a halt range with "
+            "no recorded capacity: provision a new range with a fixed bound"
+        )
     if stored_wrap_after is not None and stored_wrap_after != wrap_after:
         if policy == "halt":
             # A halt range's capacity is fixed at creation, so any change is
