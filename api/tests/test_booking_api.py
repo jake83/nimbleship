@@ -6,9 +6,10 @@ success. The carrier here is the Furdeco example definition over an
 httpx.MockTransport: zero real network."""
 
 import base64
+import copy
 import json
 import textwrap
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
 import httpx
@@ -454,14 +455,18 @@ def _sscc_response(label_pdf: str) -> str:
     return json.dumps({"shipment_number": "SS-1", "label_pdf": label_pdf})
 
 
-def _publish_sscc_carrier(client: TestClient, prefix: str = SSCC_PREFIX) -> None:
+def _publish_sscc_carrier(
+    client: TestClient,
+    prefix: str = SSCC_PREFIX,
+    definition: Mapping[str, object] = SSCC_DEFINITION,
+) -> None:
     client.put(
         "/api/carriers/ssccarrier/config",
         json={"labels_url": "https://api.ssc.example/labels", "sscc_prefix": prefix},
     )
     version = client.post(
         "/api/carriers/ssccarrier/definitions/drafts",
-        json={"author": "jake", "definition": SSCC_DEFINITION},
+        json={"author": "jake", "definition": definition},
     ).json()["version"]
     published = client.post(
         f"/api/carriers/ssccarrier/definitions/versions/{version}/publish"
@@ -505,6 +510,33 @@ def test_per_parcel_ssccs_are_minted_and_stored_on_the_parcels(
 
     detail = client.get("/api/consignments/95000254580").json()
     # Two parcels, two distinct SSCCs from consecutive serials.
+    assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_1, SSCC_2]
+
+
+def test_a_render_failure_at_booking_is_a_502_after_minting_not_an_uncaught_500(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A stored definition can render fine at authoring yet fail at booking: a
+    # source naming a known root but a field absent at runtime passes the
+    # source check and, with no history, the publish gate - then raises at
+    # render, after SSCC minting has already committed. That failure must take
+    # the clean booking_failed + 502 path, not leak as an uncaught 500 that
+    # buries the spent-range audit trail.
+    bad = copy.deepcopy(SSCC_DEFINITION)
+    mapping = bad["operations"]["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
+    mapping.append({"target": "phantom", "source": "shipment.nonexistent_field"})
+    _publish_sscc_carrier(client, definition=bad)
+    _sscc_answers(app)
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 502, response.text
+    detail = client.get("/api/consignments/95000254580").json()
+    assert detail["status"] == "booking_failed"
+    assert [e["stage"] for e in detail["events"]] == ["allocated", "booking_failed"]
+    # Minting committed before the render failed, so the parcels keep their
+    # codes - the same survival a carrier failure leaves behind, now reached
+    # without an uncaught 500.
     assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_1, SSCC_2]
 
 

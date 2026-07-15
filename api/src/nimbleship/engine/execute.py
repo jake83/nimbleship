@@ -237,12 +237,22 @@ class _Execution:
     def run_step(self, step: Step) -> None:
         # for_execution: an unresolved step-output reference raises at render
         # rather than reaching the carrier as literal placeholder text.
-        rendered = render_step(
-            self._definition,
-            step,
-            {**self._facts, "steps": dict(self.step_outputs)},
-            for_execution=True,
-        )
+        try:
+            rendered = render_step(
+                self._definition,
+                step,
+                {**self._facts, "steps": dict(self.step_outputs)},
+                for_execution=True,
+            )
+        except ValueError as error:
+            # A render failure at booking - an unresolvable fact, a step output
+            # that was never extracted, a scalar rule a stored definition breaks -
+            # is a booking failure, not an uncaught 500. Route it through the
+            # carrier-call-error channel so the caller records booking_failed and
+            # returns cleanly. No request reached the carrier: no traffic to log.
+            raise self._fail(
+                f"step '{step.name}' could not be rendered: {error}"
+            ) from error
         if isinstance(rendered, RenderedUpload):
             self._run_upload(step, rendered)
             return
