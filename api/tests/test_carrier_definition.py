@@ -6,7 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.domain.definitions import definition_for
 from nimbleship.engine.field_plugins import FIELD_PLUGINS
+from nimbleship.models import CarrierDefinitionVersion
 
 MINIMAL = {
     "carrier": "furdeco",
@@ -1247,3 +1249,93 @@ def test_xml_is_an_upload_only_content_type() -> None:
     }
     with pytest.raises(ValidationError, match="upload-only"):
         CarrierDefinition.model_validate(bad)
+
+
+# Authoring vs load (ADR 0009): drafting, and the publish gate via
+# definition_for, run every rule (model_validate); the booking runtime read,
+# CarrierDefinition.load, skips the authoring-policy rules whose only failure
+# mode on a stored violator is a clean booking failure - so tightening one
+# never strands a definition that was valid when published.
+
+
+def _csv_with_pluck() -> dict[str, object]:
+    # Structurally well-formed but violates the csv authoring policy (a pluck
+    # renders a list, not a scalar column). A stored violator fails cleanly at
+    # booking (the renderer refuses the list), so it is skippable on load.
+    return _ftp_step(
+        content_type="csv",
+        mapping=[
+            {"target": "codes", "source": "shipment.parcels", "pluck": "item.barcode"}
+        ],
+    )
+
+
+def test_authoring_rejects_a_policy_violation_that_load_accepts() -> None:
+    bad = _csv_with_pluck()
+
+    with pytest.raises(ValidationError, match="render a list, not a scalar"):
+        CarrierDefinition.model_validate(bad)
+
+    assert CarrierDefinition.load(bad).carrier == "fagans"
+
+
+def test_the_publish_gate_stays_strict_while_booking_loads_leniently() -> None:
+    # definition_for backs the publish gate: it must stay strict so a policy
+    # violation cannot be published. The same stored row loads leniently for
+    # booking. This is the split - authoring strict, runtime lenient.
+    row = CarrierDefinitionVersion(
+        carrier="fagans",
+        version=1,
+        status="published",
+        author="api",
+        data=_csv_with_pluck(),
+    )
+
+    with pytest.raises(ValidationError, match="render a list, not a scalar"):
+        definition_for(row)
+    assert CarrierDefinition.load(row.data).carrier == "fagans"
+
+
+def test_load_still_enforces_structural_rules() -> None:
+    # Two value origins on one entry is a shape the engine cannot resolve, so
+    # load rejects it as strictly as authoring - the split spares policy rules,
+    # never structural ones.
+    bad = _with_entries(
+        {"target": "x", "source": "shipment.order_number", "const": "y"}
+    )
+
+    with pytest.raises(ValidationError):
+        CarrierDefinition.model_validate(bad)
+    with pytest.raises(ValidationError):
+        CarrierDefinition.load(bad)
+
+
+def test_load_still_rejects_a_wrapping_sscc() -> None:
+    # An SSCC that does not halt is an unsafe side effect (a fresh sequence
+    # would mint a wrapping range and reissue live codes), not a clean booking
+    # failure, so it stays strict on load too.
+    bad = _book_with_allocate(
+        [
+            {
+                "kind": "sscc",
+                "per": "parcel",
+                "prefix": "config.sscc_prefix",
+                "policy": "wrap",
+            }
+        ]
+    )
+
+    with pytest.raises(ValidationError, match="policy 'halt'"):
+        CarrierDefinition.model_validate(bad)
+    with pytest.raises(ValidationError, match="policy 'halt'"):
+        CarrierDefinition.load(bad)
+
+
+def test_top_level_notes_are_ignored_commentary() -> None:
+    # notes is source-file commentary for a human author: ignored by the
+    # schema, never a field on the model, never read at runtime.
+    definition = CarrierDefinition.model_validate(
+        {**MINIMAL, "notes": ["explain this carrier to the next author"]}
+    )
+
+    assert not hasattr(definition, "notes")

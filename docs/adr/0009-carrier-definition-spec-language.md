@@ -97,3 +97,47 @@ operations, number-range plugin). Fagans proves the ftp_upload transport
 when convenient; Dachser (SSCC + SFTP EDI + DigiDocs) is its own mini-epic
 at the end; DPD and PalletTrack are deliberately left as the first real
 customers of the Phase 5 AI onboarding flow.
+
+## Authoring validation vs load validation (amended 2026-07-15)
+
+A definition is validated at two distinct moments. **Authoring** - draft
+creation, and the publish gate (`definition_for` → `model_validate`) - runs
+every rule: nothing invalid ever enters the store. **Load** - the booking and
+manifest-send runtime read (`active_definition` → `CarrierDefinition.load`) -
+validates a stored, already-published definition, and skips the rules whose
+only failure mode on a stored violator is a *clean booking failure*.
+
+The split exists because re-validating a stored row against a *tightened* rule
+would retroactively reject a definition that was legitimate when published,
+breaking booking for a live carrier the moment the rule moved - even though the
+engine can still render that definition. So load asks only "can the engine run
+this safely?", not "would this pass authoring today?".
+
+The line between skippable and strict is drawn by the *failure mode*, informed
+by the booking flow's error handling (a render `ValueError` is routed to a
+`booking_failed` 502, and its commit is guarded to a 409 under a duplicate
+race - both clean):
+
+- **Skippable on load** - authoring-policy rules whose stored violator fails
+  *cleanly* at render: the csv scalar-column rule (the renderer refuses a list
+  column), and source/target resolution (an unresolvable fact raises at render,
+  now caught). Re-enforcing these on load buys nothing but stranding.
+- **Strict on load** - two classes. Rules whose violation is an *unsafe side
+  effect*, not a clean failure: an SSCC that does not halt would mint a
+  wrapping range and reissue live codes; a fan-out on a non-upload transport
+  would double-submit on retry; an allocate minting from a non-config prefix.
+  And every *structural* rule (one value origin per entry, legal xml targets,
+  an upload step with a filename) - shapes the engine cannot render around.
+  For all of these the clean load-time rejection IS the safe outcome, so
+  stranding is correct: the definition is genuinely broken or dangerous.
+
+The clean-failure routing is a prerequisite: skipping a render-affecting rule
+on load is only safe because a render failure at booking now surfaces as a
+`booking_failed` 502/409 rather than an uncaught 500 after minting. Before that
+routing existed, none of these rules could have been skipped.
+
+Definition files may carry top-level commentary (e.g. a `notes` array) to
+explain a carrier to a human author. It is not a schema field: the model
+ignores it, it never persists onto `CarrierDefinition`, and nothing at runtime
+may read it. Commentary that must survive belongs in the definition's stored
+provenance, not in a field the schema silently drops.

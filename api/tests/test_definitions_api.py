@@ -5,7 +5,7 @@ the test step - draft renders diffed against the active definition's."""
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nimbleship.models import Consignment, Warehouse
+from nimbleship.models import CarrierDefinitionVersion, Consignment, Warehouse
 
 TEST_CARRIER_DEFINITION = {
     "carrier": "testcarrier",
@@ -531,3 +531,57 @@ def test_golden_replay_filters_to_the_definitions_carrier_when_asked(
 
     assert replay["total"] == 1
     assert [r["order_number"] for r in replay["results"]] == ["OURS-00001"]
+
+
+_CSV_PLUCK_DEFINITION = {
+    "carrier": "csvcarrier",
+    "name": "CSV Carrier",
+    "auth": {"scheme": "none"},
+    "operations": {
+        "book": {
+            "steps": [
+                {
+                    "name": "upload",
+                    "transport": "ftp_upload",
+                    "request": {
+                        "url": "config.dir",
+                        "filename": "{shipment.order_number}.csv",
+                        "content_type": "csv",
+                        "mapping": [
+                            {
+                                "target": "codes",
+                                "source": "shipment.parcels",
+                                "pluck": "item.barcode",
+                            }
+                        ],
+                    },
+                }
+            ],
+            "label": {"source": "local_render"},
+        }
+    },
+}
+
+
+def test_the_active_endpoint_loads_a_stored_definition_leniently(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A published def that breaks a since-tightened authoring-policy rule still
+    # books, so the active endpoint must show it, not 500. Inserted directly, as
+    # publish would reject it today.
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="csvcarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=_CSV_PLUCK_DEFINITION,
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/carriers/csvcarrier/definitions/active")
+
+    assert response.status_code == 200
+    assert response.json()["version"] == 1

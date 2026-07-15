@@ -95,7 +95,9 @@ def active(carrier: str, session: SessionDep) -> ActiveOut:
     row = active_definition_row(session, carrier)
     if row is None:
         raise HTTPException(404, "no published definition for this carrier")
-    return ActiveOut(version=row.version, definition=definition_for(row))
+    # Show the running definition, loaded as booking loads it, so a def that
+    # books fine is never a 500 here.
+    return ActiveOut(version=row.version, definition=CarrierDefinition.load(row.data))
 
 
 @router.get("/definitions/versions")
