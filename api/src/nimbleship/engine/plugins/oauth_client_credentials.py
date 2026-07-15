@@ -37,6 +37,11 @@ class _CachedToken:
     expires_at: float  # on the plugin's clock, safety margin already applied
 
 
+# The config keys apply() reads; the single source for both the reads below and
+# the completeness gate's requirement, so the two cannot drift.
+_CONFIG_KEYS = frozenset({"token_url", "client_id", "client_secret"})
+
+
 class OAuthClientCredentialsAuth:
     """AuthPlugin fetching and caching client-credentials bearer tokens.
 
@@ -52,6 +57,9 @@ class OAuthClientCredentialsAuth:
         self._http_client = http_client
         self._clock = clock
         self._tokens: dict[tuple[str, str], _CachedToken] = {}
+
+    def required_config_keys(self) -> frozenset[str]:
+        return _CONFIG_KEYS
 
     def apply(
         self, request: RenderedRequest, config: dict[str, object]

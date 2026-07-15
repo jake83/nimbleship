@@ -191,6 +191,12 @@ def missing_config_keys(
         for segment in path.split("."):
             if isinstance(node, dict) and segment in node:
                 node = node[segment]
+            elif (
+                isinstance(node, list)
+                and segment.isdigit()
+                and int(segment) < len(node)
+            ):
+                node = node[int(segment)]
             else:
                 missing.append(path)
                 break

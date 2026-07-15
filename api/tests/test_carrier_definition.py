@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
-from nimbleship.domain.definitions import definition_for
+from nimbleship.domain.definitions import definition_for, missing_config_keys
 from nimbleship.engine.field_plugins import FIELD_PLUGINS
 from nimbleship.models import CarrierDefinitionVersion
 
@@ -156,6 +156,75 @@ def test_referenced_config_keys_is_empty_for_a_config_free_definition() -> None:
     definition = CarrierDefinition.model_validate(dropout)
 
     assert definition.referenced_config_keys() == set()
+
+
+def test_referenced_config_keys_includes_a_plugin_auths_required_keys() -> None:
+    # A plugin auth reads its own keys straight from config (not via config.*
+    # sources), so only the plugin can name them - the enumerator asks it.
+    plugin_auth_def = {
+        "carrier": "fedexlike",
+        "name": "FedEx-like",
+        "auth": {"scheme": "plugin", "plugin": "oauth_client_credentials"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.ship_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    definition = CarrierDefinition.model_validate(plugin_auth_def)
+
+    assert definition.referenced_config_keys() == {
+        "ship_url",
+        "token_url",
+        "client_id",
+        "client_secret",
+    }
+
+
+def test_missing_config_keys_resolves_a_list_indexed_path_like_the_engine() -> None:
+    # A digit segment indexes a list in config, exactly as the render engine's
+    # _resolve does, so a fully-configured list path is not falsely reported.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "acme",
+            "name": "Acme",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "save",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.hosts.0",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "o", "source": "shipment.order_number"}
+                                ],
+                            },
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert missing_config_keys(definition, {"hosts": ["https://h1"]}) == []
+    assert missing_config_keys(definition, {"hosts": []}) == ["hosts.0"]
 
 
 def test_unknown_transform_is_rejected_at_authoring() -> None:

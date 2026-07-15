@@ -415,6 +415,53 @@ def test_publish_config_gate_holds_without_any_consignment_history(
     assert "config incomplete" in response.text
 
 
+def test_publish_gate_covers_a_plugin_auths_config_keys(client: TestClient) -> None:
+    # A plugin auth reads token_url/client_id/client_secret straight from config;
+    # they are not config.* sources, so the gate must still require them or an
+    # OAuth carrier would publish and then fail every booking at token fetch.
+    client.put(
+        "/api/carriers/testcarrier/config",
+        json={"ship_url": "https://ship.example"},
+    )
+    plugin_auth_def = {
+        "carrier": "testcarrier",
+        "name": "Test Carrier",
+        "auth": {"scheme": "plugin", "plugin": "oauth_client_credentials"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.ship_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": plugin_auth_def},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "config incomplete" in response.text
+    assert "token_url" in response.text
+    assert "client_id" in response.text
+    assert "client_secret" in response.text
+
+
 def test_put_config_reports_keys_the_active_definition_still_needs(
     client: TestClient,
 ) -> None:

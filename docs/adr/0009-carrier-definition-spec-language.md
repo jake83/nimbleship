@@ -147,9 +147,13 @@ provenance, not in a field the schema silently drops.
 A definition references per-install account facts as `config.*` sources - the
 auth secret, step urls, filename placeholders, mapping sources and plucks, and
 allocate prefixes. `CarrierDefinition.referenced_config_keys()` enumerates them
-(walking the same positions the source validator does);
-`missing_config_keys(definition, config)` is the subset a stored config does not
-provide, resolved by full path so a nested `config.credentials.host` checks the
+(walking the same positions the source validator does), plus the keys a plugin
+auth reads straight from config: those are not `config.*` sources in the
+definition, so only the plugin can name them - it declares them via
+`AuthPlugin.required_config_keys()` (the OAuth plugin's `token_url`, `client_id`,
+`client_secret`). `missing_config_keys(definition, config)` is the subset a
+stored config does not provide, resolved by full path so a nested
+`config.credentials.host` (or a list index like `config.hosts.0`) checks the
 whole path, as the render engine reads it.
 
 Completeness is checked at two moments, deliberately asymmetric:
@@ -168,6 +172,9 @@ Completeness is checked at two moments, deliberately asymmetric:
   nothing to measure against before a definition is published.
 
 Save measures against the *active* definition only: a draft's new keys are the
-publish gate's business, and the report is early feedback, not a contract.
-Presence, not value, is the test - an empty string satisfies a key, matching how
-the engine resolves a config fact.
+publish gate's business, and the report is early feedback, not a contract. The
+gate tests presence, not value - a present-but-empty key satisfies it, matching
+how the engine resolves a `config.*` fact (an empty string renders fine). A
+plugin auth may hold its own values to a higher bar at execution (OAuth rejects
+a blank `client_secret`); that value check is the plugin's, layered on the
+gate's presence check, not a contradiction of it.

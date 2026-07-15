@@ -657,14 +657,21 @@ class CarrierDefinition(BaseModel):
                 self._validate_targets(entry.each, where)
 
     def referenced_config_keys(self) -> set[str]:
-        """Every config.* key this definition references - the config a carrier
-        must supply to book with it. Walks the same source positions the source
-        validator does: the auth secret, each step's url and filename
-        placeholders, its mapping sources and plucks (through each loops), and
-        each operation's allocate prefix."""
+        """The config keys a carrier must supply to book with this definition.
+        Covers config.* sources at every position the source validator checks
+        (auth secret, step urls, filename placeholders, mapping sources and
+        plucks through each loops, allocate prefixes) plus the keys a plugin
+        auth reads straight from config - which are not config.* sources, so
+        only the plugin itself can name them."""
         keys: set[str] = set()
         if isinstance(self.auth, QueryKeyAuth | HeaderKeyAuth):
             _config_key(self.auth.secret, keys)
+        elif isinstance(self.auth, PluginAuth):
+            # Imported lazily: auth_plugins pulls in the render module, which
+            # imports this one - a top-level import would close the cycle.
+            from nimbleship.engine.auth_plugins import auth_plugin_config_keys
+
+            keys |= auth_plugin_config_keys(self.auth.plugin)
         for operation in self.operations.values():
             for spec in operation.allocate:
                 _config_key(spec.prefix, keys)
