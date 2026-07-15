@@ -444,6 +444,9 @@ def test_a_local_render_step_transport_is_never_sent_to_the_wire() -> None:
 @pytest.fixture
 def stamp_plugin() -> Iterator[None]:
     class StampPlugin:
+        def required_config_keys(self) -> frozenset[str]:
+            return frozenset({"stamp"})
+
         def apply(
             self, request: RenderedRequest, config: dict[str, object]
         ) -> RenderedRequest:

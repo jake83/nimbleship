@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
-from nimbleship.domain.definitions import definition_for
+from nimbleship.domain.definitions import definition_for, missing_config_keys
 from nimbleship.engine.field_plugins import FIELD_PLUGINS
 from nimbleship.models import CarrierDefinitionVersion
 
@@ -60,6 +60,171 @@ def test_a_minimal_definition_validates() -> None:
     assert definition.carrier == "furdeco"
     step = definition.operations["book"].steps[0]
     assert step.request.mapping[0].source == "shipment.order_number"
+
+
+_CONFIG_RICH = {
+    "carrier": "acme",
+    "name": "Acme",
+    "auth": {"scheme": "query_key", "param": "key", "secret": "config.api_key"},
+    "operations": {
+        "book": {
+            "allocate": [
+                {"kind": "sscc", "per": "parcel", "prefix": "config.sscc_prefix"}
+            ],
+            "steps": [
+                {
+                    "name": "save",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.base_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"},
+                            {"target": "channel", "source": "config.channel_id"},
+                            {"target": "acct", "const": "fixed"},
+                            {
+                                "target": "lines",
+                                "source": "shipment.parcels",
+                                "each": [
+                                    {"target": "w", "source": "item.weight_kg"},
+                                    {
+                                        "target": "region",
+                                        "source": "config.region_code",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    "response": {
+                        "format": "json",
+                        "extract": [{"name": "tracking_reference", "path": "$.id"}],
+                    },
+                }
+            ],
+        },
+        "manifest": {
+            "steps": [
+                {
+                    "name": "drop",
+                    "transport": "sftp_upload",
+                    "request": {
+                        "url": "config.sftp_dir",
+                        "filename": "{config.account_number}-manifest.xml",
+                        "content_type": "xml",
+                        "root_element": "Manifest",
+                        "mapping": [
+                            {"target": "Carrier", "source": "manifest.carrier"}
+                        ],
+                    },
+                }
+            ],
+        },
+    },
+}
+
+
+def test_referenced_config_keys_collects_from_every_source_position() -> None:
+    definition = CarrierDefinition.model_validate(_CONFIG_RICH)
+
+    assert definition.referenced_config_keys() == {
+        "api_key",  # auth.secret
+        "sscc_prefix",  # allocate prefix
+        "base_url",  # step url
+        "channel_id",  # mapping source
+        "region_code",  # each-inner mapping source
+        "sftp_dir",  # upload step url
+        "account_number",  # filename placeholder
+    }
+
+
+def test_referenced_config_keys_ignores_non_config_sources() -> None:
+    # shipment/warehouse/manifest/item/steps roots and const entries carry no
+    # config requirement - only config.* references do.
+    definition = CarrierDefinition.model_validate(MINIMAL)
+
+    assert definition.referenced_config_keys() == {"api_key", "base_url"}
+
+
+def test_referenced_config_keys_is_empty_for_a_config_free_definition() -> None:
+    dropout = {
+        "carrier": "dropout",
+        "name": "Drop Out",
+        "auth": {"scheme": "none"},
+        "operations": {"book": {"label": {"source": "local_render"}}},
+    }
+    definition = CarrierDefinition.model_validate(dropout)
+
+    assert definition.referenced_config_keys() == set()
+
+
+def test_referenced_config_keys_includes_a_plugin_auths_required_keys() -> None:
+    # A plugin auth reads its own keys straight from config (not via config.*
+    # sources), so only the plugin can name them - the enumerator asks it.
+    plugin_auth_def = {
+        "carrier": "fedexlike",
+        "name": "FedEx-like",
+        "auth": {"scheme": "plugin", "plugin": "oauth_client_credentials"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.ship_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    definition = CarrierDefinition.model_validate(plugin_auth_def)
+
+    assert definition.referenced_config_keys() == {
+        "ship_url",
+        "token_url",
+        "client_id",
+        "client_secret",
+    }
+
+
+def test_missing_config_keys_resolves_a_list_indexed_path_like_the_engine() -> None:
+    # A digit segment indexes a list in config, exactly as the render engine's
+    # _resolve does, so a fully-configured list path is not falsely reported.
+    definition = CarrierDefinition.model_validate(
+        {
+            "carrier": "acme",
+            "name": "Acme",
+            "auth": {"scheme": "none"},
+            "operations": {
+                "book": {
+                    "steps": [
+                        {
+                            "name": "save",
+                            "transport": "http",
+                            "request": {
+                                "method": "POST",
+                                "url": "config.hosts.0",
+                                "content_type": "json",
+                                "mapping": [
+                                    {"target": "o", "source": "shipment.order_number"}
+                                ],
+                            },
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert missing_config_keys(definition, {"hosts": ["https://h1"]}) == []
+    assert missing_config_keys(definition, {"hosts": []}) == ["hosts.0"]
 
 
 def test_unknown_transform_is_rejected_at_authoring() -> None:

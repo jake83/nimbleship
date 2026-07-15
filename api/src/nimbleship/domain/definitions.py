@@ -177,6 +177,35 @@ def carrier_config(session: Session, carrier: str) -> dict[str, object]:
     return row.data if row is not None else {}
 
 
+def missing_config_keys(
+    definition: CarrierDefinition, config_data: dict[str, object]
+) -> list[str]:
+    """The config.* keys a definition references that config lacks, resolved by
+    path like the render engine reads it. Sorted for a stable message;
+    history-independent unlike the render gate."""
+    missing: list[str] = []
+    for path in definition.referenced_config_keys():
+        node: object = config_data
+        resolved = True
+        for segment in path.split("."):
+            if isinstance(node, dict) and segment in node:
+                node = node[segment]
+            elif (
+                isinstance(node, list)
+                and segment.isdigit()
+                and int(segment) < len(node)
+            ):
+                node = node[int(segment)]
+            else:
+                resolved = False
+                break
+        # A null value is present but renders as the literal "None", so it is
+        # not a provided key - treat it as absent, like a missing one.
+        if not resolved or node is None:
+            missing.append(path)
+    return sorted(missing)
+
+
 def upsert_carrier_config(
     session: Session, carrier: str, data: dict[str, object]
 ) -> None:

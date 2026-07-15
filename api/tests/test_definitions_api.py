@@ -71,6 +71,12 @@ def test_dropout_definition_seeds_and_is_active(client: TestClient) -> None:
 
 
 def test_draft_publish_lifecycle_per_carrier(client: TestClient) -> None:
+    # The definition references config.api_key and config.base_url, so publish
+    # needs them present - the config-completeness gate refuses otherwise.
+    client.put(
+        "/api/carriers/testcarrier/config",
+        json={"api_key": "K-1", "base_url": "https://api.test.example"},
+    )
     created = client.post(
         "/api/carriers/testcarrier/definitions/drafts",
         json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
@@ -275,10 +281,23 @@ def test_publish_refuses_a_draft_whose_renders_error(client: TestClient) -> None
 
     broken = {
         **TEST_CARRIER_DEFINITION,
-        "auth": {
-            "scheme": "query_key",
-            "param": "key",
-            "secret": "config.missing_key",
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            # shipment.nope is a valid root (passes draft), but no
+                            # such fact exists: it fails at render, not authoring.
+                            "mapping": [{"target": "order", "source": "shipment.nope"}],
+                        },
+                    }
+                ],
+            }
         },
     }
     draft = client.post(
@@ -292,7 +311,7 @@ def test_publish_refuses_a_draft_whose_renders_error(client: TestClient) -> None
 
     assert response.status_code == 409
     assert "render" in response.text.lower()
-    assert "missing_key" in response.text
+    assert "shipment.nope" in response.text
 
 
 def test_publish_refuses_a_draft_whose_other_operations_cannot_render(
@@ -314,15 +333,11 @@ def test_publish_refuses_a_draft_whose_other_operations_cannot_render(
                         "transport": "http",
                         "request": {
                             "method": "GET",
-                            # tracking_url is absent from the carrier config
-                            "url": "config.tracking_url",
+                            "url": "config.base_url",
                             "content_type": "json",
-                            "mapping": [
-                                {
-                                    "target": "order",
-                                    "source": "shipment.order_number",
-                                }
-                            ],
+                            # shipment.nope renders no fact: a render error, not a
+                            # config gap, so the render gate is what refuses here.
+                            "mapping": [{"target": "order", "source": "shipment.nope"}],
                         },
                     }
                 ],
@@ -340,7 +355,173 @@ def test_publish_refuses_a_draft_whose_other_operations_cannot_render(
 
     assert response.status_code == 409
     assert "'track'" in response.text
-    assert "tracking_url" in response.text
+    assert "shipment.nope" in response.text
+
+
+def test_publish_refuses_a_definition_with_an_incomplete_config(
+    client: TestClient,
+) -> None:
+    # config.api_key and config.base_url are referenced; only api_key is set, so
+    # the gate names the still-missing key and refuses the publish.
+    client.put("/api/carriers/testcarrier/config", json={"api_key": "K-1"})
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "config incomplete" in response.text
+    assert "base_url" in response.text
+    assert "api_key" not in response.text  # the provided key is not reported
+
+
+def test_publish_config_gate_lists_every_missing_key(client: TestClient) -> None:
+    # No config at all: both referenced keys are reported in one refusal, not
+    # one-at-a-time as the render gate would surface them.
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "api_key" in response.text
+    assert "base_url" in response.text
+
+
+def test_publish_config_gate_holds_without_any_consignment_history(
+    client: TestClient,
+) -> None:
+    # The render gate passes trivially with nothing to render; the config gate
+    # still refuses an incomplete config, so a fresh carrier cannot publish a
+    # definition it has no credentials for.
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "config incomplete" in response.text
+
+
+def test_publish_gate_treats_a_null_config_value_as_missing(
+    client: TestClient,
+) -> None:
+    # A null value is present in the dict but renders as the literal "None", so
+    # the gate must treat it as absent, not as a provided key.
+    client.put(
+        "/api/carriers/testcarrier/config",
+        json={"api_key": "K-1", "base_url": None},
+    )
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": TEST_CARRIER_DEFINITION},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "config incomplete" in response.text
+    assert "base_url" in response.text
+
+
+def test_publish_gate_covers_a_plugin_auths_config_keys(client: TestClient) -> None:
+    # A plugin auth reads token_url/client_id/client_secret straight from config;
+    # they are not config.* sources, so the gate must still require them or an
+    # OAuth carrier would publish and then fail every booking at token fetch.
+    client.put(
+        "/api/carriers/testcarrier/config",
+        json={"ship_url": "https://ship.example"},
+    )
+    plugin_auth_def = {
+        "carrier": "testcarrier",
+        "name": "Test Carrier",
+        "auth": {"scheme": "plugin", "plugin": "oauth_client_credentials"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.ship_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    draft = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": plugin_auth_def},
+    ).json()
+
+    response = client.post(
+        f"/api/carriers/testcarrier/definitions/versions/{draft['version']}/publish"
+    )
+
+    assert response.status_code == 409
+    assert "config incomplete" in response.text
+    assert "token_url" in response.text
+    assert "client_id" in response.text
+    assert "client_secret" in response.text
+
+
+def test_put_config_reports_keys_the_active_definition_still_needs(
+    client: TestClient,
+) -> None:
+    # Saving never blocks (config may be built up incrementally), but the
+    # response names the keys the live definition references and the payload
+    # omits, as early feedback ahead of the publish gate.
+    _publish_v1_with_config(client)
+
+    response = client.put("/api/carriers/testcarrier/config", json={"api_key": "K-1"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "saved"
+    assert body["missing"] == ["base_url"]
+
+
+def test_put_config_reports_no_missing_keys_when_complete(client: TestClient) -> None:
+    _publish_v1_with_config(client)
+
+    response = client.put(
+        "/api/carriers/testcarrier/config",
+        json={"api_key": "K-1", "base_url": "https://api.test.example"},
+    )
+
+    assert response.json()["missing"] == []
+
+
+def test_put_config_reports_nothing_missing_without_an_active_definition(
+    client: TestClient,
+) -> None:
+    # Config can precede the definition (a fresh install is a deploy plus
+    # configuration), so with nothing published there is no requirement to
+    # measure the payload against.
+    response = client.put("/api/carriers/newcarrier/config", json={"api_key": "K-1"})
+
+    assert response.status_code == 200
+    assert response.json()["missing"] == []
 
 
 def _add_history(app: FastAPI, order_number: str, carrier: str) -> None:

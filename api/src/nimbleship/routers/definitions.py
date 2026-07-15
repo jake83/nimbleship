@@ -14,12 +14,14 @@ from nimbleship.domain.carrier_definition import (
     operation_fact_roots,
 )
 from nimbleship.domain.definitions import (
+    active_definition,
     active_definition_row,
     carrier_config,
     create_draft,
     definition_for,
     get_version,
     list_versions,
+    missing_config_keys,
     publish,
     upsert_carrier_config,
 )
@@ -271,7 +273,15 @@ def publish_version(carrier: str, version: int, session: SessionDep) -> VersionO
     row = get_version(session, carrier, version)
     if row is None:
         raise HTTPException(404, "no such definition version")
-    _render_gate(session, carrier, definition_for(row))
+    definition = definition_for(row)
+    # Ahead of the render gate: it names every missing key at once and holds
+    # even with no history, which the render gate passes trivially.
+    missing = missing_config_keys(definition, carrier_config(session, carrier))
+    if missing:
+        raise HTTPException(
+            409, f"publish refused: config incomplete, missing {', '.join(missing)}"
+        )
+    _render_gate(session, carrier, definition)
     try:
         publish(session, row)
     except ValueError as error:
@@ -424,9 +434,20 @@ def golden_replay(
     )
 
 
+class ConfigSaveOut(BaseModel):
+    carrier: str
+    status: str
+    # config.* keys the active definition references but this payload omits.
+    # Reported, never enforced: config may precede the definition, and the
+    # publish gate is where an incomplete config is actually refused.
+    missing: list[str]
+
+
 @router.put("/config")
 def put_config(
     carrier: str, payload: dict[str, object], session: SessionDep
-) -> dict[str, str]:
+) -> ConfigSaveOut:
     upsert_carrier_config(session, carrier, payload)
-    return {"carrier": carrier, "status": "saved"}
+    active = active_definition(session, carrier)
+    missing = missing_config_keys(active, payload) if active is not None else []
+    return ConfigSaveOut(carrier=carrier, status="saved", missing=missing)
