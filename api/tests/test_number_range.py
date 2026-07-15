@@ -169,6 +169,25 @@ def test_a_halt_range_cannot_change_its_wrap_after_at_all(session: Session) -> N
         allocate_number(session, "dachser", "sscc", wrap_after=3, policy="halt")
 
 
+def test_widening_an_exhausted_halt_range_does_not_revive_it(
+    session: Session,
+) -> None:
+    # The scenario that matters most: bumping the bound to "unstick" an
+    # exhausted halt range must NOT resume issuing past the original capacity -
+    # those numbers are live codes. The widen is refused before it can reach
+    # the exhaustion branch, so the range stays halted.
+    for _ in range(2):
+        allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
+    with pytest.raises(RangeExhausted):
+        allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
+
+    with pytest.raises(ValueError, match="fixed capacity"):
+        allocate_number(session, "dachser", "sscc", wrap_after=1000, policy="halt")
+
+    with pytest.raises(RangeExhausted):
+        allocate_number(session, "dachser", "sscc", wrap_after=2, policy="halt")
+
+
 def test_a_wrap_range_never_issues_an_out_of_range_legacy_counter(
     session: Session,
 ) -> None:
