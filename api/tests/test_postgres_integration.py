@@ -279,8 +279,6 @@ def test_a_put_and_a_patch_config_serialise_without_a_lost_update(
         thread.join()
 
     with factory() as check:
-        # Both serial orders leave api_key = PUT-KEY; only a stale-snapshot merge
-        # (the lock failing to engage) would restore the pre-PUT K-0.
         assert carrier_config(check, "racer")["api_key"] == "PUT-KEY"
 
 

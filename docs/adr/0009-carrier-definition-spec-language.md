@@ -172,12 +172,15 @@ Completeness is checked at two moments, deliberately asymmetric:
   nothing to measure against before a definition is published. `PUT` replaces the
   whole config; `PATCH /config` shallow-merges, so rotating one top-level key on a
   live carrier keeps the rest rather than dropping keys the running definition
-  needs. The merge is shallow: patching one field of a nested value replaces the
-  whole nested object, so a nested sibling is dropped just as a full `PUT` would
-  drop a top-level one. Config is essentially flat, so this is the pragmatic
-  call, not a deep merge; the limit is real for nested config and stated here so
-  a reader meets it before production does. Both `PUT` and `PATCH` return the
-  same missing-key report, measured against the resulting config.
+  needs. The merge is shallow, and nested `config.*` paths are supported (a
+  definition may reference `config.credentials.host`), so the limit is real:
+  patching one field of a nested value replaces the whole nested object and drops
+  its siblings, the same class of drop a full `PUT` makes at the top level. The
+  mitigation is to rotate a nested value by sending the whole nested object.
+  Shallow is the deliberate default because it is predictable; a deep-merge PATCH
+  is deferred until a carrier's config is nested enough to need it. Both `PUT` and
+  `PATCH` return the same missing-key report, measured against the resulting
+  config.
 
 Save measures against the *active* definition only: a draft's new keys are the
 publish gate's business, and the report is early feedback, not a contract. The
