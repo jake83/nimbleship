@@ -34,10 +34,12 @@ business logic).
   (historical documents by nature); CONTEXT.md carry-over notes are fine.
   PR/finding references (e.g. "refuter, PR #9") are acceptable only as a
   trailing pointer AFTER the constraint itself is stated in full.
-- Keep comments and docstrings as concise as they can be while staying
-  readable: state the non-obvious constraint or "why" and stop. Prefer one
-  tight sentence to a paragraph, and don't restate what the code already
-  shows. (Learned on PR #47, whose first cut over-explained the SSCC mint.)
+- Every comment and docstring must earn its place: state a non-obvious
+  constraint or the "why" the code cannot show, in as few words as do the job.
+  One tight sentence beats a paragraph. A comment that only restates what the
+  code does, or repeats the docstring, is deleted - not shortened; prefer no
+  comment to a fluffy one. (Re-sharpened after PRs #47 and #50-#52 shipped
+  first cuts that over-explained.)
 - Verify authored content against the code, not just review feedback. Any
   executable instruction or format-specific example you write - a shell
   command, config snippet, sample payload, or "the format is X" claim in a
