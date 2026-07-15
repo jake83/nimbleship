@@ -207,6 +207,12 @@ def test_a_carrier_failure_losing_a_duplicate_race_409s_not_500(
 
     assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 409
 
+    # The loser's call really reached the carrier, so its traffic survives the
+    # 409 (committed in its own transaction): both the winner's and loser's
+    # rows persist.
+    with app.state.session_factory() as session:
+        assert len(session.execute(select(CarrierTraffic)).scalars().all()) == 2
+
 
 def test_extra_carrier_barcodes_are_kept_in_the_booked_event(
     app: FastAPI, client: TestClient
