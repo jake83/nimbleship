@@ -95,20 +95,26 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      (steps 2-3, wasteful on this class): a local code-review at medium effort
      before pushing (standing in for the pipeline), then the `trivial` label -
      which skips the reviewer/refuter jobs while ci.yml (lint/type/test/build)
-     still runs - and merge on green. The label is the ONLY thing that skips
-     AI review; never apply it outside this definition, and when in doubt drop
-     it and take the full loop.
+     still runs - and merge on green. Apply the label AT creation
+     (`gh pr create --label trivial`): the reviewer/refuter jobs check it when
+     the PR event fires, so a label added after they start does not stop them.
+     The label is the ONLY thing that skips AI review; never apply it outside
+     this definition, and when in doubt drop it and take the full loop.
    - **Everything else**: the agent self-merges once the AI review loop has
      settled - CI green (ci.yml lint/type/test/build), the reviewer and
      refuter jobs run, and every finding triaged per "Handling review
      feedback" and the two-round rule (fixed, rebutted, or tracked as a
-     follow-up in the wrap-up). Self-merge needs a GENUINE review signal, not
+     follow-up in the wrap-up). When a reviewer or refuter job FAILS (usage
+     limit or transient), re-trigger it once - `gh run rerun --failed <run-id>`
+     - before doing anything else: a first failure is usually a usage limit
+     that clears on a retry. Self-merge needs a GENUINE review signal, not
      merely "nothing blocked": at least ONE of the reviewer or refuter must
      have completed a real pass. A usage-limited job that no-ops is NOT a pass
-     - if BOTH no-op (the two-gates-fail-together mode PR #22 already hit once),
-     do not merge: run a local code-review at medium effort as the stand-in, or
-     re-trigger and wait. One genuine pass, per "a clean machine pass is not
-     required", is enough; zero is not. Squash-merge and delete the branch.
+     - if, after the one retry, BOTH are still down (the two-gates-fail-together
+     mode PR #22 hit once), run a local code-review at medium effort as the
+     stand-in rather than merge on no signal. One genuine pass, per "a clean
+     machine pass is not required", is enough; zero is not. Squash-merge and
+     delete the branch.
      This authority is owner-granted (2026-07-15) to keep development moving
      without a human merge gate, and is revocable: the owner can reinstate
      the gate at any time. It REPLACES the former "an agent NEVER merges"
@@ -183,9 +189,10 @@ caught fix-introduced bugs three separate times, so it stays):
    verification round. This should be rare.
 4. **The wrap-up terminates the loop**: after round 2 (or a blocking round),
    the agent posts the wrap-up - what was fixed, what was rebutted, what is
-   tracked - and then self-merges per step 4's owner-granted authority (a
-   clean machine pass is not required and not waited for). It goes to the
-   human instead only when a QUESTION remains open, per step 4.
+   tracked - and then self-merges per the development loop's step 4
+   owner-granted authority (a clean machine pass is not required and not waited
+   for). It goes to the human instead only when a QUESTION remains open, per
+   that same step 4.
 
 Standing rules that survive the amendment:
 - Findings against superseded commits are rebutted with the fix reference
