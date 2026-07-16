@@ -5,8 +5,9 @@ legacy obligations - the base64 label PDF and the Parcels String (CONTEXT.md).
 
 The response is a single Paperwork return (one shipment per call), matching the
 WMS's positional shape: documents (empty), the combined label PDF, then the
-optional tracking reference and Parcels String. Its SOAP-encoding type
-decorations byte-match against the live WMS at shadow mode.
+optional tracking reference and Parcels String. The SOAP-encoding type
+decorations (xsi:type, encodingStyle) are not added yet; they byte-match against
+the live WMS at shadow mode.
 
 The staged allocate intent (service groups) is not yet mapped to a Delivery
 Proposition, so the domain runs unfiltered (proposition=None); that
@@ -62,8 +63,7 @@ def create_paperwork(
         # the fault), so a second code booking after a first would commit the
         # first's shipment even as the call faults - stranding a real carrier
         # booking the WMS is never told about. Safe batching needs a
-        # partial-success response and per-code commit isolation, which wait for
-        # the real recorded paperwork response shape (a single Paperwork return).
+        # partial-success response and per-code commit isolation, both deferred.
         raise soap.SoapFault(
             "createPaperworkForConsignments supports one consignmentCode per call"
         )
@@ -74,14 +74,10 @@ def create_paperwork(
     result = _produce(row, store, http_client, uploaders, session)
 
     def build(operation_element: ET.Element) -> None:
-        # A single Paperwork return (one shipment per call). The WMS parses it
-        # positionally, so the element order is the contract: documents (empty),
-        # the combined label PDF, then the optional tracking reference and
-        # Parcels String. documents is always present but carries nothing - the
-        # WMS reads labels, not documents.
         return_element = ET.SubElement(
             operation_element, "createPaperworkForConsignmentsReturn"
         )
+        # documents is always present but empty - the WMS reads labels, not it.
         documents = ET.SubElement(return_element, "documents")
         documents.set(f"{{{soap.XSI}}}nil", "true")
         soap.text_child(return_element, "labels", result.labels_base64)
