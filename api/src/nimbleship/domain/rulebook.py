@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
 from nimbleship.domain.propositions import known_proposition_codes
+from nimbleship.domain.service_groups import known_service_group_codes
 from nimbleship.models import RulebookVersion
 
 # Demo seed for fresh installs: two generic Drop Out services proving the
@@ -25,6 +26,9 @@ _DEMO_SERVICES: list[dict[str, object]] = [
         "countries": ["GB"],
         "cost": "4.50",
         "tie_break_order": 1,
+        # Member of the ECONOMY group so the legacy path (custom1=ECONOMY)
+        # allocates end to end (ADR 0012).
+        "service_groups": ["ECONOMY"],
     },
     {
         "code": "DROPOUT-XL",
@@ -35,6 +39,7 @@ _DEMO_SERVICES: list[dict[str, object]] = [
         "countries": ["GB", "IE", "FR"],
         "cost": "12.00",
         "tie_break_order": 2,
+        "service_groups": ["ECONOMY"],
     },
 ]
 
@@ -121,6 +126,12 @@ def create_draft(
     unknown = named - known_proposition_codes(session)
     if unknown:
         raise ValueError("unknown proposition codes: " + ", ".join(sorted(unknown)))
+    named_groups = {code for service in services for code in service.service_groups}
+    unknown_groups = named_groups - known_service_group_codes(session)
+    if unknown_groups:
+        raise ValueError(
+            "unknown service group codes: " + ", ".join(sorted(unknown_groups))
+        )
     row = RulebookVersion(
         status="draft",
         author=author,

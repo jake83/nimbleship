@@ -14,6 +14,7 @@ from nimbleship.config import get_settings
 #   815_006  carrier number sequences  (engine/plugins/number_range.py)
 #   815_007  carrier config writes     (domain/definitions.py)
 #   815_008  legacy consignment staging (legacy/staging.py)
+#   815_009  service group seeding     (domain/service_groups.py)
 
 
 class Base(DeclarativeBase):

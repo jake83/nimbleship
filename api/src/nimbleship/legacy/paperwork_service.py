@@ -9,9 +9,10 @@ optional tracking reference and Parcels String. The SOAP-encoding type
 decorations (xsi:type, encodingStyle) are not added yet; they byte-match against
 the live WMS at shadow mode.
 
-The staged allocate intent (service groups) is not yet mapped to a Delivery
-Proposition, so the domain runs unfiltered (proposition=None); that
-serviceGroup->proposition table is a Phase 4 grilling item, deferred."""
+The order's Service Groups (ADR 0012) drive eligibility: the requested `custom1`
+group unioned with the allocate call's accepted set become the domain's accepted
+set. Delivery Proposition stays absent - it is the checkout caller's concept,
+not the WMS's."""
 
 import base64
 import xml.etree.ElementTree as ET
@@ -28,6 +29,7 @@ from nimbleship.domain.consignments import (
     ConsignmentRequest,
     create_consignment,
 )
+from nimbleship.domain.service_groups import known_service_group_codes
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import soap
 from nimbleship.models import LegacyConsignmentStaging
@@ -119,7 +121,10 @@ def _produce(
     session: Session,
 ) -> _Paperwork:
     created = row.created_data or {}
-    request = _consignment_request(created)
+    accepted_groups = _accepted_service_groups(
+        created, row.allocation_data or {}, session
+    )
+    request = _consignment_request(created, accepted_groups)
     try:
         result = create_consignment(session, request, store, http_client, uploaders)
     except ConsignmentError as error:
@@ -152,7 +157,35 @@ def _produce(
     )
 
 
-def _consignment_request(created: dict[str, object]) -> ConsignmentRequest:
+def _accepted_service_groups(
+    created: dict[str, object], allocation: dict[str, object], session: Session
+) -> list[str]:
+    """The accepted Service Group set (ADR 0012): the requested group (`custom1`)
+    unioned with the allocate call's accepted set. A legacy order must carry at
+    least one group, and every code must be in the catalogue - faulting keeps a
+    groupless or off-catalogue order from silently allocating unfiltered, and
+    matches the WMS's own "no service group -> no services" behaviour."""
+    requested = created.get("service_group")
+    codes = {requested} if isinstance(requested, str) and requested else set()
+    accepted = allocation.get("service_group_codes")
+    if isinstance(accepted, list):
+        codes.update(code for code in accepted if isinstance(code, str) and code)
+    if not codes:
+        raise soap.SoapFault(
+            "createPaperworkForConsignments: the order carries no service group"
+        )
+    unknown = codes - known_service_group_codes(session)
+    if unknown:
+        raise soap.SoapFault(
+            "createPaperworkForConsignments: unknown service group(s) "
+            + ", ".join(sorted(unknown))
+        )
+    return sorted(codes)
+
+
+def _consignment_request(
+    created: dict[str, object], accepted_service_groups: list[str]
+) -> ConsignmentRequest:
     parcels = created.get("parcels")
     parcel_list = parcels if isinstance(parcels, list) else []
     return ConsignmentRequest(
@@ -161,12 +194,13 @@ def _consignment_request(created: dict[str, object]) -> ConsignmentRequest:
         address_lines=_string_list(created.get("address_lines")),
         postcode=str(created.get("postcode") or ""),
         destination_country=str(created.get("destination_country") or ""),
-        # Deferred: the staged service groups map to a Delivery Proposition via a
-        # grilling-item table not built yet, so dispatch runs unfiltered for now.
+        # The Legacy Interface filters by Service Group (ADR 0012), not the
+        # checkout-only Delivery Proposition; proposition stays absent.
         proposition=None,
         parcel_weights=[_weight(parcel) for parcel in parcel_list],
         warehouse=_optional_str(created.get("warehouse")),
         force_service=None,
+        accepted_service_groups=accepted_service_groups,
     )
 
 

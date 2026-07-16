@@ -129,11 +129,27 @@ one carrier's file format, not the concept)
 The customer-facing delivery promise: next day, next day pre-10, economy,
 Saturday, and so on. Sold at checkout, honoured at dispatch: services declare
 which propositions they fulfil, and dispatch selects only among services
-fulfilling the proposition the customer bought. Replaces the "promise" half
-of the old service groups; the order-type half (MARKETPLACE, AFTERSALE)
-becomes order-type facts instead.
-_Avoid_: service group (the old overloaded term), shipping fee filter (the
-WMS-side transport for it)
+fulfilling the proposition the customer bought. The single value a JSON API
+caller states directly. Distinct from a Service Group: a proposition is a
+promise, a group is an allow-list of carrier services; a service may declare
+both, and the two filter independently.
+_Avoid_: conflating with Service Group; shipping fee filter (the WMS-side
+transport for it)
+
+**Service Group**:
+A named allow-list of carrier services a legacy order is permitted to use,
+carried through from the WMS dialect (`custom1`, the requested group, unioned
+with `acceptableCarrierServiceGroupCodes`, the accepted set). An eligibility
+filter, not a promise: dispatch returns only services declared members of an
+accepted group, so a service in no group is unreachable under a filter (not a
+wildcard). Services declare their memberships in the rulebook; the catalogue
+of codes is company data, adopted verbatim from the WMS (no remap). Only the
+Legacy Interface sends them - the JSON API filters by Delivery Proposition
+instead. An empty accepted set does not restrict (a JSON order is unaffected);
+the Legacy Interface faults a legacy order that carries no group at all, and
+faults an accepted code absent from the catalogue.
+_Avoid_: treating it as a Delivery Proposition or "the promise half"; a
+no-group service as a wildcard; remapping the WMS codes
 
 **Constraint**:
 A named, authored statement in the eligibility rulebook: a scope (which

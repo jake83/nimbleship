@@ -477,6 +477,8 @@ def test_paperwork_runs_the_domain_and_returns_labels_and_the_parcels_string(
         )
         assert consignment.status == "allocated"
         assert consignment.carrier == "dropout"
+        # The accepted groups are persisted so a dry-run replays the filter.
+        assert consignment.accepted_service_groups == ["ECONOMY"]
 
 
 _FURDECO_DEFINITION = (
@@ -503,6 +505,9 @@ _FURDECO_RULEBOOK = {
             "countries": ["GB"],
             "cost": "25.00",
             "tie_break_order": 1,
+            # Member of ECONOMY (the fixture's custom1) so the legacy filter
+            # keeps it eligible (ADR 0012).
+            "service_groups": ["ECONOMY"],
         }
     ],
 }
@@ -579,6 +584,153 @@ def test_paperwork_for_a_live_carrier_carries_tracking_and_carrier_barcodes(
         "95000254580-parcel-1:001122334455667688,"
         "95000254580-parcel-2:123456789123456789"
     )
+
+
+def test_dry_run_replays_a_legacy_orders_accepted_groups(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A legacy order accepted only ECONOMY. A draft adds a cheaper NEXTDAY-only
+    # service; the dry-run must exclude it (replaying the stored group filter),
+    # not pick it - which it would if the accepted groups were lost on replay.
+    _create_depot1(client)
+    code = _stage_and_allocate(client, wms_auth, app)
+    client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "DROPOUT-STD",
+                "carrier": "dropout",
+                "name": "Drop Out Standard",
+                "weight_min_kg": "0",
+                "weight_max_kg": "30",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "service_groups": ["ECONOMY"],
+            },
+            {
+                "code": "DROPOUT-ND",
+                "carrier": "dropout",
+                "name": "Drop Out Next Day",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "1.00",
+                "tie_break_order": 2,
+                "service_groups": ["NEXTDAY"],
+            },
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+
+    response = client.post(f"/api/rulebook/versions/{version}/dry-run", json={})
+
+    assert response.status_code == 200
+    [result] = response.json()["results"]
+    # The cheaper NEXTDAY service is filtered out: ECONOMY was replayed.
+    assert result["draft_service"] == "DROPOUT-STD"
+
+
+def _stage_custom1(
+    client: TestClient, auth: tuple[str, str], app: FastAPI, custom1: bytes
+) -> str:
+    # The fixture's custom1 is ECONOMY; swap it (or remove the element with b"")
+    # to drive the Service Group filter (ADR 0012).
+    body = _fixture("create_consignments_request.xml").replace(
+        b'<custom1 xsi:type="xsd:string">ECONOMY</custom1>', custom1
+    )
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert isinstance(row.consignment_code, str)
+        return row.consignment_code
+
+
+def _allocate(client: TestClient, auth: tuple[str, str], code: str) -> None:
+    client.post(
+        "/AllocationService",
+        content=_allocate_body([code], []),
+        headers={"Content-Type": "text/xml"},
+        auth=auth,
+    )
+
+
+def test_paperwork_faults_on_an_unknown_service_group(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A group the WMS knows but the catalogue does not is a sync gap; faulting
+    # keeps it from silently allocating unfiltered (ADR 0012).
+    _create_depot1(client)
+    code = _stage_custom1(
+        client, wms_auth, app, b'<custom1 xsi:type="xsd:string">MYSTERY</custom1>'
+    )
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "unknown service group" in response.text
+    assert "MYSTERY" in response.text
+
+
+def test_paperwork_faults_when_the_order_carries_no_service_group(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The WMS's own "no service group -> no services" behaviour, surfaced as a
+    # fault rather than an unfiltered allocation (ADR 0012).
+    _create_depot1(client)
+    code = _stage_custom1(client, wms_auth, app, b"")
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "no service group" in response.text
+
+
+def test_paperwork_filters_out_a_carrier_not_in_the_accepted_group(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # NEXTDAY is a real catalogue group, but the demo Drop Out services are only
+    # in ECONOMY, so an order accepting only NEXTDAY has no eligible service.
+    _create_depot1(client)
+    code = _stage_custom1(
+        client, wms_auth, app, b'<custom1 xsi:type="xsd:string">NEXTDAY</custom1>'
+    )
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "could not be allocated" in response.text
+    with app.state.session_factory() as session:
+        assert not list(session.execute(select(Consignment)).scalars())
 
 
 def test_paperwork_faults_with_no_codes(

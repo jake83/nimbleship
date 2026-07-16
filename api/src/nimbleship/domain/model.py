@@ -33,6 +33,10 @@ class ServiceDeclaration(BaseModel):
     # Delivery Proposition codes this service fulfils (chunk B defines
     # semantics); [] = unrestricted.
     propositions: list[str] = []
+    # Service Group codes this service is a member of (ADR 0012). An allow-list,
+    # not a promise: [] means the service belongs to no group, so it is
+    # unreachable when a group filter is active - never a wildcard.
+    service_groups: list[str] = []
     # Banded Delivery Cost/Charge structures (chunks C and D implement the
     # calculators); None = flat `cost`, no charges configured.
     cost_bands: list[CostBand] | None = None
@@ -80,6 +84,9 @@ class Shipment(BaseModel):
     value: Decimal | None = None
     # The Delivery Proposition the customer bought; None = no filter.
     proposition: str | None = None
+    # Service Group codes the order accepts (ADR 0012); the Legacy Interface
+    # supplies them, the JSON path never does. [] = no group filter (optimistic).
+    accepted_service_groups: list[str] = []
     # Shipping area codes matched from the destination postcode.
     shipping_areas: list[str] = []
     # The dispatching Warehouse code; None = not stated (charges that are

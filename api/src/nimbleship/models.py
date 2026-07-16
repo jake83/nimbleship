@@ -31,6 +31,10 @@ class Consignment(Base):
     # The Delivery Proposition the customer bought; kept so dry-run replays
     # evaluate the same facts dispatch saw (ADR 0003/0007).
     proposition: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The Service Groups the order accepted (ADR 0012); like proposition, kept
+    # so dry-run replays a legacy order's group filter faithfully. Empty for
+    # JSON orders, which carry no groups.
+    accepted_service_groups: Mapped[list[str]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(32))
     carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
     service: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -85,6 +89,18 @@ class DeliveryProposition(Base):
     natural key rulebook declarations reference."""
 
     __tablename__ = "delivery_propositions"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(String(500))
+
+
+class ServiceGroup(Base):
+    """The Service Group catalogue (CONTEXT.md, ADR 0012): the carrier-service
+    allow-lists the WMS filters by. The code is the natural key rulebook
+    declarations reference; codes are adopted verbatim from the WMS."""
+
+    __tablename__ = "service_groups"
 
     code: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))

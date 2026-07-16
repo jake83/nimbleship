@@ -117,6 +117,7 @@ def test_trace_records_every_check_for_every_service() -> None:
             "weight",
             "dimension",
             "proposition",
+            "service_group",
             "girth",
             "area_blocked",
             "area_served",
@@ -513,3 +514,51 @@ def test_service_serving_anywhere_accepts_any_area() -> None:
     result = allocate(rulebook, shipment(shipping_areas=["HIGHLANDS"]))
 
     assert result.selected is not None
+
+
+def test_service_in_an_accepted_group_is_eligible() -> None:
+    rulebook = Rulebook(version=1, services=[service(service_groups=["AFTERSALE"])])
+
+    result = allocate(
+        rulebook, shipment(accepted_service_groups=["AFTERSALE", "FEDEX"])
+    )
+
+    assert result.selected is not None
+
+
+def test_service_in_no_accepted_group_is_excluded() -> None:
+    rulebook = Rulebook(version=1, services=[service(service_groups=["PALLET"])])
+
+    result = allocate(rulebook, shipment(accepted_service_groups=["AFTERSALE"]))
+
+    assert result.selected is None
+    failed = [c for c in result.service_results[0].checks if not c.ok]
+    assert [c.name for c in failed] == ["service_group"]
+
+
+def test_service_in_no_group_is_excluded_under_a_filter() -> None:
+    # Allow-list, not wildcard (unlike proposition): a service with no declared
+    # group is unreachable when the WMS sends an accepted set.
+    rulebook = Rulebook(version=1, services=[service(service_groups=[])])
+
+    result = allocate(rulebook, shipment(accepted_service_groups=["AFTERSALE"]))
+
+    assert result.selected is None
+    check = next(
+        c for c in result.service_results[0].checks if c.name == "service_group"
+    )
+    assert check.ok is False
+
+
+def test_empty_accepted_group_set_does_not_restrict() -> None:
+    # The JSON path never sends groups: an empty accepted set is optimistic.
+    rulebook = Rulebook(version=1, services=[service(service_groups=["AFTERSALE"])])
+
+    result = allocate(rulebook, shipment(accepted_service_groups=[]))
+
+    assert result.selected is not None
+    check = next(
+        c for c in result.service_results[0].checks if c.name == "service_group"
+    )
+    assert check.ok is True
+    assert "optimistic" in check.actual

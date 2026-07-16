@@ -68,11 +68,31 @@ behaviour: it does the same (real carrier work only at paperwork).
   in the old proxy's response template + a recorded example; the SOAP-encoding
   type decorations byte-match at shadow mode (PR6), which needs the live WMS.
   No owner input required.
-- **PR4b-2: the translation mappings** (grilling-gated, open questions 1-3).
-  The serviceGroup -> Delivery Proposition table (~39 rows), Order Origin
-  derivation, and the sentinel-zero field set are company-specific data and
-  per-caller config (never code constants), so they need a grilling session to
-  settle the config schema and confirm the values before landing.
+- **PR4b-2: the Service Group eligibility axis** (grilled 2026-07-16 -> ADR
+  0012). A service group is not a Delivery Proposition but a distinct allow-list
+  of carrier services the WMS filters by; NimbleShip adds it as its own
+  declaration kind (a `ServiceGroup` catalogue, `service_groups` memberships on
+  service declarations, an `accepted_service_groups` shipment fact, and a
+  `ServiceGroupCheck` with allow-list semantics). The Legacy Interface unions
+  `custom1` with `acceptableCarrierServiceGroupCodes`, adopts the WMS codes
+  verbatim (no remap), and faults on a groupless legacy order or an
+  off-catalogue code. Not a translation table - catalogue data + rulebook
+  memberships. Removes the `proposition=None` unfiltered gap for legacy orders.
+- **PR4b-3: sentinel-zero value.** Thread `consignmentValue` -> `Shipment.value`
+  at the paperwork bridge, translating the WMS's `0` (or absent) to `None`
+  (absent fact, ADR 0007). Small: one already-staged field, a fixed per-field
+  rule, feeds cost/charge bands.
+- **PR4b-4: derived max dimension.** `maxDimension` -> `Shipment.max_dimension_cm`.
+  The consignment-level `maxDimension` the WMS sends is almost always the
+  sentinel `0`, so the value is derived from the per-parcel dimensions:
+  `max(consignmentMaxDimension, max over parcels of max(depth, height, width))`,
+  `0`/nil treated as absent, `None` if nothing is provided. Needs
+  `createConsignments` to also stage the per-parcel dimensions.
+- **Deferred - Order Origin + order-type facts** (open questions 1-2). Marketplace/
+  aftersale order-type facts and Order Origin derivation have no consumer yet
+  (no constraint check reads them; Customs Identity is unbuilt), so their
+  per-caller translation config is deferred until the first consumer lands,
+  rather than build facts nothing reads.
 - **PR5: manifest + dispatch** (markAsReadyToManifest, createManifest) onto the
   existing dispatch-confirmation/manifest domain path.
 - **PR6+: shadow mode.** Replay recorded traffic through the edge, diff
@@ -87,17 +107,22 @@ behaviour: it does the same (real carrier work only at paperwork).
 Batched for a session; none block PR1-3 or the PR4a bridge, each is needed by
 the PR noted.
 
-1. **serviceGroup -> Delivery Proposition mapping** (PR4b-2): the per-value
-   table from incoming `custom1`/serviceGroup codes to a proposition +
-   order-type facts (CONTEXT.md flags a ~40-row table). Domain knowledge only
-   the old system/owner has. PR4a runs dispatch unfiltered (proposition=None)
-   until this lands.
-2. **Order Origin derivation rules** (PR4b-2): the per-caller config mapping
-   old signals (order-id prefix/length, recipient email domain) to
-   platform/website/marketplace facts (CONTEXT.md: Order Origin).
-3. **Sentinel-zero fields** (PR4b-2): the full set of numeric fields the WMS
-   sends as `0` meaning absent (consignmentValue, maxDimension confirmed - are
-   there others?). Translated to absent facts, never the number zero.
+1. **serviceGroup handling** - settled 2026-07-16 (ADR 0012). Not a mapping to
+   a proposition: a service group is its own carrier-service allow-list, carried
+   through verbatim as the Service Group eligibility axis (PR4b-2). The "~40-row
+   table" is the `ServiceGroup` catalogue plus rulebook memberships, not a
+   translation table.
+2. **Order Origin derivation rules** - deferred until a consumer (no constraint
+   check or Customs Identity reads origin/order-type facts yet). The per-caller
+   config mapping old signals (order-id prefix/length, recipient email domain)
+   to platform/website/marketplace facts (CONTEXT.md: Order Origin) lands with
+   its first consumer, not before.
+3. **Sentinel-zero fields** - settled 2026-07-16. The two the domain consumes:
+   `consignmentValue` -> `value` (PR4b-3) and `maxDimension` ->
+   `max_dimension_cm` (PR4b-4, derived from per-parcel dimensions because the
+   consignment field is almost always the sentinel `0`). Translated to absent
+   facts, never the number zero. Others from the old parser were internal, not
+   WMS-inbound facts the domain reads.
 4. **Paperwork response fidelity** - the element structure (single Paperwork:
    `documents`/`labels`/positional `trackingReference`/`parcels`) and the Drop
    Out tracking-omit rule are settled in PR4b-1, grounded in the old proxy's
