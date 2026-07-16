@@ -53,41 +53,35 @@ def create_paperwork(
     codes = request.string_array(request.operation, "consignmentCodes")
     if not codes:
         raise soap.SoapFault("createPaperworkForConsignments: no consignmentCodes")
-    # Validate the whole batch - blanks, duplicates, lifecycle state - before any
-    # domain work, so a structural fault never rolls back a shipment an earlier
-    # code already booked at its carrier.
-    _validate_codes(codes)
-    rows = [_staged_row(session, code) for code in codes]
-    results = [_produce(row, store, http_client, uploaders, session) for row in rows]
+    if len(codes) > 1:
+        # One shipment per call. create_consignment commits the request session
+        # on its own failure paths (a failed booking's audit trail must survive
+        # the fault), so a second code booking after a first would commit the
+        # first's shipment even as the call faults - stranding a real carrier
+        # booking the WMS is never told about. Safe batching needs a
+        # partial-success response and per-code commit isolation, which wait for
+        # the real recorded paperwork response shape (a single Paperwork return).
+        raise soap.SoapFault(
+            "createPaperworkForConsignments supports one consignmentCode per call"
+        )
+    code = codes[0]
+    if not code:
+        raise soap.SoapFault("createPaperworkForConsignments: a blank consignmentCode")
+    row = _staged_row(session, code)
+    result = _produce(row, store, http_client, uploaders, session)
 
     def build(operation_element: ET.Element) -> None:
         return_element = ET.SubElement(
             operation_element, "createPaperworkForConsignmentsReturn"
         )
-        for result in results:
-            item = ET.SubElement(return_element, "Item")
-            soap.text_child(item, "consignmentCode", result.code)
-            if result.tracking_reference is not None:
-                soap.text_child(item, "trackingReference", result.tracking_reference)
-            soap.text_child(item, "parcels", result.parcels)
-            soap.text_child(item, "labels", result.labels_base64)
+        item = ET.SubElement(return_element, "Item")
+        soap.text_child(item, "consignmentCode", result.code)
+        if result.tracking_reference is not None:
+            soap.text_child(item, "trackingReference", result.tracking_reference)
+        soap.text_child(item, "parcels", result.parcels)
+        soap.text_child(item, "labels", result.labels_base64)
 
     return soap.response("createPaperworkForConsignmentsResponse", build)
-
-
-def _validate_codes(codes: list[str]) -> None:
-    seen: set[str] = set()
-    for code in codes:
-        if not code:
-            raise soap.SoapFault(
-                "createPaperworkForConsignments: a blank consignmentCode"
-            )
-        if code in seen:
-            raise soap.SoapFault(
-                f"createPaperworkForConsignments: duplicate consignmentCode "
-                f"'{code}' in one batch"
-            )
-        seen.add(code)
 
 
 def _staged_row(session: Session, code: str) -> LegacyConsignmentStaging:

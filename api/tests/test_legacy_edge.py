@@ -493,43 +493,37 @@ def test_paperwork_faults_when_allocate_has_not_run(
         assert not list(session.execute(select(Consignment)).scalars())
 
 
-def test_paperwork_faults_on_a_duplicate_code_in_one_batch(
+def test_paperwork_faults_on_more_than_one_code(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
-    code = _stage_and_allocate(client, wms_auth, app)
-
+    # One shipment per call: a second code is refused up front, before any
+    # domain work, so a code that books can never be stranded behind the blanket
+    # fault a later code would raise (the domain commits its own failure paths).
     response = client.post(
         "/ConsignmentService",
-        content=_paperwork_body([code, code]),
+        content=_paperwork_body(["NS0000001", "NS0000002"]),
         headers={"Content-Type": "text/xml"},
         auth=wms_auth,
     )
 
     assert response.status_code == 500
-    assert "duplicate consignmentCode" in response.text
-    # The whole batch faults before any domain work, so nothing is booked.
+    assert "one consignmentCode per call" in response.text
     with app.state.session_factory() as session:
         assert not list(session.execute(select(Consignment)).scalars())
 
 
-def test_paperwork_faults_on_a_blank_code_rather_than_dropping_it(
-    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+def test_paperwork_faults_on_a_blank_code(
+    client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
-    _create_depot1(client)
-    code = _stage_and_allocate(client, wms_auth, app)
-
     response = client.post(
         "/ConsignmentService",
-        content=_paperwork_body([code, ""]),
+        content=_paperwork_body([""]),
         headers={"Content-Type": "text/xml"},
         auth=wms_auth,
     )
 
     assert response.status_code == 500
     assert "blank consignmentCode" in response.text
-    # The valid code's shipment must not be half-produced when the batch faults.
-    with app.state.session_factory() as session:
-        assert not list(session.execute(select(Consignment)).scalars())
 
 
 def test_paperwork_faults_when_the_shipment_cannot_be_allocated(

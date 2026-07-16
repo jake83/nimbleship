@@ -52,11 +52,15 @@ behaviour: it does the same (real carrier work only at paperwork).
   (they need the grilling session's domain knowledge): the serviceGroup ->
   Delivery Proposition mapping (so dispatch runs unfiltered, proposition=None, for
   now), Order Origin derivation, the full sentinel-zero field set, and
-  byte-exact response fidelity. Known limitations carried to PR4b/PR5: a
+  byte-exact response fidelity. Scope guard: PR4a handles one consignmentCode
+  per call (matching the real recorded single-Paperwork response) and refuses a
+  batch up front - create_consignment commits the request session on its own
+  failure paths, so a second code booking after a first would strand the first's
+  real carrier booking behind the blanket fault the second raises; safe batching
+  needs a partial-success response and per-code commit isolation, deferred with
+  the response-fidelity work to PR4b. Known limitations carried to PR4b/PR5: a
   re-sent paperwork call faults on the duplicate-order 409 (no reprint path yet);
-  a multi-code batch that faults mid-loop rolls back an earlier code's shipment,
-  so batching real bookings needs per-code commit isolation; and a rejected
-  shipment faults without leaving a domain Consignment behind.
+  and a rejected shipment faults without leaving a domain Consignment behind.
 - **PR4b: paperwork fidelity + mappings.** Land the four grilling-item
   obligations above against a real recorded paperwork response (open questions
   1-4).
