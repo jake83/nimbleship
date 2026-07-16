@@ -3,10 +3,15 @@ real work. It consumes the staged create+allocate data, runs the atomic domain
 create-consignment, and translates the result into the paperwork response's
 legacy obligations - the base64 label PDF and the Parcels String (CONTEXT.md).
 
+The response is a single Paperwork return (one shipment per call), matching the
+WMS's positional shape: documents (empty), the combined label PDF, then the
+optional tracking reference and Parcels String. The SOAP-encoding type
+decorations (xsi:type, encodingStyle) are not added yet; they byte-match against
+the live WMS at shadow mode.
+
 The staged allocate intent (service groups) is not yet mapped to a Delivery
-Proposition, so the domain runs unfiltered (proposition=None); the
-serviceGroup->proposition table and byte-exact response fidelity are the
-Phase 4 grilling items, deferred to a later slice."""
+Proposition, so the domain runs unfiltered (proposition=None); that
+serviceGroup->proposition table is a Phase 4 grilling item, deferred."""
 
 import base64
 import xml.etree.ElementTree as ET
@@ -37,7 +42,6 @@ _TRACKING_LIST_SEPARATOR = ","
 
 @dataclass
 class _Paperwork:
-    code: str
     tracking_reference: str | None
     parcels: str
     labels_base64: str
@@ -59,8 +63,7 @@ def create_paperwork(
         # the fault), so a second code booking after a first would commit the
         # first's shipment even as the call faults - stranding a real carrier
         # booking the WMS is never told about. Safe batching needs a
-        # partial-success response and per-code commit isolation, which wait for
-        # the real recorded paperwork response shape (a single Paperwork return).
+        # partial-success response and per-code commit isolation, both deferred.
         raise soap.SoapFault(
             "createPaperworkForConsignments supports one consignmentCode per call"
         )
@@ -74,12 +77,15 @@ def create_paperwork(
         return_element = ET.SubElement(
             operation_element, "createPaperworkForConsignmentsReturn"
         )
-        item = ET.SubElement(return_element, "Item")
-        soap.text_child(item, "consignmentCode", result.code)
+        # documents is always present but empty - the WMS reads labels, not it.
+        documents = ET.SubElement(return_element, "documents")
+        documents.set(f"{{{soap.XSI}}}nil", "true")
+        soap.text_child(return_element, "labels", result.labels_base64)
         if result.tracking_reference is not None:
-            soap.text_child(item, "trackingReference", result.tracking_reference)
-        soap.text_child(item, "parcels", result.parcels)
-        soap.text_child(item, "labels", result.labels_base64)
+            soap.text_child(
+                return_element, "trackingReference", result.tracking_reference
+            )
+        soap.text_child(return_element, "parcels", result.parcels)
 
     return soap.response("createPaperworkForConsignmentsResponse", build)
 
@@ -134,11 +140,13 @@ def _produce(
             f"createPaperworkForConsignments: {request.order_number} produced no label"
         )
     return _Paperwork(
-        code=str(row.consignment_code),
         tracking_reference=consignment.tracking_reference,
         parcels=_parcels_string(
             request.order_number,
-            [(p.sequence, p.barcode) for p in consignment.parcels],
+            # The carrier's own barcode when it reported one, else the Parcel
+            # Barcode this system prints (as Drop Out, with no carrier barcode,
+            # uses) - CONTEXT.md: Parcels String.
+            [(p.sequence, p.carrier_barcode or p.barcode) for p in consignment.parcels],
         ),
         labels_base64=base64.b64encode(pdf).decode("ascii"),
     )
