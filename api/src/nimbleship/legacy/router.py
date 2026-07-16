@@ -5,6 +5,7 @@ own. Per ADR 0011 the create and allocate calls stage; only paperwork will call
 the domain core (the same operations the JSON API uses)."""
 
 import secrets
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
-from nimbleship.legacy import consignment_service, soap
+from nimbleship.legacy import allocation_service, consignment_service, soap
 from nimbleship.legacy.soap import SoapFault
 
 router = APIRouter(tags=["legacy"])
@@ -70,8 +71,19 @@ WmsAuth = Depends(require_wms)
 
 @router.post("/ConsignmentService", dependencies=[WmsAuth])
 def consignment_service_endpoint(body: RawBody, session: SessionDep) -> Response:
+    return _dispatch(consignment_service.handle, body, session)
+
+
+@router.post("/AllocationService", dependencies=[WmsAuth])
+def allocation_service_endpoint(body: RawBody, session: SessionDep) -> Response:
+    return _dispatch(allocation_service.handle, body, session)
+
+
+def _dispatch(
+    handler: Callable[[bytes, Session], bytes], body: bytes, session: Session
+) -> Response:
     try:
-        return _reply(consignment_service.handle(body, session))
+        return _reply(handler(body, session))
     except SoapFault as error:
         # Discard any rows a partly-processed batch flushed, so the fault the WMS
         # sees means nothing was staged - the request-scoped commit would
