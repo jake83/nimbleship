@@ -35,6 +35,10 @@ class Consignment(Base):
     # so dry-run replays a legacy order's group filter faithfully. Empty for
     # JSON orders, which carry no groups.
     accepted_service_groups: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # The consignment's largest single dimension in cm (a decimal string, like
+    # a parcel weight); kept so dry-run replays the dimension check. None when no
+    # dimension was supplied (JSON orders, or a WMS order sending only sentinels).
+    max_dimension_cm: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(32))
     carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
     service: Mapped[str | None] = mapped_column(String(64), nullable=True)

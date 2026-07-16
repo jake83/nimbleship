@@ -637,6 +637,119 @@ def test_dry_run_replays_a_legacy_orders_accepted_groups(
     assert result["draft_service"] == "DROPOUT-STD"
 
 
+_PARCEL_150CM = (
+    b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>',
+    b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>'
+    b'<parcelHeight xsi:type="xsd:double">150</parcelHeight>',
+)
+
+
+def test_dry_run_replays_a_legacy_orders_derived_max_dimension(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A legacy order with a 150cm parcel allocates against the (limit-free) demo
+    # rulebook, storing max_dimension_cm=150. A draft adding a 100cm limit must
+    # exclude it on replay - which needs the derived dimension persisted, not
+    # re-derived optimistically as absent.
+    _create_depot1(client)
+    body = _fixture("create_consignments_request.xml").replace(*_PARCEL_150CM)
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        code = row.consignment_code
+        assert isinstance(code, str)
+    _allocate(client, wms_auth, code)
+    client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "DROPOUT-STD",
+                "carrier": "dropout",
+                "name": "Drop Out Standard",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "service_groups": ["ECONOMY"],
+                "max_dimension_cm": "100",
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+
+    response = client.post(f"/api/rulebook/versions/{version}/dry-run", json={})
+
+    assert response.status_code == 200
+    [result] = response.json()["results"]
+    # The 150cm dimension was replayed, so the 100cm-limited draft excludes it.
+    assert result["draft_service"] is None
+
+
+def test_paperwork_excludes_a_service_when_a_parcel_exceeds_its_dimension_limit(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The WMS's per-parcel dimensions derive the consignment max dimension, which
+    # the dimension check enforces: a 150cm parcel exceeds the service's 100cm
+    # limit, so the order has no eligible service (it would allocate if the
+    # dimensions were dropped and the check ran optimistically).
+    _create_depot1(client)
+    limited = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "DROPOUT-STD",
+                "carrier": "dropout",
+                "name": "Drop Out Standard",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "service_groups": ["ECONOMY"],
+                "max_dimension_cm": "100",
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=limited).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+    body = _fixture("create_consignments_request.xml").replace(*_PARCEL_150CM)
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert row.created_data is not None
+        assert row.created_data["parcels"][0]["height_cm"] == "150"
+        code = row.consignment_code
+        assert isinstance(code, str)
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "could not be allocated" in response.text
+
+
 def test_paperwork_finds_nothing_when_no_service_declares_a_group(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
