@@ -25,6 +25,10 @@ def _allocate_consignments(request: soap.SoapRequest, session: Session) -> bytes
     service_groups = _service_groups(request)
     seen: set[str] = set()
     for code in codes:
+        # A blank Item is a code the WMS sent but did not fill; fault rather than
+        # drop it, or the WMS believes a shipment it never named was allocated.
+        if not code:
+            raise soap.SoapFault("allocateConsignments: a blank consignmentCode")
         if code in seen:
             raise soap.SoapFault(
                 f"allocateConsignments: duplicate consignmentCode '{code}' in one batch"
@@ -56,4 +60,11 @@ def _service_groups(request: soap.SoapRequest) -> list[str]:
     filter_element = request.follow_child(request.operation, "filter")
     if filter_element is None:
         return []
-    return request.string_array(filter_element, "acceptableCarrierServiceGroupCodes")
+    # Blank group codes are noise (unlike a blank consignment code); drop them.
+    return [
+        group
+        for group in request.string_array(
+            filter_element, "acceptableCarrierServiceGroupCodes"
+        )
+        if group
+    ]
