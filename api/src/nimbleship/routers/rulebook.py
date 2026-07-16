@@ -148,6 +148,7 @@ def _shipment_from(session: Session, consignment: Consignment) -> Shipment:
         ),
         parcel_count=len(consignment.parcels),
         proposition=consignment.proposition,
+        accepted_service_groups=consignment.accepted_service_groups,
         shipping_areas=resolve_shipping_areas(
             session, consignment.postcode, consignment.destination_country
         ),

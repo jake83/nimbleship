@@ -7,7 +7,7 @@ carrying the status and message each edge maps to its own error shape."""
 import base64
 import binascii
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 import httpx
@@ -63,6 +63,9 @@ class ConsignmentRequest:
     proposition: str | None
     parcel_weights: list[Decimal]
     warehouse: str | None
+    # Service Group codes the order accepts (ADR 0012); the Legacy Interface
+    # supplies them, the JSON API leaves them empty (it filters by proposition).
+    accepted_service_groups: list[str] = field(default_factory=list)
     # Testing tools only: pins the allocation to one service. The edge is
     # responsible for gating this (the JSON API's 403); the domain trusts it.
     force_service: str | None = None
@@ -324,6 +327,7 @@ def create_consignment(
         proposition=request.proposition,
         shipping_areas=shipping_areas,
         warehouse=request.warehouse,
+        accepted_service_groups=request.accepted_service_groups,
     )
     result = allocate(rulebook, shipment)
     if request.force_service is not None:
@@ -368,6 +372,7 @@ def create_consignment(
         postcode=request.postcode,
         destination_country=request.destination_country,
         proposition=request.proposition,
+        accepted_service_groups=request.accepted_service_groups,
         status="allocated" if selected else "rejected",
         carrier=selected.carrier if selected else None,
         service=selected.code if selected else None,

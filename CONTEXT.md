@@ -129,11 +129,27 @@ one carrier's file format, not the concept)
 The customer-facing delivery promise: next day, next day pre-10, economy,
 Saturday, and so on. Sold at checkout, honoured at dispatch: services declare
 which propositions they fulfil, and dispatch selects only among services
-fulfilling the proposition the customer bought. Replaces the "promise" half
-of the old service groups; the order-type half (MARKETPLACE, AFTERSALE)
-becomes order-type facts instead.
-_Avoid_: service group (the old overloaded term), shipping fee filter (the
-WMS-side transport for it)
+fulfilling the proposition the customer bought. The single value a JSON API
+caller states directly. Distinct from a Service Group: a proposition is a
+promise, a group is an allow-list of carrier services; a service may declare
+both, and the two filter independently.
+_Avoid_: conflating with Service Group; shipping fee filter (the WMS-side
+transport for it)
+
+**Service Group**:
+A named allow-list of carrier services a legacy order is permitted to use,
+carried through from the WMS dialect (`custom1`, the requested group, unioned
+with `acceptableCarrierServiceGroupCodes`, the accepted set). An eligibility
+filter, not a promise: dispatch returns only services declared members of an
+accepted group, so a service in no group is unreachable under a filter (not a
+wildcard). Services declare their memberships in the rulebook; the catalogue
+of codes is company data, adopted verbatim from the WMS (no remap). Only the
+Legacy Interface sends them - the JSON API filters by Delivery Proposition
+instead. An empty accepted set does not restrict (a JSON order is unaffected);
+the Legacy Interface faults a legacy order that carries no group at all, and
+faults an accepted code absent from the catalogue.
+_Avoid_: treating it as a Delivery Proposition or "the promise half"; a
+no-group service as a wildcard; remapping the WMS codes
 
 **Constraint**:
 A named, authored statement in the eligibility rulebook: a scope (which
@@ -178,12 +194,10 @@ Voila adapter
 
 ## Flagged ambiguities
 
-- **Service Group** (resolved in Session A): the old concept split in two -
-  **Delivery Proposition** for the customer promise, order-type facts
-  (marketplace, aftersale) for the rest. The legacy edge carries a per-value
-  mapping table from incoming serviceGroup codes to proposition + facts;
-  building that 40-row table during migration is the forcing function that
-  documents what each code meant.
+- **Service Group**: resolved (ADR 0012) - see the Language entry above. Not the
+  "split into a proposition plus order-type facts" the Session A note first
+  assumed: the audit showed a group is a carrier-service allow-list, carried
+  through as its own eligibility axis with no mapping table.
 - Legacy sentinel zeros: checkout requests send unknown numerics as 0
   (consignmentValue, maxDimension). The Legacy Interface must translate
   these to absent facts, never the number zero.

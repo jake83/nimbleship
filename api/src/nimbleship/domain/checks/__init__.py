@@ -15,6 +15,7 @@ from nimbleship.domain.checks.country import CountryCheck
 from nimbleship.domain.checks.dimension import DimensionCheck
 from nimbleship.domain.checks.girth import GirthCheck
 from nimbleship.domain.checks.proposition import PropositionCheck
+from nimbleship.domain.checks.service_group import ServiceGroupCheck
 from nimbleship.domain.checks.weight import WeightBandCheck
 from nimbleship.domain.model import Check, ServiceDeclaration, Shipment
 
@@ -30,6 +31,7 @@ ALL_CHECKS: tuple[DeclarationCheck, ...] = (
     WeightBandCheck(),
     DimensionCheck(),
     PropositionCheck(),
+    ServiceGroupCheck(),
     GirthCheck(),
     AreaBlockedCheck(),
     AreaServedCheck(),
