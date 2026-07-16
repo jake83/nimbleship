@@ -1,25 +1,32 @@
 """The Legacy Interface's HTTP surface (ADR 0002): SOAP endpoints the WMS
 posts to, gated by HTTP Basic Auth. Each endpoint translates the dialect onto
 the domain's shape and serialises the reply back, with no business logic of its
-own. Per ADR 0011 the create and allocate calls stage; only paperwork will call
-the domain core (the same operations the JSON API uses)."""
+own. Per ADR 0011 the create and allocate calls stage; only paperwork calls the
+domain core (the same operations the JSON API uses)."""
 
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy.orm import Session
 
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
+from nimbleship.http_client import get_http_client
+from nimbleship.labels.store import LabelStore, get_label_store
 from nimbleship.legacy import allocation_service, consignment_service, soap
 from nimbleship.legacy.soap import SoapFault
+from nimbleship.uploaders import FileUploader, get_carrier_uploaders
 
 router = APIRouter(tags=["legacy"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
+LabelStoreDep = Annotated[LabelStore, Depends(get_label_store)]
+HttpClientDep = Annotated[httpx.Client, Depends(get_http_client)]
+UploaderDep = Annotated[Mapping[str, FileUploader], Depends(get_carrier_uploaders)]
 
 # A WMS consignment batch is small; cap the read so a hostile or runaway caller
 # cannot exhaust memory with a giant body (defusedxml stops entity amplification,
@@ -70,20 +77,31 @@ WmsAuth = Depends(require_wms)
 
 
 @router.post("/ConsignmentService", dependencies=[WmsAuth])
-def consignment_service_endpoint(body: RawBody, session: SessionDep) -> Response:
-    return _dispatch(consignment_service.handle, body, session)
+def consignment_service_endpoint(
+    body: RawBody,
+    session: SessionDep,
+    store: LabelStoreDep,
+    http_client: HttpClientDep,
+    uploaders: UploaderDep,
+) -> Response:
+    # ConsignmentService carries createPaperworkForConsignments, the one call
+    # that runs the domain core, so this endpoint injects its dependencies.
+    return _dispatch(
+        session,
+        lambda: consignment_service.handle(
+            body, session, store, http_client, uploaders
+        ),
+    )
 
 
 @router.post("/AllocationService", dependencies=[WmsAuth])
 def allocation_service_endpoint(body: RawBody, session: SessionDep) -> Response:
-    return _dispatch(allocation_service.handle, body, session)
+    return _dispatch(session, lambda: allocation_service.handle(body, session))
 
 
-def _dispatch(
-    handler: Callable[[bytes, Session], bytes], body: bytes, session: Session
-) -> Response:
+def _dispatch(session: Session, run: Callable[[], bytes]) -> Response:
     try:
-        return _reply(handler(body, session))
+        return _reply(run())
     except SoapFault as error:
         # Discard any rows a partly-processed batch flushed, so the fault the WMS
         # sees means nothing was staged - the request-scoped commit would

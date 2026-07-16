@@ -1,18 +1,33 @@
 """ConsignmentService operations (ADR 0011). createConsignments stages the
-inbound shipment and returns a synthetic Unallocated response; the real domain
-work waits for createPaperworkForConsignments."""
+inbound shipment and returns a synthetic Unallocated response;
+createPaperworkForConsignments runs the atomic domain create-consignment against
+the accumulated create+allocate data."""
 
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 
+import httpx
 from sqlalchemy.orm import Session
 
-from nimbleship.legacy import soap, staging
+from nimbleship.labels.store import LabelStore
+from nimbleship.legacy import paperwork_service, soap, staging
+from nimbleship.uploaders import FileUploader
 
 
-def handle(body: bytes, session: Session) -> bytes:
+def handle(
+    body: bytes,
+    session: Session,
+    store: LabelStore,
+    http_client: httpx.Client,
+    uploaders: Mapping[str, FileUploader],
+) -> bytes:
     request = soap.parse_request(body)
     if request.method == "createConsignments":
         return _create_consignments(request, session)
+    if request.method == "createPaperworkForConsignments":
+        return paperwork_service.create_paperwork(
+            request, session, store, http_client, uploaders
+        )
     raise soap.SoapFault(f"unsupported ConsignmentService operation '{request.method}'")
 
 
