@@ -307,3 +307,30 @@ class CarrierConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class LegacyConsignmentStaging(Base):
+    """Inbound WMS data held between the Legacy Interface's stateful calls
+    (ADR 0011). createConsignments and allocateConsignments accumulate here;
+    createPaperworkForConsignments consumes it to run the atomic domain
+    create-consignment. Ephemeral translation bookkeeping, never the system of
+    record - the domain Consignment is."""
+
+    __tablename__ = "legacy_consignment_staging"
+
+    # The autoincrement id is the source of the consignment code (see
+    # legacy/staging.py, which owns the format).
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Set from the id immediately after insert, so it is null only transiently
+    # within the minting transaction; unique holds because SQL does not collide
+    # nulls.
+    consignment_code: Mapped[str | None] = mapped_column(
+        String(32), unique=True, index=True
+    )
+    order_number: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_data: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    allocation_data: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )

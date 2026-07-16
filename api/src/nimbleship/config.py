@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # enable it.
     testing_tools_enabled: bool = False
     labels_dir: Path = Path("./labels")
+    # HTTP Basic Auth for the WMS-facing Legacy Interface. Unset by default, so
+    # the edge rejects every request until an install configures a credential -
+    # it is never open by omission.
+    legacy_wms_username: str | None = None
+    legacy_wms_password: str | None = None
 
 
 def get_settings() -> Settings:

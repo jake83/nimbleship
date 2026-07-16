@@ -19,6 +19,15 @@ The warehouse management system (Solvitt) that requests consignments and
 labels over the Legacy Interface. Carried over from the 3PL glossary.
 _Avoid_: Solvitt (in code), warehouse system
 
+**Consignment Code**:
+The opaque handle the WMS uses to refer to one shipment across the Legacy
+Interface's stateful lifecycle calls (create, allocate, paperwork); the
+MetaPack dialect calls it the DMC code. The Legacy Interface maps it to the
+order number, the domain-facing key. A Legacy Interface concept only - the
+JSON API and domain core never see it.
+_Avoid_: DMC code (in domain code), consignment ID (that is the domain row's
+key), conflating it with the order number
+
 **Warehouse**:
 A logical dispatch identity, not (necessarily) a physical building - the
 Metapack-style concept the company already works with. The WMS names a
@@ -158,6 +167,10 @@ Voila adapter
 
 - The **WMS** talks only to the **Legacy Interface**; everything else talks to
   the JSON API. Both edges call the same domain operations.
+- The **Legacy Interface** speaks a stateful lifecycle (create -> allocate ->
+  paperwork per **Consignment Code**); it mocks the first two and runs the one
+  atomic domain create-consignment at paperwork (ADR 0011). The JSON API does
+  the same work in a single call.
 
 ## Flagged ambiguities
 

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI
 
 from nimbleship.labels.store import get_label_store
+from nimbleship.legacy.router import router as legacy_router
 from nimbleship.routers.consignments import router as consignments_router
 from nimbleship.routers.definitions import router as definitions_router
 from nimbleship.routers.manifests import router as manifests_router
@@ -59,4 +60,7 @@ def create_app() -> FastAPI:
     router.include_router(shipping_areas_router)
     router.include_router(warehouses_router)
     app.include_router(router)
+    # The Legacy Interface mounts outside /api: the WMS posts to the MetaPack
+    # service paths (/ConsignmentService, ...) unprefixed.
+    app.include_router(legacy_router)
     return app
