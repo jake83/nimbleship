@@ -255,12 +255,20 @@ def _optional_str(value: object) -> str | None:
 def _weight(parcel: object) -> Decimal:
     weight = parcel.get("weight_kg") if isinstance(parcel, dict) else None
     try:
-        return Decimal(str(weight))
+        parsed = Decimal(str(weight))
     except (InvalidOperation, TypeError) as error:
         raise soap.SoapFault(
             f"createPaperworkForConsignments: a parcel weight '{weight}' is not a "
             "number"
         ) from error
+    # Decimal parses NaN/Infinity; a non-finite weight then fails Shipment's
+    # pydantic finite-number validation as an uncaught 500 - fault here instead.
+    if not parsed.is_finite():
+        raise soap.SoapFault(
+            f"createPaperworkForConsignments: a parcel weight '{weight}' is not a "
+            "number"
+        )
+    return parsed
 
 
 def _parcels_string(order_number: str, parcels: list[tuple[int, str]]) -> str:

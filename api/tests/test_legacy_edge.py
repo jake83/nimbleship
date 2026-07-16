@@ -697,6 +697,39 @@ def test_dry_run_replays_a_legacy_orders_derived_max_dimension(
     assert result["draft_service"] is None
 
 
+def test_paperwork_faults_on_a_non_finite_parcel_weight(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # Weight is required input, so a non-finite value faults (unlike an optional
+    # dimension, treated as absent) rather than escaping as an uncaught 500.
+    _create_depot1(client)
+    body = _fixture("create_consignments_request.xml").replace(
+        b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>',
+        b'<parcelWeight xsi:type="xsd:double">NaN</parcelWeight>',
+    )
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        code = row.consignment_code
+        assert isinstance(code, str)
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "is not a number" in response.text
+
+
 def test_paperwork_treats_a_non_finite_parcel_dimension_as_absent(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
