@@ -206,3 +206,154 @@ def test_the_edge_rejects_an_oversized_body(
     )
 
     assert response.status_code == 413
+
+
+def _allocate_body(codes: list[str], service_groups: list[str]) -> bytes:
+    code_items = "".join(f"<Item>{code}</Item>" for code in codes)
+    group_items = "".join(f"<Item>{group}</Item>" for group in service_groups)
+    return (
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        ' xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/"'
+        ' xmlns:tns="urn:DeliveryManager/services">'
+        "<soap:Body>"
+        '<tns:allocateConsignments><consignmentCodes href="#id1"/>'
+        '<filter href="#id2"/></tns:allocateConsignments>'
+        f'<soapenc:Array id="id1">{code_items}</soapenc:Array>'
+        '<q:AllocationFilter id="id2" xmlns:q="urn:DeliveryManager/types">'
+        '<acceptableCarrierServiceGroupCodes href="#id3"/></q:AllocationFilter>'
+        f'<soapenc:Array id="id3">{group_items}</soapenc:Array>'
+        "</soap:Body></soap:Envelope>"
+    ).encode()
+
+
+def _stage_a_consignment(
+    client: TestClient, auth: tuple[str, str], app: FastAPI
+) -> str:
+    client.post(
+        "/ConsignmentService",
+        content=_fixture("create_consignments_request.xml"),
+        headers={"Content-Type": "text/xml"},
+        auth=auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        code = row.consignment_code
+        assert isinstance(code, str)
+        return code
+
+
+def test_allocate_consignments_stages_service_groups_and_returns_allocated(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    code = _stage_a_consignment(client, wms_auth, app)
+
+    response = client.post(
+        "/AllocationService",
+        content=_allocate_body([code], ["NEXTDAY"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert "Allocated" in response.text
+    assert code in response.text
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert row.allocation_data == {"service_group_codes": ["NEXTDAY"]}
+
+
+def test_allocate_consignments_faults_on_a_code_that_was_never_created(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A code only exists once create minted it, so allocating an unknown one is a
+    # lifecycle error, not a silent no-op.
+    response = client.post(
+        "/AllocationService",
+        content=_allocate_body(["NS9999999"], ["NEXTDAY"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "unknown consignmentCode" in response.text
+
+
+def test_allocate_consignments_with_no_service_group_filter_still_allocates(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    code = _stage_a_consignment(client, wms_auth, app)
+
+    response = client.post(
+        "/AllocationService",
+        content=_allocate_body([code], []),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert "Allocated" in response.text
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert row.allocation_data == {"service_group_codes": []}
+
+
+def test_allocate_rolls_back_the_whole_batch_when_one_code_is_unknown(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A valid code before an unknown one in the batch must not keep its
+    # allocation: the fault rolls the whole batch back, like createConsignments.
+    code = _stage_a_consignment(client, wms_auth, app)
+
+    response = client.post(
+        "/AllocationService",
+        content=_allocate_body([code, "NS9999999"], ["NEXTDAY"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "unknown consignmentCode" in response.text
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert row.allocation_data is None
+
+
+def test_allocate_consignments_faults_on_a_duplicate_code_in_one_batch(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    code = _stage_a_consignment(client, wms_auth, app)
+
+    response = client.post(
+        "/AllocationService",
+        content=_allocate_body([code, code], ["NEXTDAY"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "duplicate consignmentCode" in response.text
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert row.allocation_data is None
+
+
+def test_allocate_consignments_faults_on_a_blank_code_rather_than_dropping_it(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A valid code alongside a blank Item must fault, not silently allocate only
+    # the valid one and drop the blank - that would tell the WMS a shipment it
+    # never named was accepted.
+    code = _stage_a_consignment(client, wms_auth, app)
+
+    response = client.post(
+        "/AllocationService",
+        content=_allocate_body([code, ""], ["NEXTDAY"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "blank consignmentCode" in response.text
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert row.allocation_data is None

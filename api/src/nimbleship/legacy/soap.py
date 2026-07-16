@@ -52,6 +52,18 @@ class SoapRequest:
         child = parent.find(name)
         return None if child is None else self.follow(child)
 
+    def string_array(self, parent: ET.Element, name: str) -> list[str]:
+        # follow() each Item too - an encoder may href-encode a string, not just
+        # a complex value. One value per Item, blanks kept (not dropped) so a
+        # caller can reject a blank rather than silently lose it; an absent or
+        # xsi:nil array is [].
+        array = self.follow_child(parent, name)
+        if array is None:
+            return []
+        return [
+            (self.follow(item).text or "").strip() for item in array.findall("Item")
+        ]
+
 
 def parse_request(body: bytes) -> SoapRequest:
     try:

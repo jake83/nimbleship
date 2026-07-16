@@ -45,3 +45,25 @@ def stage_created(session: Session, data: dict[str, object]) -> str:
     row.consignment_code = code
     session.flush()
     return code
+
+
+def stage_allocation(
+    session: Session, consignment_code: str, data: dict[str, object]
+) -> bool:
+    """Record the allocate call's intent on the staged row, returning whether
+    the code was found. False means create has not run for it - the code only
+    exists once create minted it (ADR 0011), so the caller faults."""
+    # Same lock as stage_created: this read-modify-write shares the staging
+    # table's one write concern, so an allocate cannot lose its write to a
+    # concurrent create-resend rewriting the same row.
+    _serialise_staging_writes(session)
+    row = session.execute(
+        select(LegacyConsignmentStaging).where(
+            LegacyConsignmentStaging.consignment_code == consignment_code
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+    row.allocation_data = data
+    session.flush()
+    return True
