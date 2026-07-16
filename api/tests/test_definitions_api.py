@@ -557,10 +557,17 @@ def test_patch_config_shallow_merge_drops_nested_siblings(
     # The documented limit (ADR 0009): the merge is shallow, so patching one
     # field of a nested value replaces the whole nested object and drops its
     # siblings. Nested config.* paths are supported, so this is a real shape.
-    client.put(
+    put = client.put(
         "/api/carriers/testcarrier/config",
         json={"credentials": {"host": "h0", "token": "T-0"}},
     )
+    assert put.status_code == 200
+
+    # host must have actually landed first, or the drop below proves nothing.
+    with app.state.session_factory() as session:
+        before = session.get(CarrierConfig, "testcarrier")
+        assert before is not None
+        assert before.data == {"credentials": {"host": "h0", "token": "T-0"}}
 
     client.patch(
         "/api/carriers/testcarrier/config",
