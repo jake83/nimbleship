@@ -697,6 +697,40 @@ def test_dry_run_replays_a_legacy_orders_derived_max_dimension(
     assert result["draft_service"] is None
 
 
+def test_paperwork_treats_a_non_finite_parcel_dimension_as_absent(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A NaN dimension parses as a Decimal but traps on comparison; the edge must
+    # treat it as absent (optimistic) and still produce paperwork, never crash
+    # into an uncaught 500 outside the SOAP fault contract.
+    _create_depot1(client)
+    body = _fixture("create_consignments_request.xml").replace(
+        b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>',
+        b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>'
+        b'<parcelHeight xsi:type="xsd:double">NaN</parcelHeight>',
+    )
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        code = row.consignment_code
+        assert isinstance(code, str)
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+
+
 def test_paperwork_excludes_a_service_when_a_parcel_exceeds_its_dimension_limit(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:

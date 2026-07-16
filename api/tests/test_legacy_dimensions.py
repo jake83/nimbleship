@@ -1,7 +1,7 @@
 """The Legacy Interface derives a consignment's max dimension from the WMS's
-per-parcel dimensions (ADR/phase-4): the consignment-level `maxDimension` it
-sends is almost always the sentinel 0, so the real value is the largest single
-parcel dimension, with 0/absent treated as absent."""
+per-parcel dimensions (ADR 0007): the consignment-level `maxDimension` it sends
+is almost always the sentinel 0, so the real value is the largest single parcel
+dimension, with 0/absent/non-finite treated as absent."""
 
 from decimal import Decimal
 
@@ -54,3 +54,15 @@ def test_absent_when_nothing_is_provided() -> None:
     }
 
     assert _max_dimension_cm(created) is None
+
+
+def test_non_finite_dimensions_are_absent_not_a_crash() -> None:
+    # Decimal parses NaN/Infinity, and comparing a NaN raises; a hostile or
+    # malformed WMS value must be treated as absent, never propagate as a 500.
+    created = {
+        "max_dimension_cm": "NaN",
+        "parcels": [{"height_cm": "Infinity", "width_cm": "nan", "depth_cm": "1e0"}],
+    }
+
+    # Only the finite 1e0 (=1) survives.
+    assert _max_dimension_cm(created) == Decimal("1")

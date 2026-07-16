@@ -227,13 +227,17 @@ def _max_dimension_cm(created: Mapping[str, object]) -> Decimal | None:
 
 
 def _positive_decimal(value: object) -> Decimal | None:
-    """Parse a WMS numeric: None for absent, the sentinel 0, or unparseable - a
-    non-positive dimension means 'not provided', never a real zero."""
+    """Parse a WMS numeric: None for absent, the sentinel 0, unparseable, or a
+    non-finite value - a non-positive dimension means 'not provided', never a
+    real zero. `Decimal` parses `NaN`/`Infinity`, and comparing a `NaN` raises,
+    so non-finite values are rejected before the comparison, not after."""
     if value is None:
         return None
     try:
         parsed = Decimal(str(value))
     except (InvalidOperation, TypeError):
+        return None
+    if not parsed.is_finite():
         return None
     return parsed if parsed > 0 else None
 

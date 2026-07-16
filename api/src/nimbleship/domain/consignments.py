@@ -63,9 +63,9 @@ class ConsignmentRequest:
     proposition: str | None
     parcel_weights: list[Decimal]
     warehouse: str | None
-    # The consignment's largest single dimension in cm; None = not supplied
-    # (optimistic). The Legacy Interface derives it from the WMS's per-parcel
-    # dimensions; the JSON API does not send dimensions.
+    # The consignment's largest single dimension in cm (optimistic when None,
+    # ADR 0007); the Legacy Interface derives it from per-parcel dimensions, the
+    # JSON API sends none.
     max_dimension_cm: Decimal | None = None
     # Service Group codes the order accepts (ADR 0012); the Legacy Interface
     # supplies them, the JSON API leaves them empty (it filters by proposition).
