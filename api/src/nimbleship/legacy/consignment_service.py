@@ -86,6 +86,11 @@ def _consignment_data(
                 {
                     "number": parcel.findtext("number"),
                     "weight_kg": parcel.findtext("parcelWeight"),
+                    # Dimensions feed the derived consignment max dimension; the
+                    # WMS often sends them (and the consignment maxDimension) as 0.
+                    "height_cm": parcel.findtext("parcelHeight"),
+                    "width_cm": parcel.findtext("parcelWidth"),
+                    "depth_cm": parcel.findtext("parcelDepth"),
                 }
             )
     return {
@@ -96,6 +101,7 @@ def _consignment_data(
         "destination_country": _child_text(address, "countryCode"),
         "warehouse": consignment.findtext("senderCode"),
         "value": consignment.findtext("consignmentValue"),
+        "max_dimension_cm": consignment.findtext("maxDimension"),
         "service_group": consignment.findtext("custom1"),
         "ioss_number": consignment.findtext("IOSSNumber"),
         "parcels": parcels,

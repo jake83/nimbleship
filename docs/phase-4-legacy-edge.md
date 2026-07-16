@@ -78,16 +78,20 @@ behaviour: it does the same (real carrier work only at paperwork).
   verbatim (no remap), and faults on a groupless legacy order or an
   off-catalogue code. Not a translation table - catalogue data + rulebook
   memberships. Removes the `proposition=None` unfiltered gap for legacy orders.
-- **PR4b-3: sentinel-zero value.** Thread `consignmentValue` -> `Shipment.value`
-  at the paperwork bridge, translating the WMS's `0` (or absent) to `None`
-  (absent fact, ADR 0007). Small: one already-staged field, a fixed per-field
-  rule, feeds cost/charge bands.
-- **PR4b-4: derived max dimension.** `maxDimension` -> `Shipment.max_dimension_cm`.
-  The consignment-level `maxDimension` the WMS sends is almost always the
-  sentinel `0`, so the value is derived from the per-parcel dimensions:
-  `max(consignmentMaxDimension, max over parcels of max(depth, height, width))`,
-  `0`/nil treated as absent, `None` if nothing is provided. Needs
-  `createConsignments` to also stage the per-parcel dimensions.
+- **PR4b-3: sentinel-zero value - DEFERRED.** Intended to thread
+  `consignmentValue` -> `Shipment.value`, but on inspection `Shipment.value` has
+  no consumer: cost bands are weight/parcel/fuel/dimension-based
+  (`domain/costs.py`), charges are weight-banded, and no check reads value. So
+  threading it now is a fact nothing reads - deferred until a value band or
+  value constraint exists, like Order Origin. (The grilling assumed value fed
+  cost bands; it does not.)
+- **PR4b-4: derived max dimension - DONE.** `maxDimension` ->
+  `Shipment.max_dimension_cm`, consumed by the `dimension` check and
+  `DimensionSurchargeBand`. The consignment-level `maxDimension` the WMS sends is
+  almost always the sentinel `0`, so it is derived from the staged per-parcel
+  dimensions: `max(consignmentMaxDimension, max over parcels of
+  max(depth, height, width))`, `0`/nil treated as absent, `None` if nothing.
+  Persisted on the Consignment so dry-run replays it, like the accepted groups.
 - **Deferred - Order Origin + order-type facts** (open questions 1-2). Marketplace/
   aftersale order-type facts and Order Origin derivation have no consumer yet
   (no constraint check reads them; Customs Identity is unbuilt), so their
@@ -117,12 +121,13 @@ the PR noted.
    config mapping old signals (order-id prefix/length, recipient email domain)
    to platform/website/marketplace facts (CONTEXT.md: Order Origin) lands with
    its first consumer, not before.
-3. **Sentinel-zero fields** - settled 2026-07-16. The two the domain consumes:
-   `consignmentValue` -> `value` (PR4b-3) and `maxDimension` ->
-   `max_dimension_cm` (PR4b-4, derived from per-parcel dimensions because the
-   consignment field is almost always the sentinel `0`). Translated to absent
-   facts, never the number zero. Others from the old parser were internal, not
-   WMS-inbound facts the domain reads.
+3. **Sentinel-zero fields** - settled 2026-07-16. `maxDimension` ->
+   `max_dimension_cm` landed (PR4b-4, derived from per-parcel dimensions because
+   the consignment field is almost always the sentinel `0`), translated to an
+   absent fact rather than the number zero. `consignmentValue` -> `value` is
+   deferred: the field exists on `Shipment` but nothing reads it (see PR4b-3).
+   Others from the old parser were internal, not WMS-inbound facts the domain
+   reads.
 4. **Paperwork response fidelity** - the element structure (single Paperwork:
    `documents`/`labels`/positional `trackingReference`/`parcels`) and the Drop
    Out tracking-omit rule are settled in PR4b-1, grounded in the old proxy's

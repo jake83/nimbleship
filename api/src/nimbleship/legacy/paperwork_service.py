@@ -198,10 +198,48 @@ def _consignment_request(
         # checkout-only Delivery Proposition; proposition stays absent.
         proposition=None,
         parcel_weights=[_weight(parcel) for parcel in parcel_list],
+        max_dimension_cm=_max_dimension_cm(created),
         warehouse=_optional_str(created.get("warehouse")),
         force_service=None,
         accepted_service_groups=accepted_service_groups,
     )
+
+
+def _max_dimension_cm(created: Mapping[str, object]) -> Decimal | None:
+    """The consignment's largest single dimension. The WMS's consignment-level
+    maxDimension is almost always the sentinel 0, so the real value is derived
+    from the per-parcel dimensions; 0 or absent anywhere is treated as absent,
+    and None means no dimension was supplied at all (optimistic, ADR 0007)."""
+    candidates: list[Decimal] = []
+    consignment = _positive_decimal(created.get("max_dimension_cm"))
+    if consignment is not None:
+        candidates.append(consignment)
+    parcels = created.get("parcels")
+    if isinstance(parcels, list):
+        for parcel in parcels:
+            if not isinstance(parcel, dict):
+                continue
+            for key in ("height_cm", "width_cm", "depth_cm"):
+                dimension = _positive_decimal(parcel.get(key))
+                if dimension is not None:
+                    candidates.append(dimension)
+    return max(candidates) if candidates else None
+
+
+def _positive_decimal(value: object) -> Decimal | None:
+    """Parse a WMS numeric: None for absent, the sentinel 0, unparseable, or a
+    non-finite value - a non-positive dimension means 'not provided', never a
+    real zero. `Decimal` parses `NaN`/`Infinity`, and comparing a `NaN` raises,
+    so non-finite values are rejected before the comparison, not after."""
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        return None
+    if not parsed.is_finite():
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _string_list(value: object) -> list[str]:
