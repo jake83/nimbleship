@@ -191,7 +191,7 @@ def test_a_failed_carrier_call_is_a_502_with_the_carrier_message(
 def test_a_carrier_failure_losing_a_duplicate_race_409s_not_500(
     app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import nimbleship.routers.consignments as consignments_module
+    import nimbleship.domain.consignments as consignments_module
 
     _publish_furdeco(client)
     # A first booking persists the consignment for this order.
@@ -203,7 +203,7 @@ def test_a_carrier_failure_losing_a_duplicate_race_409s_not_500(
     # commit hits the unique constraint. It must 409, not 500.
     _carrier_answers(app, lambda request: httpx.Response(200, text=ERROR_RESPONSE))
     monkeypatch.setattr(
-        consignments_module, "_order_exists", lambda session, order_number: False
+        consignments_module, "order_exists", lambda session, order_number: False
     )
 
     assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 409
@@ -372,7 +372,7 @@ def test_a_base64_label_that_is_not_a_pdf_fails_the_booking(
 def test_a_label_failure_losing_a_duplicate_race_409s_not_500(
     app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import nimbleship.routers.consignments as consignments_module
+    import nimbleship.domain.consignments as consignments_module
 
     _publish_label_carrier(client)
     # A first booking persists the consignment for this order.
@@ -392,7 +392,7 @@ def test_a_label_failure_losing_a_duplicate_race_409s_not_500(
         lambda request: httpx.Response(200, text=_label_carrier_response(not_a_pdf)),
     )
     monkeypatch.setattr(
-        consignments_module, "_order_exists", lambda session, order_number: False
+        consignments_module, "order_exists", lambda session, order_number: False
     )
 
     response = client.post("/api/consignments", json=CONSIGNMENT)
@@ -570,7 +570,7 @@ def test_a_render_failure_at_booking_is_a_502_after_minting_not_an_uncaught_500(
 def test_a_render_failure_losing_a_duplicate_race_409s_not_500(
     app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import nimbleship.routers.consignments as consignments_module
+    import nimbleship.domain.consignments as consignments_module
 
     bad = copy.deepcopy(SSCC_DEFINITION)
     mapping = bad["operations"]["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
@@ -588,7 +588,7 @@ def test_a_render_failure_losing_a_duplicate_race_409s_not_500(
     # render guard leaves open on its own: closed only together with the
     # booking_failed commit guard.
     monkeypatch.setattr(
-        consignments_module, "_order_exists", lambda session, order_number: False
+        consignments_module, "order_exists", lambda session, order_number: False
     )
 
     assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 409

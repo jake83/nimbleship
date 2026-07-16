@@ -253,14 +253,14 @@ def test_unknown_warehouse_code_is_rejected_and_stores_nothing(
 def test_losing_a_duplicate_race_still_returns_409(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import nimbleship.routers.consignments as consignments_module
+    import nimbleship.domain.consignments as consignments_module
 
     client.post("/api/consignments", json=CONSIGNMENT)
     # Simulate the race: the existence pre-check misses the row that another
     # request has already committed, so the unique constraint is the last line
     # of defence.
     monkeypatch.setattr(
-        consignments_module, "_order_exists", lambda session, order_number: False
+        consignments_module, "order_exists", lambda session, order_number: False
     )
 
     response = client.post("/api/consignments", json=CONSIGNMENT)
@@ -389,6 +389,23 @@ def test_force_service_is_refused_when_testing_tools_are_disabled(
     )
 
     assert response.status_code == 403
+
+
+def test_a_duplicate_order_is_409_even_when_it_also_forces_a_service(
+    client: TestClient,
+) -> None:
+    # The duplicate-order 409 is checked before the force_service 403, so a
+    # re-post of an existing order that also carries force_service on a
+    # testing-disabled instance is a 409, not a 403 (the order the two gates ran
+    # in before the orchestration moved to the domain).
+    assert client.post("/api/consignments", json=CONSIGNMENT).status_code == 201
+
+    response = client.post(
+        "/api/consignments",
+        json={**CONSIGNMENT, "force_service": "DROPOUT-XL"},
+    )
+
+    assert response.status_code == 409
 
 
 def test_force_service_pins_the_allocation_when_testing_tools_are_enabled(
