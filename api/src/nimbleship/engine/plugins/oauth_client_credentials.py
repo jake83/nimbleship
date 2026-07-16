@@ -20,13 +20,14 @@ from dataclasses import dataclass
 
 import httpx
 
+from nimbleship.engine.auth_plugins import AuthError
 from nimbleship.engine.render import RenderedRequest
 
 _SAFETY_MARGIN_SECONDS = 60.0
 _TOKEN_FETCH_TIMEOUT_SECONDS = 10.0
 
 
-class OAuthTokenError(Exception):
+class OAuthTokenError(AuthError):
     """A bearer token could not be obtained: bad config, a non-200 token
     response, or a token payload missing its grant fields."""
 
@@ -99,7 +100,14 @@ class OAuthClientCredentialsAuth:
                 f"token endpoint {token_url} answered {response.status_code}: "
                 f"{response.text}"
             )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as error:
+            # A 200 with a non-JSON body (a proxy or maintenance page); a bare
+            # JSONDecodeError here would escape as an uncaught crash.
+            raise OAuthTokenError(
+                f"token endpoint {token_url} answered a non-JSON body"
+            ) from error
         if not isinstance(payload, dict):
             raise OAuthTokenError(f"token endpoint {token_url} answered non-object")
         access_token = payload.get("access_token")

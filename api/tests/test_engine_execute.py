@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
-from nimbleship.engine.auth_plugins import AUTH_PLUGINS
+from nimbleship.engine.auth_plugins import AUTH_PLUGINS, AuthError
 from nimbleship.engine.execute import (
     TRAFFIC_BODY_LIMIT,
     CarrierCallError,
@@ -769,3 +769,45 @@ def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None
     assert record.success is False
     assert record.response_status is None
     assert "530 Login incorrect" in record.response_body
+
+
+PLUGIN_AUTH_DEFINITION = CarrierDefinition.model_validate(
+    {
+        **FORM_DEFINITION.model_dump(mode="json"),
+        "auth": {"scheme": "plugin", "plugin": "stub_auth"},
+    }
+)
+
+
+class _FailingAuth:
+    """An auth plugin whose token acquisition fails, like a revoked credential."""
+
+    def apply(
+        self, request: RenderedRequest, config: dict[str, object]
+    ) -> RenderedRequest:
+        raise AuthError("token endpoint answered 401")
+
+    def required_config_keys(self) -> frozenset[str]:
+        return frozenset()
+
+
+def test_an_auth_plugin_failure_is_a_carrier_call_error_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The auth step runs before the request, outside its error handling; a
+    # failure there (revoked token, non-JSON token response) must route through
+    # CarrierCallError like any carrier failure - never an uncaught crash, which
+    # would 500 a booking and strand a manifest pending forever.
+    monkeypatch.setitem(AUTH_PLUGINS, "stub_auth", _FailingAuth())
+    records: list[StepRecord] = []
+    with (
+        _client(
+            httpx.MockTransport(lambda r: httpx.Response(200, text=XML_OK))
+        ) as client,
+        pytest.raises(CarrierCallError, match="save"),
+    ):
+        execute_operation(
+            PLUGIN_AUTH_DEFINITION, "book", FACTS, client, record=records.append
+        )
+    # Recorded as a failed step, like every other carrier failure.
+    assert records and records[-1].success is False

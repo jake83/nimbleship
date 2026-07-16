@@ -219,3 +219,26 @@ def test_the_plugin_is_registered_under_its_definition_name() -> None:
     plugin = AUTH_PLUGINS["oauth_client_credentials"]
 
     assert isinstance(plugin, OAuthClientCredentialsAuth)
+
+
+def test_a_non_json_token_response_is_an_oauth_error_not_a_crash() -> None:
+    # A token endpoint answering 200 with a non-JSON body (a proxy/maintenance
+    # page) must be an OAuthTokenError, not a bare JSONDecodeError that escapes
+    # the executor's carrier-failure handling.
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text="<html>maintenance</html>")
+        )
+    )
+    plugin = OAuthClientCredentialsAuth(http_client=client)
+
+    with pytest.raises(OAuthTokenError):
+        plugin.apply(rendered_request(), CONFIG)
+
+
+def test_oauth_token_error_is_an_auth_error() -> None:
+    # The executor catches AuthError to route auth failures through
+    # CarrierCallError; OAuthTokenError must be one so its failures are caught.
+    from nimbleship.engine.auth_plugins import AuthError
+
+    assert issubclass(OAuthTokenError, AuthError)

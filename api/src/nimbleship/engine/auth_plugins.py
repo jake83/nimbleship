@@ -8,6 +8,13 @@ from typing import Protocol
 from nimbleship.engine.render import RenderedRequest
 
 
+class AuthError(Exception):
+    """An auth plugin could not obtain credentials (a revoked token, an
+    unreachable or misbehaving token endpoint). The executor catches it and
+    routes it through CarrierCallError so both edges handle it as a carrier
+    failure - never an uncaught crash before the request is even sent."""
+
+
 class AuthPlugin(Protocol):
     def apply(
         self, request: RenderedRequest, config: dict[str, object]

@@ -22,7 +22,7 @@ from nimbleship.domain.carrier_definition import (
     ResponseSpec,
     Step,
 )
-from nimbleship.engine.auth_plugins import AUTH_PLUGINS
+from nimbleship.engine.auth_plugins import AUTH_PLUGINS, AuthError
 from nimbleship.engine.render import (
     Facts,
     RenderedRequest,
@@ -291,7 +291,17 @@ class _Execution:
                 f"transport '{step.transport}' cannot execute yet; "
                 "only http requests and the upload transports run"
             )
-        rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
+        try:
+            rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
+        except (AuthError, httpx.HTTPError) as error:
+            # Auth acquisition (e.g. an OAuth token fetch) runs before the request
+            # and outside its handling; a revoked credential or unreachable token
+            # endpoint must be a carrier failure, not an uncaught crash that 500s
+            # a booking and strands a manifest pending.
+            self._recorded(step, rendered, None, "", False)
+            raise self._fail(
+                f"step '{step.name}' could not authenticate: {error}"
+            ) from error
         try:
             response = self._client.request(
                 rendered.method,
