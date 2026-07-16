@@ -2,7 +2,10 @@
 
 Everything a user decides lives here as data; the checks package holds the
 interpreters. Fields added for Phase 2 default to "unrestricted" so rulebook
-versions stored before they existed still validate.
+versions stored before they existed still validate. `service_groups` (ADR 0012)
+is the deliberate exception: it validates as `[]`, but an empty membership means
+"in no group", so a service is excluded under a group filter rather than
+unrestricted - onboarding for legacy dispatch requires declaring memberships.
 """
 
 from decimal import Decimal

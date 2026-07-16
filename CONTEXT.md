@@ -194,12 +194,10 @@ Voila adapter
 
 ## Flagged ambiguities
 
-- **Service Group** (resolved in Session A): the old concept split in two -
-  **Delivery Proposition** for the customer promise, order-type facts
-  (marketplace, aftersale) for the rest. The legacy edge carries a per-value
-  mapping table from incoming serviceGroup codes to proposition + facts;
-  building that 40-row table during migration is the forcing function that
-  documents what each code meant.
+- **Service Group**: resolved (ADR 0012) - see the Language entry above. Not the
+  "split into a proposition plus order-type facts" the Session A note first
+  assumed: the audit showed a group is a carrier-service allow-list, carried
+  through as its own eligibility axis with no mapping table.
 - Legacy sentinel zeros: checkout requests send unknown numerics as 0
   (consignmentValue, maxDimension). The Legacy Interface must translate
   these to absent facts, never the number zero.

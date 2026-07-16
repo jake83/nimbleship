@@ -637,6 +637,45 @@ def test_dry_run_replays_a_legacy_orders_accepted_groups(
     assert result["draft_service"] == "DROPOUT-STD"
 
 
+def test_paperwork_finds_nothing_when_no_service_declares_a_group(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # Allow-list rollout (ADR 0012): making the group filter mandatory means a
+    # rulebook whose services declare no memberships leaves a legacy order - even
+    # one accepting a valid catalogue group - with no eligible service. This is
+    # the intended consequence, pinned so it reads as designed, not accidental;
+    # a real cutover republishes rulebooks with memberships first.
+    _create_depot1(client)
+    groupless = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "DROPOUT-STD",
+                "carrier": "dropout",
+                "name": "Drop Out Standard",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=groupless).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+    code = _stage_and_allocate(client, wms_auth, app)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "could not be allocated" in response.text
+
+
 def _stage_custom1(
     client: TestClient, auth: tuple[str, str], app: FastAPI, custom1: bytes
 ) -> str:

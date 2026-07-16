@@ -59,8 +59,10 @@ declaration-check rails (ADR 0008 addendum: a new declaration kind is one check
     under a filter - **not** a wildcard (the opposite of an empty proposition
     declaration).
 
-The Legacy Interface owns the caller-specific policy (ADR 0002 - the edge
-applies its own, the domain stays caller-agnostic):
+The Legacy Interface validates its own dialect input and maps to its own error
+shape, keeping that policy out of the caller-agnostic domain (the edge-owns-its-
+error-shape split of ADR 0002, the same shape as the per-caller translation
+config of ADR 0008):
 
 - The accepted set is `custom1` (the requested group) unioned with
   `acceptableCarrierServiceGroupCodes` (the accepted set).
@@ -87,6 +89,13 @@ applies its own, the domain stays caller-agnostic):
 - Onboarding a service for legacy dispatch now means declaring its group
   memberships in the rulebook - the declarative equivalent of MetaPack's "add
   service to group" step.
+- Rollout: this makes the group filter mandatory for legacy orders, so every
+  legacy-dispatchable service must declare its memberships. A rulebook version
+  published before this axis existed (including a pre-0012 demo seed) has none,
+  so a legacy order against it correctly finds no eligible service - inherent to
+  introducing an allow-list, not a bug to code around. The demo seed is updated
+  for fresh installs; a real cutover republishes rulebooks with memberships
+  (and re-seeds a stale dev catalogue) before the WMS relies on group filtering.
 - Order Origin and order-type facts (MARKETPLACE, AFTERSALE as order-type)
   remain deferred: no constraint check or Customs Identity consumes them yet, so
   deriving them now would build facts nothing reads.

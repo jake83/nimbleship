@@ -20,8 +20,8 @@ def _allocate_consignments(request: soap.SoapRequest, session: Session) -> bytes
     codes = request.string_array(request.operation, "consignmentCodes")
     if not codes:
         raise soap.SoapFault("allocateConsignments: no consignmentCodes")
-    # The requested service groups (e.g. NEXTDAY) are the customer's proposition
-    # intent; staged raw here, mapped to a Delivery Proposition at paperwork.
+    # The requested service groups (e.g. NEXTDAY) are staged raw here and
+    # consumed as the Service Group accepted set at paperwork (ADR 0012).
     service_groups = _service_groups(request)
     seen: set[str] = set()
     for code in codes:
