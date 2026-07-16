@@ -261,8 +261,8 @@ def _weight(parcel: object) -> Decimal:
             f"createPaperworkForConsignments: a parcel weight '{weight}' is not a "
             "number"
         ) from error
-    # Decimal parses NaN/Infinity, and comparing a NaN in the weight check
-    # raises; a non-finite weight is rejected here, not left to crash later.
+    # Decimal parses NaN/Infinity; a non-finite weight then fails Shipment's
+    # pydantic finite-number validation as an uncaught 500 - fault here instead.
     if not parsed.is_finite():
         raise soap.SoapFault(
             f"createPaperworkForConsignments: a parcel weight '{weight}' is not a "

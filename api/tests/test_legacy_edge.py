@@ -700,9 +700,8 @@ def test_dry_run_replays_a_legacy_orders_derived_max_dimension(
 def test_paperwork_faults_on_a_non_finite_parcel_weight(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
-    # A NaN weight parses as a Decimal but traps on comparison in the weight
-    # check; the edge must fault (weight is required input), not crash into an
-    # uncaught 500 outside the SOAP fault contract.
+    # Weight is required input, so a non-finite value faults (unlike an optional
+    # dimension, treated as absent) rather than escaping as an uncaught 500.
     _create_depot1(client)
     body = _fixture("create_consignments_request.xml").replace(
         b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>',
