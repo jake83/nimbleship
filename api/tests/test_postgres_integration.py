@@ -239,6 +239,49 @@ def test_concurrent_config_merges_do_not_lose_an_update(
         }
 
 
+def test_a_put_and_a_patch_config_serialise_without_a_lost_update(
+    pg_engine: Engine,
+) -> None:
+    """A PUT (full replace) racing a PATCH (merge) on one carrier must serialise
+    on the shared config-write lock: the PATCH must not merge onto a snapshot the
+    PUT already replaced. Whichever orders first, the PUT's api_key survives - a
+    torn interleave would write back the stale pre-PUT value instead."""
+    factory = sessionmaker(bind=pg_engine)
+    with factory() as setup:
+        upsert_carrier_config(
+            setup, "racer", {"api_key": "K-0", "base_url": "https://b0.example"}
+        )
+        setup.commit()
+
+    barrier = threading.Barrier(2, timeout=15)
+
+    def put_config() -> None:
+        with factory() as session:
+            barrier.wait()
+            upsert_carrier_config(session, "racer", {"api_key": "PUT-KEY"})
+            session.commit()
+
+    def patch_config() -> None:
+        with factory() as session:
+            barrier.wait()
+            merge_carrier_config(
+                session, "racer", {"base_url": "https://patch.example"}
+            )
+            session.commit()
+
+    threads = [
+        threading.Thread(target=put_config),
+        threading.Thread(target=patch_config),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    with factory() as check:
+        assert carrier_config(check, "racer")["api_key"] == "PUT-KEY"
+
+
 def test_concurrent_first_requests_seed_exactly_once(
     pg_engine: Engine,
 ) -> None:

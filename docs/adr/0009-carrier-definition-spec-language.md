@@ -170,9 +170,17 @@ Completeness is checked at two moments, deliberately asymmetric:
   fresh install is a deploy plus configuration - see CONTEXT.md, Carrier Config),
   so a hard save-time gate would break the configure-first workflow and has
   nothing to measure against before a definition is published. `PUT` replaces the
-  whole config; `PATCH /config` shallow-merges, so rotating one secret on a live
-  carrier keeps the rest rather than dropping keys the running definition needs.
-  Both return the same missing-key report, measured against the resulting config.
+  whole config; `PATCH /config` shallow-merges, so rotating one top-level key on a
+  live carrier keeps the rest rather than dropping keys the running definition
+  needs. The merge is shallow, and nested `config.*` paths are supported (a
+  definition may reference `config.credentials.host`), so the limit is real:
+  patching one field of a nested value replaces the whole nested object and drops
+  its siblings, the same class of drop a full `PUT` makes at the top level. The
+  mitigation is to rotate a nested value by sending the whole nested object.
+  Shallow is the deliberate default because it is predictable; a deep-merge PATCH
+  is deferred until a carrier's config is nested enough to need it. Both `PUT` and
+  `PATCH` return the same missing-key report, measured against the resulting
+  config.
 
 Save measures against the *active* definition only: a draft's new keys are the
 publish gate's business, and the report is early feedback, not a contract. The

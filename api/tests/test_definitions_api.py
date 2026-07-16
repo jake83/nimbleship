@@ -551,6 +551,36 @@ def test_patch_config_merges_keeping_keys_the_payload_omits(
         }
 
 
+def test_patch_config_shallow_merge_drops_nested_siblings(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The documented limit (ADR 0009): the merge is shallow, so patching one
+    # field of a nested value replaces the whole nested object and drops its
+    # siblings. Nested config.* paths are supported, so this is a real shape.
+    put = client.put(
+        "/api/carriers/testcarrier/config",
+        json={"credentials": {"host": "h0", "token": "T-0"}},
+    )
+    assert put.status_code == 200
+
+    # host must have actually landed first, or the drop below proves nothing.
+    with app.state.session_factory() as session:
+        before = session.get(CarrierConfig, "testcarrier")
+        assert before is not None
+        assert before.data == {"credentials": {"host": "h0", "token": "T-0"}}
+
+    client.patch(
+        "/api/carriers/testcarrier/config",
+        json={"credentials": {"token": "T-1"}},
+    )
+
+    with app.state.session_factory() as session:
+        stored = session.get(CarrierConfig, "testcarrier")
+        assert stored is not None
+        # host is gone: the whole credentials object was replaced, not deep-merged.
+        assert stored.data == {"credentials": {"token": "T-1"}}
+
+
 def test_patch_config_creates_the_config_when_none_exists(
     client: TestClient,
 ) -> None:
