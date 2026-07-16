@@ -15,10 +15,12 @@ from defusedxml.common import DefusedXmlException
 
 SOAP_ENV = "http://schemas.xmlsoap.org/soap/envelope/"
 SERVICES = "urn:DeliveryManager/services"
+XSI = "http://www.w3.org/2001/XMLSchema-instance"
 _BODY = f"{{{SOAP_ENV}}}Body"
 
 ET.register_namespace("soap", SOAP_ENV)
 ET.register_namespace("tns", SERVICES)
+ET.register_namespace("xsi", XSI)
 
 
 class SoapFault(Exception):

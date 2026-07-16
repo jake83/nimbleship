@@ -3,15 +3,18 @@ the same domain operations as the JSON API. The fixture here is a synthetic,
 MetaPack-shaped request (real recorded traffic replaces it as operations land)."""
 
 import base64
-import re
+import json
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from nimbleship.http_client import get_http_client
 from nimbleship.models import Consignment, LegacyConsignmentStaging
 
 WMS_USER = "wms"
@@ -361,6 +364,30 @@ def test_allocate_consignments_faults_on_a_blank_code_rather_than_dropping_it(
         assert row.allocation_data is None
 
 
+_XSI = "http://www.w3.org/2001/XMLSchema-instance"
+
+
+def _localname(element: ET.Element) -> str:
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def _paperwork_return(xml: str) -> ET.Element:
+    """The single Paperwork object the WMS reads its labels and parcels from."""
+    root = ET.fromstring(xml)
+    paperwork = next(
+        element
+        for element in root.iter()
+        if _localname(element) == "createPaperworkForConsignmentsReturn"
+    )
+    return paperwork
+
+
+def _child_text(parent: ET.Element, name: str) -> str | None:
+    child = parent.find(name)
+    assert child is not None, f"missing <{name}>"
+    return child.text
+
+
 def _paperwork_body(codes: list[str]) -> bytes:
     code_items = "".join(f"<Item>{code}</Item>" for code in codes)
     return (
@@ -421,15 +448,23 @@ def test_paperwork_runs_the_domain_and_returns_labels_and_the_parcels_string(
     )
 
     assert response.status_code == 200
-    # {order}-parcel-{n}:{Parcel Barcode}, comma-joined; n and the barcode's
-    # sequence must agree (CONTEXT.md: Parcels String).
-    assert (
-        "95000254580-parcel-1:95000254580-1,"
-        "95000254580-parcel-2:95000254580-2" in response.text
+    paperwork = _paperwork_return(response.text)
+    # The response is a single Paperwork return (not an array): documents first
+    # (nil), then the combined label PDF, then the optional obligations.
+    assert [_localname(child) for child in paperwork] == [
+        "documents",
+        "labels",
+        "parcels",
+    ]
+    assert paperwork[0].get(f"{{{_XSI}}}nil") == "true"
+    assert base64.b64decode(paperwork[1].text or "").startswith(b"%PDF")
+    # Drop Out has no live tracking, so trackingReference is omitted.
+    assert paperwork.find("trackingReference") is None
+    # {order}-parcel-{n}:{barcode}, comma-joined; Drop Out reports no carrier
+    # barcode, so the barcode is the Parcel Barcode (CONTEXT.md: Parcels String).
+    assert _child_text(paperwork, "parcels") == (
+        "95000254580-parcel-1:95000254580-1,95000254580-parcel-2:95000254580-2"
     )
-    labels = re.search(r"<labels>(.*?)</labels>", response.text, re.DOTALL)
-    assert labels is not None
-    assert base64.b64decode(labels.group(1)).startswith(b"%PDF")
 
     # The domain Consignment is now the system of record for the shipment.
     with app.state.session_factory() as session:
@@ -442,6 +477,108 @@ def test_paperwork_runs_the_domain_and_returns_labels_and_the_parcels_string(
         )
         assert consignment.status == "allocated"
         assert consignment.carrier == "dropout"
+
+
+_FURDECO_DEFINITION = (
+    Path(__file__).parent.parent / "examples" / "furdeco.definition.json"
+)
+
+_FURDECO_BOOKING_RESPONSE = (
+    "<response>"
+    "<success>Order Created</success>"
+    "<carrier_reference>F12345678910</carrier_reference>"
+    "<barcodes>001122334455667688, 123456789123456789</barcodes>"
+    "</response>"
+)
+
+_FURDECO_RULEBOOK = {
+    "author": "jake",
+    "services": [
+        {
+            "code": "FURDECO-2MAN",
+            "carrier": "furdeco",
+            "name": "Furdeco Two Man",
+            "weight_min_kg": "0",
+            "weight_max_kg": "999",
+            "countries": ["GB"],
+            "cost": "25.00",
+            "tie_break_order": 1,
+        }
+    ],
+}
+
+
+def _publish_furdeco(app: FastAPI, client: TestClient) -> None:
+    definition = json.loads(_FURDECO_DEFINITION.read_text())
+    assert (
+        client.put(
+            "/api/carriers/furdeco/config",
+            json={
+                "api_key": "SECRET-KEY",
+                "base_url": "https://api.furdeco.example/orders",
+                "trading_name": "Acme Trading",
+            },
+        ).status_code
+        == 200
+    )
+    version = client.post(
+        "/api/carriers/furdeco/definitions/drafts",
+        json={"author": "jake", "definition": definition},
+    ).json()["version"]
+    assert (
+        client.post(
+            f"/api/carriers/furdeco/definitions/versions/{version}/publish"
+        ).status_code
+        == 200
+    )
+    rulebook_version = client.post(
+        "/api/rulebook/drafts", json=_FURDECO_RULEBOOK
+    ).json()["version"]
+    assert (
+        client.post(f"/api/rulebook/versions/{rulebook_version}/publish").status_code
+        == 200
+    )
+
+    def override() -> Iterator[httpx.Client]:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, text=_FURDECO_BOOKING_RESPONSE)
+        )
+        with httpx.Client(transport=transport) as http_client:
+            yield http_client
+
+    app.dependency_overrides[get_http_client] = override
+
+
+def test_paperwork_for_a_live_carrier_carries_tracking_and_carrier_barcodes(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A live-API carrier books at paperwork: its tracking reference is present
+    # (Drop Out omits it) and the parcels string carries the carrier's own
+    # barcodes, not the self-generated Parcel Barcodes.
+    _create_depot1(client)
+    _publish_furdeco(app, client)
+    code = _stage_and_allocate(client, wms_auth, app)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    paperwork = _paperwork_return(response.text)
+    assert [_localname(child) for child in paperwork] == [
+        "documents",
+        "labels",
+        "trackingReference",
+        "parcels",
+    ]
+    assert _child_text(paperwork, "trackingReference") == "F12345678910"
+    assert _child_text(paperwork, "parcels") == (
+        "95000254580-parcel-1:001122334455667688,"
+        "95000254580-parcel-2:123456789123456789"
+    )
 
 
 def test_paperwork_faults_with_no_codes(

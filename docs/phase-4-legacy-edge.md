@@ -61,9 +61,18 @@ behaviour: it does the same (real carrier work only at paperwork).
   the response-fidelity work to PR4b. Known limitations carried to PR4b/PR5: a
   re-sent paperwork call faults on the duplicate-order 409 (no reprint path yet);
   and a rejected shipment faults without leaving a domain Consignment behind.
-- **PR4b: paperwork fidelity + mappings.** Land the four grilling-item
-  obligations above against a real recorded paperwork response (open questions
-  1-4).
+- **PR4b-1: paperwork response fidelity.** Return the WMS's real single
+  Paperwork shape (documents/labels/trackingReference/parcels, positional) in
+  place of PR4a's guessed Item array; the Parcels String carries the carrier's
+  own barcode when it reports one, else the Parcel Barcode (Drop Out). Grounded
+  in the old proxy's response template + a recorded example; the SOAP-encoding
+  type decorations byte-match at shadow mode (PR6), which needs the live WMS.
+  No owner input required.
+- **PR4b-2: the translation mappings** (grilling-gated, open questions 1-3).
+  The serviceGroup -> Delivery Proposition table (~39 rows), Order Origin
+  derivation, and the sentinel-zero field set are company-specific data and
+  per-caller config (never code constants), so they need a grilling session to
+  settle the config schema and confirm the values before landing.
 - **PR5: manifest + dispatch** (markAsReadyToManifest, createManifest) onto the
   existing dispatch-confirmation/manifest domain path.
 - **PR6+: shadow mode.** Replay recorded traffic through the edge, diff

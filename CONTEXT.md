@@ -46,10 +46,14 @@ _Avoid_: parcel code, label barcode, 0-based sequences
 **Parcels String**:
 The comma-joined `{order number}-parcel-{n}:{barcode}` value returned to the
 WMS in the paperwork response, used by every carrier that reports barcodes.
-`{n}` is the same 1-based print sequence embedded in the **Parcel Barcode**;
-the two must always agree (`95000254580-parcel-2:95000254580-2`). Carried
-over from the 3PL glossary.
-_Avoid_: barcode list, 0-based `{n}`
+`{n}` is the 1-based print sequence, the same one embedded in the **Parcel
+Barcode**. `{barcode}` is the carrier's own barcode for that parcel when it
+reports one (e.g. a live carrier's tracking token); when the carrier reports
+none - as Drop Out, which prints its own labels, does - it is the **Parcel
+Barcode**, and then the two agree (`95000254580-parcel-2:95000254580-2`).
+Carried over from the 3PL glossary.
+_Avoid_: barcode list, 0-based `{n}`, assuming `{barcode}` is always the
+Parcel Barcode
 
 **SSCC** (Serial Shipping Container Code):
 The GS1 18-digit identity of one shipping unit, printed as a GS1-128 barcode
