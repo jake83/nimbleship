@@ -2,6 +2,8 @@
 the same domain operations as the JSON API. The fixture here is a synthetic,
 MetaPack-shaped request (real recorded traffic replaces it as operations land)."""
 
+import base64
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -10,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from nimbleship.models import LegacyConsignmentStaging
+from nimbleship.models import Consignment, LegacyConsignmentStaging
 
 WMS_USER = "wms"
 WMS_PASSWORD = "s3cret"
@@ -357,3 +359,211 @@ def test_allocate_consignments_faults_on_a_blank_code_rather_than_dropping_it(
     with app.state.session_factory() as session:
         row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
         assert row.allocation_data is None
+
+
+def _paperwork_body(codes: list[str]) -> bytes:
+    code_items = "".join(f"<Item>{code}</Item>" for code in codes)
+    return (
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        ' xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/"'
+        ' xmlns:tns="urn:DeliveryManager/services">'
+        "<soap:Body>"
+        "<tns:createPaperworkForConsignments>"
+        '<consignmentCodes href="#id1"/>'
+        "</tns:createPaperworkForConsignments>"
+        f'<soapenc:Array id="id1">{code_items}</soapenc:Array>'
+        "</soap:Body></soap:Envelope>"
+    ).encode()
+
+
+def _create_depot1(client: TestClient) -> None:
+    # The create fixture's senderCode; the domain resolves it to a Warehouse or
+    # rejects the code, so paperwork's happy path needs the row to exist.
+    response = client.post(
+        "/api/warehouses",
+        json={
+            "code": "DEPOT1",
+            "name": "Depot 1",
+            "address_lines": ["1 Dock Road"],
+            "postcode": "M1 1AA",
+            "country": "GB",
+        },
+    )
+    assert response.status_code == 201
+
+
+def _stage_and_allocate(client: TestClient, auth: tuple[str, str], app: FastAPI) -> str:
+    code = _stage_a_consignment(client, auth, app)
+    response = client.post(
+        "/AllocationService",
+        content=_allocate_body([code], ["ECONOMY"]),
+        headers={"Content-Type": "text/xml"},
+        auth=auth,
+    )
+    assert response.status_code == 200
+    return code
+
+
+def test_paperwork_runs_the_domain_and_returns_labels_and_the_parcels_string(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The one real-work call (ADR 0011): it consumes the staged create+allocate
+    # data, runs the atomic domain create-consignment, and returns the paperwork
+    # obligations - base64 label PDF and the Parcels String (CONTEXT.md).
+    _create_depot1(client)
+    code = _stage_and_allocate(client, wms_auth, app)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    # {order}-parcel-{n}:{Parcel Barcode}, comma-joined; n and the barcode's
+    # sequence must agree (CONTEXT.md: Parcels String).
+    assert (
+        "95000254580-parcel-1:95000254580-1,"
+        "95000254580-parcel-2:95000254580-2" in response.text
+    )
+    labels = re.search(r"<labels>(.*?)</labels>", response.text, re.DOTALL)
+    assert labels is not None
+    assert base64.b64decode(labels.group(1)).startswith(b"%PDF")
+
+    # The domain Consignment is now the system of record for the shipment.
+    with app.state.session_factory() as session:
+        consignment = (
+            session.execute(
+                select(Consignment).where(Consignment.order_number == "95000254580")
+            )
+            .scalars()
+            .one()
+        )
+        assert consignment.status == "allocated"
+        assert consignment.carrier == "dropout"
+
+
+def test_paperwork_faults_with_no_codes(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "no consignmentCodes" in response.text
+
+
+def test_paperwork_faults_on_a_code_that_was_never_created(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body(["NS9999999"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "unknown consignmentCode" in response.text
+
+
+def test_paperwork_faults_when_allocate_has_not_run(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # Strict lifecycle ordering (ADR 0011): paperwork reads the allocate call's
+    # stored intent, so a code that was created but never allocated is a
+    # lifecycle error, and no domain create-consignment runs for it.
+    code = _stage_a_consignment(client, wms_auth, app)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "allocateConsignments must run first" in response.text
+    with app.state.session_factory() as session:
+        assert not list(session.execute(select(Consignment)).scalars())
+
+
+def test_paperwork_faults_on_more_than_one_code(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # One shipment per call: a second code is refused up front, before any
+    # domain work, so a code that books can never be stranded behind the blanket
+    # fault a later code would raise (the domain commits its own failure paths).
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body(["NS0000001", "NS0000002"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "one consignmentCode per call" in response.text
+    with app.state.session_factory() as session:
+        assert not list(session.execute(select(Consignment)).scalars())
+
+
+def test_paperwork_faults_on_a_blank_code(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([""]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "blank consignmentCode" in response.text
+
+
+def test_paperwork_faults_when_the_shipment_cannot_be_allocated(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # No carrier serves the destination, so there is no label to return: the WMS
+    # is told loudly, not handed an empty paperwork response.
+    _create_depot1(client)
+    body = _fixture("create_consignments_request.xml").replace(
+        b'<countryCode xsi:type="xsd:string">GB</countryCode>',
+        b'<countryCode xsi:type="xsd:string">US</countryCode>',
+    )
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        code = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        assert isinstance(code.consignment_code, str)
+        consignment_code = code.consignment_code
+    client.post(
+        "/AllocationService",
+        content=_allocate_body([consignment_code], ["ECONOMY"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([consignment_code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "could not be allocated" in response.text
+    # The fault rolls the request back, so an unservable shipment leaves no
+    # domain Consignment behind (the batch-safety rollback the edge applies to
+    # every fault).
+    with app.state.session_factory() as session:
+        assert not list(session.execute(select(Consignment)).scalars())

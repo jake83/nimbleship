@@ -44,8 +44,26 @@ behaviour: it does the same (real carrier work only at paperwork).
 - **PR3: extract the shared domain create-consignment service.** The JSON
   router's inline orchestration (allocate + book + label + events) becomes one
   domain function both edges call (ADR 0002).
-- **PR4: createPaperworkForConsignments.** The real work + the ADR-named
-  obligations: base64 labels, tracking reference, parcels string.
+- **PR4a: createPaperworkForConsignments - the lifecycle bridge.** Consume the
+  staged create+allocate data, run the atomic domain create-consignment, and
+  return the ADR-named obligations: base64 label PDF, tracking reference (when
+  the carrier reports one), and the Parcels String (CONTEXT.md). Contract-tested
+  against a synthetic request; DropOut end to end. Deliberately deferred to PR4b
+  (they need the grilling session's domain knowledge): the serviceGroup ->
+  Delivery Proposition mapping (so dispatch runs unfiltered, proposition=None, for
+  now), Order Origin derivation, the full sentinel-zero field set, and
+  byte-exact response fidelity. Scope guard: PR4a handles one consignmentCode
+  per call (matching the real recorded single-Paperwork response) and refuses a
+  batch up front - create_consignment commits the request session on its own
+  failure paths, so a second code booking after a first would strand the first's
+  real carrier booking behind the blanket fault the second raises; safe batching
+  needs a partial-success response and per-code commit isolation, deferred with
+  the response-fidelity work to PR4b. Known limitations carried to PR4b/PR5: a
+  re-sent paperwork call faults on the duplicate-order 409 (no reprint path yet);
+  and a rejected shipment faults without leaving a domain Consignment behind.
+- **PR4b: paperwork fidelity + mappings.** Land the four grilling-item
+  obligations above against a real recorded paperwork response (open questions
+  1-4).
 - **PR5: manifest + dispatch** (markAsReadyToManifest, createManifest) onto the
   existing dispatch-confirmation/manifest domain path.
 - **PR6+: shadow mode.** Replay recorded traffic through the edge, diff
@@ -57,19 +75,21 @@ behaviour: it does the same (real carrier work only at paperwork).
 
 ## Open questions (grilling agenda)
 
-Batched for a session; none block PR1-3, each is needed by the PR noted.
+Batched for a session; none block PR1-3 or the PR4a bridge, each is needed by
+the PR noted.
 
-1. **serviceGroup -> Delivery Proposition mapping** (PR3/PR4): the per-value
+1. **serviceGroup -> Delivery Proposition mapping** (PR4b): the per-value
    table from incoming `custom1`/serviceGroup codes to a proposition +
    order-type facts (CONTEXT.md flags a ~40-row table). Domain knowledge only
-   the old system/owner has.
-2. **Order Origin derivation rules** (PR3/PR4): the per-caller config mapping
+   the old system/owner has. PR4a runs dispatch unfiltered (proposition=None)
+   until this lands.
+2. **Order Origin derivation rules** (PR4b): the per-caller config mapping
    old signals (order-id prefix/length, recipient email domain) to
    platform/website/marketplace facts (CONTEXT.md: Order Origin).
-3. **Sentinel-zero fields** (PR3/PR4): the full set of numeric fields the WMS
+3. **Sentinel-zero fields** (PR4b): the full set of numeric fields the WMS
    sends as `0` meaning absent (consignmentValue, maxDimension confirmed - are
    there others?). Translated to absent facts, never the number zero.
-4. **Paperwork response fidelity** (PR4): confirm the exact `<parcels>` /
+4. **Paperwork response fidelity** (PR4b): confirm the exact `<parcels>` /
    `<trackingReference>` / `<labels>` positions and the Drop Out tracking-omit
    rule against a real paperwork response; byte-match matters here (the WMS
    parses positionally).
