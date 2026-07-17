@@ -14,6 +14,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from nimbleship.db import Base
 
+# The single source of truth for consignment field limits: the column widths
+# below, the JSON API's pydantic bounds, and the domain's own invariant checks
+# (create_consignment) all reference these, so the three can never drift
+# (ADR 0002 clarification). A weight is stored as a 2dp-rounded decimal string.
+ORDER_NUMBER_MAX = 64
+RECIPIENT_NAME_MAX = 255
+POSTCODE_MAX = 32
+COUNTRY_CODE_MAX = 3
+PARCEL_WEIGHT_MAX = 16
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -23,11 +33,13 @@ class Consignment(Base):
     __tablename__ = "consignments"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    order_number: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    recipient_name: Mapped[str] = mapped_column(String(255))
+    order_number: Mapped[str] = mapped_column(
+        String(ORDER_NUMBER_MAX), unique=True, index=True
+    )
+    recipient_name: Mapped[str] = mapped_column(String(RECIPIENT_NAME_MAX))
     address_lines: Mapped[list[str]] = mapped_column(JSON)
-    postcode: Mapped[str] = mapped_column(String(32))
-    destination_country: Mapped[str] = mapped_column(String(3))
+    postcode: Mapped[str] = mapped_column(String(POSTCODE_MAX))
+    destination_country: Mapped[str] = mapped_column(String(COUNTRY_CODE_MAX))
     # The Delivery Proposition the customer bought; kept so dry-run replays
     # evaluate the same facts dispatch saw (ADR 0003/0007).
     proposition: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -64,7 +76,7 @@ class Parcel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     consignment_id: Mapped[int] = mapped_column(ForeignKey("consignments.id"))
     sequence: Mapped[int] = mapped_column()
-    weight_kg: Mapped[str] = mapped_column(String(16))
+    weight_kg: Mapped[str] = mapped_column(String(PARCEL_WEIGHT_MAX))
     barcode: Mapped[str] = mapped_column(String(80))
     # The barcode the carrier issued for this parcel at booking - distinct
     # from `barcode`, the Parcel Barcode this system prints (CONTEXT.md).
@@ -81,7 +93,7 @@ class OrderEvent(Base):
     __tablename__ = "order_events"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    order_number: Mapped[str] = mapped_column(String(64), index=True)
+    order_number: Mapped[str] = mapped_column(String(ORDER_NUMBER_MAX), index=True)
     stage: Mapped[str] = mapped_column(String(32))
     detail: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -271,7 +283,7 @@ class CarrierTraffic(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     carrier: Mapped[str] = mapped_column(String(64), index=True)
-    order_number: Mapped[str] = mapped_column(String(64), index=True)
+    order_number: Mapped[str] = mapped_column(String(ORDER_NUMBER_MAX), index=True)
     step: Mapped[str] = mapped_column(String(64))
     request: Mapped[dict[str, object]] = mapped_column(JSON)
     # None when the carrier was never reached (connect/timeout failures).
@@ -347,7 +359,9 @@ class LegacyConsignmentStaging(Base):
     consignment_code: Mapped[str | None] = mapped_column(
         String(32), unique=True, index=True
     )
-    order_number: Mapped[str | None] = mapped_column(String(64), index=True)
+    order_number: Mapped[str | None] = mapped_column(
+        String(ORDER_NUMBER_MAX), index=True
+    )
     created_data: Mapped[dict[str, object] | None] = mapped_column(JSON)
     allocation_data: Mapped[dict[str, object] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

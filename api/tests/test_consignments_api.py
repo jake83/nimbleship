@@ -49,16 +49,17 @@ def test_timeline_records_allocation_and_label_creation(
     assert response.status_code == 200
     body = response.json()
     assert [e["stage"] for e in body["events"]] == ["allocated", "label_created"]
+    # Weights are stored rounded to 2dp (the company's convention).
     assert body["parcels"] == [
         {
             "sequence": 1,
-            "weight_kg": "4.2",
+            "weight_kg": "4.20",
             "barcode": "95000254580-1",
             "carrier_barcode": None,
         },
         {
             "sequence": 2,
-            "weight_kg": "3.1",
+            "weight_kg": "3.10",
             "barcode": "95000254580-2",
             "carrier_barcode": None,
         },
@@ -118,6 +119,36 @@ def test_non_latin_order_numbers_are_rejected_with_422(client: TestClient) -> No
     response = client.post("/api/consignments", json=unicode_order)
 
     assert response.status_code == 422
+
+
+def test_over_long_recipient_name_is_rejected(client: TestClient) -> None:
+    # Field caps that mirror the columns (a Postgres overflow otherwise); the
+    # JSON edge enforces them at validation, the domain also owns them.
+    payload = {**CONSIGNMENT, "recipient_name": "A" * 256}
+
+    assert client.post("/api/consignments", json=payload).status_code == 422
+
+
+def test_over_long_postcode_is_rejected(client: TestClient) -> None:
+    payload = {**CONSIGNMENT, "postcode": "A" * 33}
+
+    assert client.post("/api/consignments", json=payload).status_code == 422
+
+
+def test_an_absurd_parcel_weight_is_rejected(client: TestClient) -> None:
+    # Pydantic accepts any positive Decimal; the domain rounds to 2dp and rejects
+    # one whose stored form would overflow the weight column.
+    payload = {**CONSIGNMENT, "parcels": [{"weight_kg": "1" + "0" * 20}]}
+
+    assert client.post("/api/consignments", json=payload).status_code == 422
+
+
+def test_a_huge_magnitude_parcel_weight_faults_cleanly(client: TestClient) -> None:
+    # A magnitude past the decimal context precision makes quantize itself raise;
+    # it must fault as a 422, not escape as an uncaught 500.
+    payload = {**CONSIGNMENT, "parcels": [{"weight_kg": "1E+50"}]}
+
+    assert client.post("/api/consignments", json=payload).status_code == 422
 
 
 PROPOSITION_DRAFT = {

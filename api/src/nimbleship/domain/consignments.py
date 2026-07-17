@@ -8,7 +8,7 @@ import base64
 import binascii
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import httpx
 from sqlalchemy import select
@@ -37,7 +37,18 @@ from nimbleship.engine.plugins.number_range import (
     sscc_wrap_after,
 )
 from nimbleship.labels.store import LabelStore
-from nimbleship.models import CarrierTraffic, Consignment, OrderEvent, Parcel, Warehouse
+from nimbleship.models import (
+    COUNTRY_CODE_MAX,
+    ORDER_NUMBER_MAX,
+    PARCEL_WEIGHT_MAX,
+    POSTCODE_MAX,
+    RECIPIENT_NAME_MAX,
+    CarrierTraffic,
+    Consignment,
+    OrderEvent,
+    Parcel,
+    Warehouse,
+)
 from nimbleship.uploaders import FileUploader
 
 
@@ -86,6 +97,41 @@ def order_exists(session: Session, order_number: str) -> bool:
         select(Consignment.id).where(Consignment.order_number == order_number)
     ).scalar_one_or_none()
     return row is not None
+
+
+def _validate_request(request: ConsignmentRequest) -> None:
+    """The Consignment's field and shape invariants: the domain owns them so both
+    edges enforce the same rules, each mapping the ConsignmentError to its own
+    shape (ADR 0002 clarification). Caps are the shared models.py constants."""
+    if not request.parcel_weights:
+        raise ConsignmentError(422, "a consignment must have at least one parcel")
+    _reject_long("order number", request.order_number, ORDER_NUMBER_MAX)
+    _reject_long("recipient name", request.recipient_name, RECIPIENT_NAME_MAX)
+    _reject_long("postcode", request.postcode, POSTCODE_MAX)
+    _reject_long("country code", request.destination_country, COUNTRY_CODE_MAX)
+
+
+def _reject_long(label: str, value: str, limit: int) -> None:
+    if len(value) > limit:
+        raise ConsignmentError(422, f"{label} exceeds {limit} characters")
+
+
+def _round_weight(weight: Decimal) -> Decimal:
+    """Round a parcel weight to 2dp. Non-finite is rejected here too - the domain
+    owns weight validity, not just the parsing edge. quantize itself raises on a
+    magnitude past the decimal context precision, so a huge-but-finite weight
+    faults cleanly rather than escaping as an uncaught 500."""
+    if not weight.is_finite():
+        raise ConsignmentError(422, f"a parcel weight '{weight}' is not a number")
+    try:
+        rounded = weight.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation as error:
+        raise ConsignmentError(
+            422, f"a parcel weight '{weight}' is out of range"
+        ) from error
+    if len(str(rounded)) > PARCEL_WEIGHT_MAX:
+        raise ConsignmentError(422, f"a parcel weight '{weight}' is out of range")
+    return rounded
 
 
 def _resolve_warehouse(session: Session, code: str | None) -> Warehouse | None:
@@ -314,10 +360,14 @@ def create_consignment(
 ) -> CreatedConsignment:
     if order_exists(session, request.order_number):
         raise ConsignmentError(409, "a consignment already exists for this order")
+    _validate_request(request)
+    # Rounded once so the derived total always equals the sum of the stored
+    # parcels (no drift a carrier would reject).
+    weights = [_round_weight(weight) for weight in request.parcel_weights]
     warehouse = _resolve_warehouse(session, request.warehouse)
 
     rulebook = active_rulebook(session)
-    total_weight = sum(request.parcel_weights, Decimal("0"))
+    total_weight = sum(weights, Decimal("0"))
     # Area facts are resolved before evaluation so allocate() stays pure
     # (ADR 0008 addendum): facts in, verdict and trace out.
     shipping_areas = resolve_shipping_areas(
@@ -389,11 +439,11 @@ def create_consignment(
         warehouse=request.warehouse,
         allocation=result.model_dump(mode="json"),
     )
-    barcodes = parcel_barcodes(request.order_number, len(request.parcel_weights))
+    barcodes = parcel_barcodes(request.order_number, len(weights))
     consignment.parcels = [
         Parcel(sequence=i, weight_kg=str(weight), barcode=barcode)
         for i, (weight, barcode) in enumerate(
-            zip(request.parcel_weights, barcodes, strict=True), start=1
+            zip(weights, barcodes, strict=True), start=1
         )
     ]
     session.add(consignment)

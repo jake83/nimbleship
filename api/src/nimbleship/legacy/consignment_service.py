@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import paperwork_service, soap, staging
+from nimbleship.models import ORDER_NUMBER_MAX
 from nimbleship.uploaders import FileUploader
 
 
@@ -46,6 +47,13 @@ def _create_consignments(request: soap.SoapRequest, session: Session) -> bytes:
         # "None" key that would collapse distinct shipments together.
         if not isinstance(order_number, str) or not order_number:
             raise soap.SoapFault("createConsignments: a consignment has no orderNumber")
+        # The one field the edge length-checks: it is this call's staging key
+        # (an indexed column), written before the domain validates the rest at
+        # paperwork (ADR 0002 clarification). Uses the shared column constant.
+        if len(order_number) > ORDER_NUMBER_MAX:
+            raise soap.SoapFault(
+                f"createConsignments: orderNumber exceeds {ORDER_NUMBER_MAX} characters"
+            )
         # Two items in one batch sharing an order number are distinct shipments
         # colliding, not an idempotent resend of a whole call; faulted, so the
         # second does not silently overwrite the first's staging row and reuse
