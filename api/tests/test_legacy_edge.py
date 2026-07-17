@@ -1166,3 +1166,260 @@ def test_paperwork_faults_when_the_shipment_cannot_be_allocated(
     # every fault).
     with app.state.session_factory() as session:
         assert not list(session.execute(select(Consignment)).scalars())
+
+
+def _mark_ready_body(codes: list[str]) -> bytes:
+    code_items = "".join(f"<Item>{code}</Item>" for code in codes)
+    return (
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        ' xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/"'
+        ' xmlns:tns="urn:DeliveryManager/services">'
+        "<soap:Body>"
+        "<tns:markConsignmentsAsReadyToManifest>"
+        '<consignmentCodes href="#id1"/>'
+        "</tns:markConsignmentsAsReadyToManifest>"
+        f'<soapenc:Array id="id1">{code_items}</soapenc:Array>'
+        "</soap:Body></soap:Envelope>"
+    ).encode()
+
+
+def _seed_staged_consignment(
+    app: FastAPI,
+    order_number: str,
+    code: str,
+    status: str = "allocated",
+) -> None:
+    # mark-ready resolves a consignment_code via its staging row to the domain
+    # Consignment, so both rows must exist; only a manifest carrier is left
+    # "allocated" after paperwork (ADR 0013), which is the state this op acts on.
+    with app.state.session_factory() as session:
+        session.add(
+            LegacyConsignmentStaging(
+                order_number=order_number,
+                consignment_code=code,
+                created_data={"order_number": order_number},
+                allocation_data={"service_group_codes": ["ECONOMY"]},
+            )
+        )
+        session.add(
+            Consignment(
+                order_number=order_number,
+                recipient_name="John Doe",
+                address_lines=["10 Downing Street"],
+                postcode="SW1A 2AA",
+                destination_country="GB",
+                status=status,
+                carrier="brightpost",
+                service="BP-STD",
+                allocation={},
+            )
+        )
+        session.commit()
+
+
+def _status_of(app: FastAPI, order_number: str) -> str:
+    with app.state.session_factory() as session:
+        consignment = session.execute(
+            select(Consignment).where(Consignment.order_number == order_number)
+        ).scalar_one()
+        status: str = consignment.status
+        return status
+
+
+def test_mark_ready_moves_an_allocated_consignment_to_ready_to_manifest(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="allocated")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert "markConsignmentsAsReadyToManifestReturn" in response.text
+    assert "true" in response.text
+    assert _status_of(app, "95000254580") == "ready_to_manifest"
+
+
+def test_mark_ready_is_selective_leaving_unnamed_consignments_allocated(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The WMS marks some ready and holds others back (ADR 0013): only the named
+    # code moves; the unnamed one stays allocated for a later manifest.
+    _seed_staged_consignment(app, "ORDER-A", "NS0000001", status="allocated")
+    _seed_staged_consignment(app, "ORDER-B", "NS0000002", status="allocated")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _status_of(app, "ORDER-A") == "ready_to_manifest"
+    assert _status_of(app, "ORDER-B") == "allocated"
+
+
+def test_mark_ready_is_idempotent_on_an_already_ready_consignment(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    _seed_staged_consignment(
+        app, "95000254580", "NS0000001", status="ready_to_manifest"
+    )
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _status_of(app, "95000254580") == "ready_to_manifest"
+
+
+def test_mark_ready_faults_on_an_unknown_code(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS9999999"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "unknown consignmentCode" in response.text
+
+
+def test_mark_ready_is_a_no_op_on_an_already_dispatched_consignment(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A non-manifest carrier's consignment is already dispatched at paperwork;
+    # naming it in a mark-ready batch is a no-op, not an error, matching the JSON
+    # dispatch-confirmation (ADR 0013) - so a mixed batch is not hard-faulted.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="dispatched")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _status_of(app, "95000254580") == "dispatched"
+
+
+def test_mark_ready_faults_on_a_genuinely_unmanifestable_status(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # on_manifest (already on a manifest) is neither allocated nor a graceful
+    # no-op - readying it again is a real conflict, so it faults.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="on_manifest")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "cannot be marked ready" in response.text
+    assert _status_of(app, "95000254580") == "on_manifest"
+
+
+def test_mark_ready_faults_with_no_codes(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body([]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "no consignmentCodes" in response.text
+
+
+def test_mark_ready_faults_on_a_blank_code(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body([""]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "blank consignmentCode" in response.text
+
+
+def test_mark_ready_rolls_back_the_whole_batch_when_one_code_is_bad(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # Transactional per call (like createConsignments): one bad code faults the
+    # batch, so the good one is not left half-marked.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="allocated")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001", "NS9999999"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert _status_of(app, "95000254580") == "allocated"
+
+
+def test_mark_ready_faults_on_a_code_staged_but_never_papered(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A code exists in staging but createPaperworkForConsignments never ran, so
+    # there is no domain Consignment to ready - a lifecycle-order fault.
+    with app.state.session_factory() as session:
+        session.add(
+            LegacyConsignmentStaging(
+                order_number="95000254580",
+                consignment_code="NS0000001",
+                created_data={"order_number": "95000254580"},
+                allocation_data={"service_group_codes": ["ECONOMY"]},
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "has no paperwork yet" in response.text
+
+
+def test_mark_ready_tolerates_a_duplicate_code_in_one_batch(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The same code twice resolves to one consignment; it is readied once and
+    # the call succeeds, not double-faulted.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="allocated")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001", "NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _status_of(app, "95000254580") == "ready_to_manifest"

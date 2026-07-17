@@ -7,11 +7,12 @@ import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import paperwork_service, soap, staging
-from nimbleship.models import ORDER_NUMBER_MAX
+from nimbleship.models import ORDER_NUMBER_MAX, Consignment, LegacyConsignmentStaging
 from nimbleship.uploaders import FileUploader
 
 
@@ -25,11 +26,79 @@ def handle(
     request = soap.parse_request(body)
     if request.method == "createConsignments":
         return _create_consignments(request, session)
+    if request.method == "markConsignmentsAsReadyToManifest":
+        return _mark_ready_to_manifest(request, session)
     if request.method == "createPaperworkForConsignments":
         return paperwork_service.create_paperwork(
             request, session, store, http_client, uploaders
         )
     raise soap.SoapFault(f"unsupported ConsignmentService operation '{request.method}'")
+
+
+def _mark_ready_to_manifest(request: soap.SoapRequest, session: Session) -> bytes:
+    """Selectively mark named consignments ready for a later manifest (ADR 0013):
+    allocated -> ready_to_manifest. A no-op on an already-ready or already-
+    dispatched consignment (a non-manifest carrier's, gone at paperwork) -
+    matching the JSON dispatch-confirmation's allow-set, this is a manifest
+    trigger, not an error. Any other status faults. Returns a bare boolean
+    true."""
+    codes = request.string_array(request.operation, "consignmentCodes")
+    if not codes:
+        raise soap.SoapFault("markConsignmentsAsReadyToManifest: no consignmentCodes")
+    # Resolve and validate every code before mutating any, so one bad code faults
+    # the whole batch rather than leaving it half-marked - the WMS must not be
+    # left unsure which consignments it readied.
+    to_ready: list[Consignment] = []
+    for code in codes:
+        if not code:
+            raise soap.SoapFault(
+                "markConsignmentsAsReadyToManifest: a blank consignmentCode"
+            )
+        consignment = _resolve_consignment(code, session)
+        # Already ready, or already dispatched at paperwork (a non-manifest
+        # carrier's): a no-op, like the JSON edge's ("allocated", "dispatched")
+        # allow-set, so a mixed batch is not hard-faulted (ADR 0013).
+        if consignment.status in ("ready_to_manifest", "dispatched"):
+            continue
+        if consignment.status != "allocated":
+            raise soap.SoapFault(
+                f"markConsignmentsAsReadyToManifest: consignmentCode '{code}' "
+                f"(status {consignment.status}) cannot be marked ready - only an "
+                "allocated consignment can"
+            )
+        to_ready.append(consignment)
+    for consignment in to_ready:
+        consignment.status = "ready_to_manifest"
+    session.flush()
+
+    def build(operation_element: ET.Element) -> None:
+        soap.text_child(
+            operation_element, "markConsignmentsAsReadyToManifestReturn", "true"
+        )
+
+    return soap.response("markConsignmentsAsReadyToManifestResponse", build)
+
+
+def _resolve_consignment(code: str, session: Session) -> Consignment:
+    row = session.execute(
+        select(LegacyConsignmentStaging).where(
+            LegacyConsignmentStaging.consignment_code == code
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise soap.SoapFault(
+            f"markConsignmentsAsReadyToManifest: unknown consignmentCode '{code}' - "
+            "createConsignments must run first"
+        )
+    consignment = session.execute(
+        select(Consignment).where(Consignment.order_number == row.order_number)
+    ).scalar_one_or_none()
+    if consignment is None:
+        raise soap.SoapFault(
+            f"markConsignmentsAsReadyToManifest: consignmentCode '{code}' has no "
+            "paperwork yet - createPaperworkForConsignments must run first"
+        )
+    return consignment
 
 
 def _create_consignments(request: soap.SoapRequest, session: Session) -> bytes:
