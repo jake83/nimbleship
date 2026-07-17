@@ -111,6 +111,12 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
    - Only file-disjoint items, and at most ONE schema/migration change per wave
      - Alembic's revision chain is linear, so two migrations off one parent
        branch the history and need a hand-written merge migration.
+   - A worktree isolates the git tree, NOT env vars, ports, or external
+     services: parallel agents must not share one `NIMBLESHIP_TEST_POSTGRES_URL`
+     - its integration fixtures drop-and-recreate that one database unlocked, so
+     concurrent gate runs clobber each other. Run the SQLite gate in parallel
+     (Postgres integration is opt-in via that env var, and CI covers it), or
+     give each agent its own database.
    - Independent items merge in any order, so NO stacking across parallel agents
      (stacked work is the single-branch case above, done by the main loop).
    - More agents trade tokens for wall-clock and multiply the review loops the
