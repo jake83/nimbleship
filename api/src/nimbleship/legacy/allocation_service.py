@@ -4,16 +4,70 @@ Allocated response; the real carrier allocation happens at paperwork."""
 
 import xml.etree.ElementTree as ET
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nimbleship.legacy import soap, staging
+from nimbleship.models import Consignment, LegacyConsignmentStaging
 
 
 def handle(body: bytes, session: Session) -> bytes:
     request = soap.parse_request(body)
     if request.method == "allocateConsignments":
         return _allocate_consignments(request, session)
+    if request.method == "deallocate":
+        return _deallocate(request, session)
     raise soap.SoapFault(f"unsupported AllocationService operation '{request.method}'")
+
+
+def _deallocate(request: soap.SoapRequest, session: Session) -> bytes:
+    """Undo a staged allocation: clear the staging row's allocation_data so the
+    consignment reverts to created-but-unallocated and can be re-allocated. Once
+    a domain Consignment exists for the order (paperwork has run, whether it
+    succeeded or failed) it owns the allocation and a staged clear cannot reverse
+    it, so that is a success no-op - the WMS expects success either way. Faults
+    on an unknown code. Returns the codes."""
+    codes = request.string_array(request.operation, "consignmentCodes")
+    if not codes:
+        raise soap.SoapFault("deallocate: no consignmentCodes")
+    # Same lock the create/allocate writes take: this read-modify-write shares
+    # the staging table's one write concern, so it cannot lose its clear to a
+    # concurrent allocate rewriting the same row (staging.serialise_staging_writes).
+    staging.serialise_staging_writes(session)
+    seen: set[str] = set()
+    for code in codes:
+        if not code:
+            raise soap.SoapFault("deallocate: a blank consignmentCode")
+        if code in seen:
+            raise soap.SoapFault(
+                f"deallocate: duplicate consignmentCode '{code}' in one batch"
+            )
+        seen.add(code)
+        row = session.execute(
+            select(LegacyConsignmentStaging).where(
+                LegacyConsignmentStaging.consignment_code == code
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise soap.SoapFault(
+                f"deallocate: unknown consignmentCode '{code}' - "
+                "createConsignments must run first"
+            )
+        # A Consignment row in any state - including booking_failed/label_failed
+        # - counts as paperworked and owns the allocation, so deallocate no-ops.
+        papered = session.execute(
+            select(Consignment.id).where(Consignment.order_number == row.order_number)
+        ).scalar_one_or_none()
+        if papered is None:
+            row.allocation_data = None
+    session.flush()
+
+    def build(operation_element: ET.Element) -> None:
+        return_element = ET.SubElement(operation_element, "deallocateReturn")
+        for code in codes:
+            soap.text_child(return_element, "Item", code)
+
+    return soap.response("deallocateResponse", build)
 
 
 def _allocate_consignments(request: soap.SoapRequest, session: Session) -> bytes:

@@ -10,10 +10,11 @@ from nimbleship.models import LegacyConsignmentStaging
 _STAGING_LOCK_KEY = 815_008
 
 
-def _serialise_staging_writes(session: Session) -> None:
-    # Serialises the read-modify-write below on Postgres, so two concurrent
-    # creates for one order cannot both miss the pre-check and stage duplicate
-    # rows. A no-op on SQLite, which backs only single-writer dev and the tests.
+def serialise_staging_writes(session: Session) -> None:
+    # Serialises every staging read-modify-write on Postgres onto one lock, so
+    # concurrent writers for one order (a create resend, an allocate, an amend)
+    # cannot miss each other's write and stage duplicate rows or lose an update.
+    # A no-op on SQLite, which backs only single-writer dev and the tests.
     if session.get_bind().dialect.name == "postgresql":
         session.execute(select(func.pg_advisory_xact_lock(_STAGING_LOCK_KEY)))
 
@@ -25,7 +26,7 @@ def _code_for(staging_id: int) -> str:
 
 def stage_created(session: Session, data: dict[str, object]) -> str:
     order_number = str(data["order_number"])
-    _serialise_staging_writes(session)
+    serialise_staging_writes(session)
     # A re-sent create for the same order reuses its row and code rather than
     # minting a second handle for one shipment.
     row = session.execute(
@@ -56,7 +57,7 @@ def stage_allocation(
     # Same lock as stage_created: this read-modify-write shares the staging
     # table's one write concern, so an allocate cannot lose its write to a
     # concurrent create-resend rewriting the same row.
-    _serialise_staging_writes(session)
+    serialise_staging_writes(session)
     row = session.execute(
         select(LegacyConsignmentStaging).where(
             LegacyConsignmentStaging.consignment_code == consignment_code

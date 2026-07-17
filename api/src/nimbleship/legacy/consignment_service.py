@@ -38,6 +38,8 @@ def handle(
         return _mark_printed(request, session)
     if request.method == "deleteConsignment":
         return _delete_consignment()
+    if request.method == "updateConsignments":
+        return _update_consignments(request, session)
     if request.method == "createPaperworkForConsignments":
         return paperwork_service.create_paperwork(
             request, session, store, http_client, uploaders
@@ -143,6 +145,73 @@ def _delete_consignment() -> bytes:
         soap.text_child(operation_element, "deleteConsignmentReturn", "true")
 
     return soap.response("deleteConsignmentResponse", build)
+
+
+def _update_consignments(request: soap.SoapRequest, session: Session) -> bytes:
+    """Amend staged consignments: replace each staging row's created_data with
+    the resubmitted details so paperwork uses them, matched by order number (the
+    staging key). Once a domain Consignment exists for the order (paperwork has
+    run, whether it succeeded or failed) it is the record and a staged update
+    cannot change it, so that is a success no-op. Faults on an unknown order.
+    Returns the createConsignments shape."""
+    array = request.follow_child(request.operation, "consignments")
+    if array is None:
+        raise soap.SoapFault("updateConsignments: no consignments element")
+    # Same lock the create/allocate writes take: this read-modify-write shares
+    # the staging table's one write concern, so an amend cannot lose its write to
+    # a concurrent create resend for the same order.
+    staging.serialise_staging_writes(session)
+    updated: list[tuple[str, str, int]] = []
+    seen: set[str] = set()
+    for item in array.findall("Item"):
+        consignment = request.follow(item)
+        data = _consignment_data(request, consignment)
+        order_number = data["order_number"]
+        if not isinstance(order_number, str) or not order_number:
+            raise soap.SoapFault("updateConsignments: a consignment has no orderNumber")
+        if order_number in seen:
+            raise soap.SoapFault(
+                f"updateConsignments: duplicate orderNumber '{order_number}' in "
+                "one batch"
+            )
+        seen.add(order_number)
+        row = session.execute(
+            select(LegacyConsignmentStaging).where(
+                LegacyConsignmentStaging.order_number == order_number
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise soap.SoapFault(
+                f"updateConsignments: unknown orderNumber '{order_number}' - "
+                "createConsignments must run first"
+            )
+        # A Consignment row in any state - including booking_failed/label_failed
+        # - counts as paperworked and is the record, so the amend no-ops.
+        papered = session.execute(
+            select(Consignment.id).where(Consignment.order_number == order_number)
+        ).scalar_one_or_none()
+        if papered is None:
+            row.created_data = data
+        # Count from what is actually staged, not the submitted payload: on the
+        # no-op path the amendment was discarded, so echoing its count would tell
+        # the WMS an update took effect that did not.
+        stored = row.created_data or {}
+        stored_parcels = stored.get("parcels")
+        parcel_count = len(stored_parcels) if isinstance(stored_parcels, list) else 0
+        assert row.consignment_code is not None  # minted when the row was created
+        updated.append((row.consignment_code, order_number, parcel_count))
+    session.flush()
+
+    def build(operation_element: ET.Element) -> None:
+        return_element = ET.SubElement(operation_element, "updateConsignmentsReturn")
+        for code, order_number, parcel_count in updated:
+            item_element = ET.SubElement(return_element, "Item")
+            soap.text_child(item_element, "consignmentCode", code)
+            soap.text_child(item_element, "orderNumber", order_number)
+            soap.text_child(item_element, "status", "Unallocated")
+            soap.text_child(item_element, "parcelCount", str(parcel_count))
+
+    return soap.response("updateConsignmentsResponse", build)
 
 
 def _resolve_consignment(code: str, session: Session, operation: str) -> Consignment:
