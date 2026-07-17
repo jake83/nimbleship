@@ -67,6 +67,11 @@ jobs (reviewer + refuter).
 
 ## The development loop
 
+Standing rule: any agreed improvement to how we work - a new convention, a
+sharper limit, a cadence fix, anything that would otherwise live only in a chat
+- is written into this file as part of the same change, so the next session
+inherits it rather than rediscovering it (owner-granted 2026-07-17).
+
 Every change follows this loop, except a trivial PR (defined in step 4),
 which takes the minimal path described there instead of the adversarial
 pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
@@ -97,8 +102,45 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
    Prefer the independent shape - it overlaps review too, and dodges the rebase.
    Caveat: a review that materially changes THIS PR forces rework of anything
    built on it (owner-granted 2026-07-17).
+
+   Fanning out wider (more than one next step at once): when several steps are
+   genuinely independent, build them in parallel with worktree-isolated
+   sub-agents (the Agent tool, `isolation: worktree`, run in background) - one
+   per feature, each on its own branch doing TDD + gates and reporting its
+   branch back. The main loop keeps everything that does not parallelise: make
+   every design decision FIRST (grill the owner - never fan out on a guessed
+   call), then dispatch the builds, and take each reported branch through the
+   normal per-PR loop - a local review only if it is fat (step 1), then push it
+   as it lands (so the AI reviews overlap, per step 2's independent shape),
+   triage, and merge; do NOT hold the branches for one serialized local pass.
+   Self-merge authority and the accumulated domain context stay with the main
+   loop. Hard limits, or
+   it trips up:
+   - Only file-disjoint items, and at most ONE schema/migration change per wave
+     - Alembic's revision chain is linear, so two migrations off one parent
+       branch the history and need a hand-written merge migration.
+   - A worktree isolates the git tree, NOT env vars, ports, or external
+     services: parallel agents must not share one `NIMBLESHIP_TEST_POSTGRES_URL`
+     - its integration fixtures drop-and-recreate that one database unlocked, so
+     concurrent gate runs clobber each other. Run the SQLite gate in parallel
+     (Postgres integration is opt-in via that env var, and CI covers it), or
+     give each agent its own database.
+   - Independent items merge in any order, so NO stacking across parallel agents
+     (stacked work is the single-branch case above, done by the main loop).
+   - More agents trade tokens for wall-clock and multiply the review loops the
+     main loop must triage: use it for a real batch of independent work, not a
+     one-off (owner-granted 2026-07-17).
 3. Triage every AI finding per "Handling review feedback" below; push fixes,
-   post rebuttals. The pipeline re-runs on each push until settled.
+   post rebuttals. The pipeline re-runs on each push until settled. Polling
+   cadence: within one PR, wait for ALL its checks to finish before the
+   consolidated fix push - pushing while the refuter still runs supersedes the
+   commit it is attacking and spins a wasted round. Across concurrent PRs, poll
+   and triage each INDEPENDENTLY (a separate background poll per PR): act on
+   whichever settles first, and never gate one PR's triage or merge on another
+   PR's checks. When the reviewer posts before the refuter finishes, start
+   reading and working through its findings during the refuter's remaining
+   runtime - overlap the analysis - but still hold the one consolidated fix push
+   until both jobs complete.
 4. When the loop is settled, post a wrap-up comment ("AI loop complete:
    N findings, M fixed, K rebutted"), then:
    - **Trivial PR** - judged by change TYPE, not size. Every change in the
