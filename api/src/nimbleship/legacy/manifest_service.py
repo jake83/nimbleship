@@ -26,9 +26,9 @@ def handle(body: bytes, session: Session) -> bytes:
 def _create_manifest(request: soap.SoapRequest, session: Session) -> bytes:
     carrier = _required(request, "carrierCode")
     warehouse = _required(request, "warehouseCode")
-    # A code is minted for every call, even an empty sweep (a carrier the WMS
-    # never marked anything ready for): the WMS expects one back regardless, and
-    # the sequence is independent of whether a Manifest row results (ADR 0013).
+    # A code is minted for every call, even an empty sweep: the WMS expects one
+    # back regardless, and the sequence is independent of whether a Manifest row
+    # results (ADR 0013).
     ready = ready_to_manifest(session, carrier, warehouse)
     manifests = create_manifests(session, ready)
     code = mint_manifest_code(session)
@@ -38,10 +38,11 @@ def _create_manifest(request: soap.SoapRequest, session: Session) -> bytes:
     session.flush()
 
     def build(operation_element: ET.Element) -> None:
-        # createManifestReturn is a single-element string array in the dialect;
-        # the inner element carries the one code.
+        # A single-element string array: the return wrapper holds one Item, the
+        # array-member convention this edge uses on every response and parses on
+        # every request (soap.string_array).
         array = ET.SubElement(operation_element, "createManifestReturn")
-        soap.text_child(array, "createManifestReturn", code)
+        soap.text_child(array, "Item", code)
 
     return soap.response("createManifestResponse", build)
 

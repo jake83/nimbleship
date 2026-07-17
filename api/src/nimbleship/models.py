@@ -307,8 +307,12 @@ class Manifest(Base):
     warehouse: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # The NS-native manifest code returned to the WMS when the legacy
     # createManifest created this manifest (ADR 0013); null for a manifest the
-    # JSON dispatch-confirmation created, which returns no code.
-    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # JSON dispatch-confirmation created, which returns no code. Unique like the
+    # consignment code it mirrors: minted from a sequence, so a duplicate would
+    # be a minting bug the schema must catch (nulls do not collide).
+    code: Mapped[str | None] = mapped_column(
+        String(32), unique=True, index=True, nullable=True
+    )
     # pending -> sent, or -> failed once the send job exhausts its retries.
     status: Mapped[str] = mapped_column(String(16))
     # Send attempts so far - the queue owns scheduling; this is the audit.

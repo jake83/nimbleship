@@ -1508,14 +1508,19 @@ def _queue_jobs(app: FastAPI) -> list[dict[str, object]]:
 
 
 def _manifest_return(xml: str) -> str:
+    # Assert the array's actual wire shape: a createManifestReturn wrapper whose
+    # members are <Item> elements (this edge's array convention), not a loose
+    # tree walk that would pass on any nesting.
     root = ET.fromstring(xml)
-    codes = [
-        el.text
-        for el in root.iter()
-        if _localname_str(el.tag) == "createManifestReturn" and el.text
+    wrappers = [
+        el for el in root.iter() if _localname_str(el.tag) == "createManifestReturn"
     ]
-    assert codes, xml
-    return codes[0]
+    assert wrappers, xml
+    items = [c for c in wrappers[0] if _localname_str(c.tag) == "Item"]
+    assert items, f"createManifestReturn should hold <Item> members: {xml}"
+    text = items[0].text
+    assert text, xml
+    return text
 
 
 def _localname_str(tag: str) -> str:
