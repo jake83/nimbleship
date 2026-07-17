@@ -1783,6 +1783,27 @@ def test_mark_printed_faults_on_a_consignment_with_no_label(
     assert _event_stages(app, "95000254580") == []
 
 
+def test_mark_printed_accepts_a_ready_to_manifest_consignment(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A manifest carrier's consignment keeps its paperwork label through
+    # ready_to_manifest and on_manifest, so printing it is a genuine fact
+    # (the label-gate must not exclude those intermediate states, ADR 0013).
+    _seed_staged_consignment(
+        app, "95000254580", "NS0000001", status="ready_to_manifest"
+    )
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert "printed" in _event_stages(app, "95000254580")
+
+
 def test_delete_consignment_acknowledges_without_changing_state(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:

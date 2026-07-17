@@ -64,10 +64,15 @@ class ConsignmentError(Exception):
         self.detail = detail
 
 
-# Statuses whose label has been produced and can be served (ADR 0013):
-# non-manifest carriers land at "dispatched", manifest carriers pass through
-# "allocated" -> "on_manifest" -> "dispatched". Failure statuses have no label.
-LABELLED_STATUSES = frozenset({"allocated", "on_manifest", "dispatched"})
+# Statuses whose label has been produced (at paperwork, while "allocated") and
+# can be served (ADR 0013): non-manifest carriers land at "dispatched", manifest
+# carriers pass through "allocated" -> "ready_to_manifest" -> "on_manifest" ->
+# "dispatched" - the label is minted once and never invalidated by those
+# transitions. Failure statuses (rejected, booking_failed, label_failed) have no
+# label.
+LABELLED_STATUSES = frozenset(
+    {"allocated", "ready_to_manifest", "on_manifest", "dispatched"}
+)
 
 
 @dataclass
