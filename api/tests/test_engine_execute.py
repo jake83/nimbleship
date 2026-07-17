@@ -9,12 +9,15 @@ import httpx
 import pytest
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
-from nimbleship.engine.auth_plugins import AUTH_PLUGINS
+from nimbleship.engine.auth_plugins import AUTH_PLUGINS, AuthError
 from nimbleship.engine.execute import (
     TRAFFIC_BODY_LIMIT,
     CarrierCallError,
     StepRecord,
     execute_operation,
+)
+from nimbleship.engine.plugins.oauth_client_credentials import (
+    OAuthClientCredentialsAuth,
 )
 from nimbleship.engine.render import RenderedRequest
 
@@ -769,3 +772,83 @@ def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None
     assert record.success is False
     assert record.response_status is None
     assert "530 Login incorrect" in record.response_body
+
+
+PLUGIN_AUTH_DEFINITION = CarrierDefinition.model_validate(
+    {
+        **FORM_DEFINITION.model_dump(mode="json"),
+        "auth": {"scheme": "plugin", "plugin": "stub_auth"},
+    }
+)
+
+
+OAUTH_DEFINITION = CarrierDefinition.model_validate(
+    {
+        **FORM_DEFINITION.model_dump(mode="json"),
+        "auth": {"scheme": "plugin", "plugin": "oauth_client_credentials"},
+    }
+)
+
+
+class _FailingAuth:
+    """An auth plugin whose token acquisition fails, like a revoked credential."""
+
+    def apply(
+        self, request: RenderedRequest, config: dict[str, object]
+    ) -> RenderedRequest:
+        raise AuthError("token endpoint answered 401")
+
+    def required_config_keys(self) -> frozenset[str]:
+        return frozenset()
+
+
+def test_an_auth_plugin_failure_is_a_carrier_call_error_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The auth step runs outside the request's own error handling, so its failure
+    # is covered separately.
+    monkeypatch.setitem(AUTH_PLUGINS, "stub_auth", _FailingAuth())
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, text=XML_OK)
+
+    records: list[StepRecord] = []
+    with (
+        _client(httpx.MockTransport(handle)) as client,
+        pytest.raises(CarrierCallError, match="save"),
+    ):
+        execute_operation(
+            PLUGIN_AUTH_DEFINITION, "book", FACTS, client, record=records.append
+        )
+    # Nothing was sent, so - like a render failure - no traffic is recorded.
+    assert sent == []
+    assert records == []
+
+
+def test_a_non_httperror_auth_exception_is_still_a_carrier_call_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A token_url with a stray control character (a copy-paste slip during a
+    # credential rotation) makes httpx raise InvalidURL, which is not an
+    # HTTPError; the broad catch still routes it through CarrierCallError.
+    monkeypatch.setitem(
+        AUTH_PLUGINS, "oauth_client_credentials", OAuthClientCredentialsAuth()
+    )
+    facts: dict[str, object] = {
+        "shipment": {"order_number": "95000254580"},
+        "config": {
+            "base_url": "https://api.furdeco.example/orders",
+            "token_url": "https://token.example/\x00t",
+            "client_id": "C",
+            "client_secret": "S",
+        },
+    }
+    with (
+        _client(
+            httpx.MockTransport(lambda r: httpx.Response(200, text=XML_OK))
+        ) as client,
+        pytest.raises(CarrierCallError, match="save"),
+    ):
+        execute_operation(OAUTH_DEFINITION, "book", facts, client)

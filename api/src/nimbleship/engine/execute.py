@@ -291,7 +291,20 @@ class _Execution:
                 f"transport '{step.transport}' cannot execute yet; "
                 "only http requests and the upload transports run"
             )
-        rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
+        try:
+            rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
+        except ValueError:
+            # An unregistered plugin is a deploy/config bug, not a runtime
+            # credential failure - it stays loud.
+            raise
+        except Exception as error:
+            # Auth runs before the request's own try/except; any runtime failure
+            # to obtain credentials (a revoked token, an unreachable or malformed
+            # token endpoint) is a carrier failure, not an uncaught crash.
+            # Nothing was sent, so - like a render failure - no traffic is logged.
+            raise self._fail(
+                f"step '{step.name}' could not authenticate: {error}"
+            ) from error
         try:
             response = self._client.request(
                 rendered.method,
