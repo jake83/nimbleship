@@ -1330,3 +1330,48 @@ def test_mark_ready_rolls_back_the_whole_batch_when_one_code_is_bad(
 
     assert response.status_code == 500
     assert _status_of(app, "95000254580") == "allocated"
+
+
+def test_mark_ready_faults_on_a_code_staged_but_never_papered(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A code exists in staging but createPaperworkForConsignments never ran, so
+    # there is no domain Consignment to ready - a lifecycle-order fault.
+    with app.state.session_factory() as session:
+        session.add(
+            LegacyConsignmentStaging(
+                order_number="95000254580",
+                consignment_code="NS0000001",
+                created_data={"order_number": "95000254580"},
+                allocation_data={"service_group_codes": ["ECONOMY"]},
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "has no paperwork yet" in response.text
+
+
+def test_mark_ready_tolerates_a_duplicate_code_in_one_batch(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The same code twice resolves to one consignment; it is readied once and
+    # the call succeeds, not double-faulted.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="allocated")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001", "NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _status_of(app, "95000254580") == "ready_to_manifest"
