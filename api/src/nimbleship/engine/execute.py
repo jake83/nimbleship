@@ -22,7 +22,7 @@ from nimbleship.domain.carrier_definition import (
     ResponseSpec,
     Step,
 )
-from nimbleship.engine.auth_plugins import AUTH_PLUGINS, AuthError
+from nimbleship.engine.auth_plugins import AUTH_PLUGINS
 from nimbleship.engine.render import (
     Facts,
     RenderedRequest,
@@ -293,12 +293,15 @@ class _Execution:
             )
         try:
             rendered = _apply_auth_plugin(self._definition, rendered, self._facts)
-        except (AuthError, httpx.HTTPError) as error:
-            # Auth acquisition (e.g. an OAuth token fetch) runs before the request
-            # and outside its handling; a revoked credential or unreachable token
-            # endpoint must be a carrier failure, not an uncaught crash that 500s
-            # a booking and strands a manifest pending.
-            self._recorded(step, rendered, None, "", False)
+        except ValueError:
+            # An unregistered plugin is a deploy/config bug, not a runtime
+            # credential failure - it stays loud.
+            raise
+        except Exception as error:
+            # Auth runs before the request's own try/except; any runtime failure
+            # to obtain credentials (a revoked token, an unreachable or malformed
+            # token endpoint) is a carrier failure, not an uncaught crash.
+            # Nothing was sent, so - like a render failure - no traffic is logged.
             raise self._fail(
                 f"step '{step.name}' could not authenticate: {error}"
             ) from error

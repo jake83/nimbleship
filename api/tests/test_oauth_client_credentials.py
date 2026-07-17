@@ -222,9 +222,7 @@ def test_the_plugin_is_registered_under_its_definition_name() -> None:
 
 
 def test_a_non_json_token_response_is_an_oauth_error_not_a_crash() -> None:
-    # A token endpoint answering 200 with a non-JSON body (a proxy/maintenance
-    # page) must be an OAuthTokenError, not a bare JSONDecodeError that escapes
-    # the executor's carrier-failure handling.
+    # A non-JSON 200 (a proxy/maintenance page) must be an OAuthTokenError.
     client = httpx.Client(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(200, text="<html>maintenance</html>")

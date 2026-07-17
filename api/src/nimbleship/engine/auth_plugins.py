@@ -9,10 +9,9 @@ from nimbleship.engine.render import RenderedRequest
 
 
 class AuthError(Exception):
-    """An auth plugin could not obtain credentials (a revoked token, an
-    unreachable or misbehaving token endpoint). The executor catches it and
-    routes it through CarrierCallError so both edges handle it as a carrier
-    failure - never an uncaught crash before the request is even sent."""
+    """An auth plugin's declared credentials failure (a revoked token, a
+    misbehaving token endpoint); the executor routes any auth-step failure
+    through CarrierCallError."""
 
 
 class AuthPlugin(Protocol):
