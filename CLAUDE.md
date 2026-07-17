@@ -80,17 +80,23 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
    fail together, so neither may assume the other).
 2. Push and open the PR. CI plus the reviewer and refuter jobs run. They take
    several minutes - do not idle waiting on them: start the next step while they
-   run (stacked on this branch if it depends on this PR, off main if not), and
-   return to triage when the review settles. For a stacked next step, replaying
-   it after the base merges needs `git rebase --onto main <base-tip> <ahead>`,
-   NOT a plain `git rebase main`: merges here are squash, so main gains one
-   commit with no shared ancestry to the base's own commits, and a plain rebase
-   reapplies the base's now-squashed commits and conflicts. Capture the base
-   branch's tip SHA before step 4's delete removes it. The review wait thus
-   overlaps real work instead of blocking it. Caveat: a review that materially
-   changes THIS PR forces rework of anything built on it, so prefer
-   parallelising a genuinely independent next step and accept the occasional
-   rebase for a stacked one (owner-granted 2026-07-17).
+   run, and return to triage when the review settles, so the wait overlaps real
+   work instead of blocking it. Two shapes:
+   - **Independent** next step (off main, disjoint files): push it and open its
+     own PR right away - both review in parallel and it merges on its own. Full
+     overlap; no rebase.
+   - **Stacked** next step (needs this PR's code): build it on a branch off this
+     one but keep it LOCAL - do not push/open its PR yet. When this PR squash-
+     merges, replay it onto main with `git rebase --onto main <base-tip> <ahead>`
+     (NOT a plain `git rebase main`: a squash-merge gives main one commit with no
+     shared ancestry to the base's commits, so a plain rebase reapplies them and
+     conflicts), THEN first-push and open its PR. Capture the base tip SHA before
+     step 4's delete removes it. Keeping it local until then means a plain push,
+     never a force-push (which the agent does not do unprompted); the trade is
+     the stacked PR's own review does not start until the base merges.
+   Prefer the independent shape - it overlaps review too, and dodges the rebase.
+   Caveat: a review that materially changes THIS PR forces rework of anything
+   built on it (owner-granted 2026-07-17).
 3. Triage every AI finding per "Handling review feedback" below; push fixes,
    post rebuttals. The pipeline re-runs on each push until settled.
 4. When the loop is settled, post a wrap-up comment ("AI loop complete:
