@@ -17,7 +17,12 @@ from procrastinate.testing import InMemoryConnector
 from sqlalchemy import select
 
 from nimbleship.http_client import get_http_client
-from nimbleship.models import Consignment, LegacyConsignmentStaging, Manifest
+from nimbleship.models import (
+    Consignment,
+    LegacyConsignmentStaging,
+    Manifest,
+    OrderEvent,
+)
 
 WMS_USER = "wms"
 WMS_PASSWORD = "s3cret"
@@ -1647,3 +1652,174 @@ def test_manifest_service_faults_on_an_unsupported_operation(
 
     assert response.status_code == 500
     assert "unsupported ManifestService operation" in response.text
+
+
+def _codes_body(operation: str, codes: list[str]) -> bytes:
+    code_items = "".join(f"<Item>{code}</Item>" for code in codes)
+    return (
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        ' xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/"'
+        ' xmlns:tns="urn:DeliveryManager/services">'
+        "<soap:Body>"
+        f"<tns:{operation}>"
+        '<consignmentCodes href="#id1"/>'
+        f"</tns:{operation}>"
+        f'<soapenc:Array id="id1">{code_items}</soapenc:Array>'
+        "</soap:Body></soap:Envelope>"
+    ).encode()
+
+
+def _event_stages(app: FastAPI, order_number: str) -> list[str]:
+    with app.state.session_factory() as session:
+        events = (
+            session.execute(
+                select(OrderEvent)
+                .where(OrderEvent.order_number == order_number)
+                .order_by(OrderEvent.id)
+            )
+            .scalars()
+            .all()
+        )
+        return [e.stage for e in events]
+
+
+def test_mark_printed_records_a_printed_event_and_returns_true(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="dispatched")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert "markConsignmentsAsPrintedReturn" in response.text
+    assert "true" in response.text
+    assert "printed" in _event_stages(app, "95000254580")
+
+
+def test_mark_printed_records_an_event_per_named_consignment(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    _seed_staged_consignment(app, "ORDER-A", "NS0000001", status="dispatched")
+    _seed_staged_consignment(app, "ORDER-B", "NS0000002", status="dispatched")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001", "NS0000002"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _event_stages(app, "ORDER-A").count("printed") == 1
+    assert _event_stages(app, "ORDER-B").count("printed") == 1
+
+
+def test_mark_printed_faults_on_an_unknown_code(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS9999999"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "unknown consignmentCode" in response.text
+
+
+def test_mark_printed_faults_with_no_codes(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", []),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "no consignmentCodes" in response.text
+
+
+def test_mark_printed_dedupes_a_repeated_code(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The same consignment named twice in one print run is one print: one event.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="dispatched")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001", "NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _event_stages(app, "95000254580").count("printed") == 1
+
+
+def test_mark_printed_faults_on_a_consignment_with_no_label(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A label_failed consignment has no label, so "printed" cannot be a true
+    # fact about it; recording one would forge the timeline.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="label_failed")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "has no label to print" in response.text
+    assert _event_stages(app, "95000254580") == []
+
+
+def test_mark_printed_accepts_a_ready_to_manifest_consignment(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A manifest carrier's consignment keeps its paperwork label through
+    # ready_to_manifest and on_manifest, so printing it is a genuine fact
+    # (the label-gate must not exclude those intermediate states, ADR 0013).
+    _seed_staged_consignment(
+        app, "95000254580", "NS0000001", status="ready_to_manifest"
+    )
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert "printed" in _event_stages(app, "95000254580")
+
+
+def test_delete_consignment_acknowledges_without_changing_state(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A mock pending real cancellation: the WMS gets its bare true, but the
+    # consignment is untouched (no cancelled status, no booking reversal yet).
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="allocated")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("deleteConsignment", ["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert "deleteConsignmentReturn" in response.text
+    assert "true" in response.text
+    assert _status_of(app, "95000254580") == "allocated"
+    assert _event_stages(app, "95000254580") == []
