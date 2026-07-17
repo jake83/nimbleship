@@ -495,7 +495,7 @@ def test_the_job_runner_marks_an_unexecutable_transport_failed_not_stuck_pending
     )
     assert MANIFEST_RETRY.max_attempts is not None
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(NotImplementedError, match="cannot execute"):
         run_manifest_send(manifest.id, attempts=MANIFEST_RETRY.max_attempts)
 
     with sessionmaker(bind=engine)() as fresh:

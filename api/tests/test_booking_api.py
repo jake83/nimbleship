@@ -569,6 +569,31 @@ def test_a_render_failure_at_booking_is_a_502_after_minting_not_an_uncaught_500(
     assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_1, SSCC_2]
 
 
+def test_an_unexecutable_transport_at_booking_is_502_not_an_uncaught_500(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A book step can name a transport the engine cannot send - local_render is a
+    # label source, not a wire transport - and it clears both the source check
+    # and the publish render-gate (which renders but never sends), only raising
+    # NotImplementedError at booking, after SSCC minting has committed. Like a
+    # render failure, it must take the clean booking_failed + 502 path, not leak
+    # as an uncaught 500 that buries the spent-range audit trail.
+    bad = copy.deepcopy(SSCC_DEFINITION)
+    bad["operations"]["book"]["steps"][0]["transport"] = "local_render"  # type: ignore[index]
+    _publish_sscc_carrier(client, definition=bad)
+    _sscc_answers(app)
+
+    response = client.post("/api/consignments", json=CONSIGNMENT)
+
+    assert response.status_code == 502, response.text
+    detail = client.get("/api/consignments/95000254580").json()
+    assert detail["status"] == "booking_failed"
+    assert [e["stage"] for e in detail["events"]] == ["allocated", "booking_failed"]
+    # Minting committed before the step raised, so the parcels keep their codes -
+    # the same survival a carrier or render failure leaves behind.
+    assert [p["carrier_barcode"] for p in detail["parcels"]] == [SSCC_1, SSCC_2]
+
+
 def test_a_render_failure_losing_a_duplicate_race_409s_not_500(
     app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

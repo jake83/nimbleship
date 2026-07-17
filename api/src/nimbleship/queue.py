@@ -76,18 +76,15 @@ def run_manifest_send(manifest_id: int, attempts: int) -> None:
         try:
             with carrier_http_client() as http_client:
                 send_manifest(session, manifest, http_client, carrier_uploaders())
-        # Carrier failures (CarrierCallError) and deterministic manifest
-        # errors are both manifest-level failures a human must see, so both
-        # mark the Manifest failed for the operator rather than leaving it
-        # 'pending' forever. The deterministic class is a ValueError (a render
-        # fact missing, or the manifest operation gone from the definition
-        # between enqueue and run) OR a NotImplementedError (a step whose
-        # transport or content_type the engine cannot execute - a bad
-        # definition, fixed by editing it, not by retrying). A genuine
-        # infrastructure fault (a DB error) is neither: it propagates
-        # undecorated, so the session context rolls back instead of this
-        # handler committing a session left in rollback-required state and
-        # masking the real cause.
+        # CarrierCallError and deterministic manifest errors - a ValueError
+        # (missing render fact, or the manifest operation gone from the
+        # definition between enqueue and run) or a NotImplementedError (a step
+        # whose transport/content_type the engine cannot execute) - are all
+        # human-fixable by editing the definition, not by retrying, so all mark
+        # the Manifest failed rather than leaving it 'pending' forever. An
+        # infrastructure fault (a DB error) is neither: it propagates so the
+        # session rolls back instead of this handler committing a
+        # rollback-required session and masking the real cause.
         except (CarrierCallError, ValueError, NotImplementedError) as error:
             manifest.last_error = str(error)
             final = (
