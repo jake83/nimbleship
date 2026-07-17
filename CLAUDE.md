@@ -67,6 +67,11 @@ jobs (reviewer + refuter).
 
 ## The development loop
 
+Standing rule: any agreed improvement to how we work - a new convention, a
+sharper limit, a cadence fix, anything that would otherwise live only in a chat
+- is written into this file as part of the same change, so the next session
+inherits it rather than rediscovering it (owner-granted 2026-07-17).
+
 Every change follows this loop, except a trivial PR (defined in step 4),
 which takes the minimal path described there instead of the adversarial
 pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
@@ -123,7 +128,16 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
      main loop must triage: use it for a real batch of independent work, not a
      one-off (owner-granted 2026-07-17).
 3. Triage every AI finding per "Handling review feedback" below; push fixes,
-   post rebuttals. The pipeline re-runs on each push until settled.
+   post rebuttals. The pipeline re-runs on each push until settled. Polling
+   cadence: within one PR, wait for ALL its checks to finish before the
+   consolidated fix push - pushing while the refuter still runs supersedes the
+   commit it is attacking and spins a wasted round. Across concurrent PRs, poll
+   and triage each INDEPENDENTLY (a separate background poll per PR): act on
+   whichever settles first, and never gate one PR's triage or merge on another
+   PR's checks. When the reviewer posts before the refuter finishes, start
+   reading and working through its findings during the refuter's remaining
+   runtime - overlap the analysis - but still hold the one consolidated fix push
+   until both jobs complete.
 4. When the loop is settled, post a wrap-up comment ("AI loop complete:
    N findings, M fixed, K rebutted"), then:
    - **Trivial PR** - judged by change TYPE, not size. Every change in the
