@@ -78,7 +78,14 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
    which spanned three domain areas, skipped local review, and then had
    its pipeline pass silently no-op on a usage limit: the two gates can
    fail together, so neither may assume the other).
-2. Push and open the PR. CI plus the reviewer and refuter jobs run.
+2. Push and open the PR. CI plus the reviewer and refuter jobs run. They take
+   several minutes - do not idle waiting on them: start the next step while they
+   run (stacked on this branch if it depends on this PR, off main if not), and
+   return to triage when the review settles, then rebase the ahead-work onto the
+   merged base. The review wait thus overlaps real work instead of blocking it.
+   Caveat: a review that materially changes THIS PR forces rework of anything
+   built on it, so prefer parallelising a genuinely independent next step and
+   accept the occasional rebase for a stacked one (owner-granted 2026-07-17).
 3. Triage every AI finding per "Handling review feedback" below; push fixes,
    post rebuttals. The pipeline re-runs on each push until settled.
 4. When the loop is settled, post a wrap-up comment ("AI loop complete:
