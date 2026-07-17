@@ -30,10 +30,11 @@ def create_manifests(
     """Group the consignments into one pending Manifest per (carrier,
     warehouse) - for carriers whose published definition declares a manifest
     operation - and move them to "on_manifest"; the send is what dispatches
-    them (ADR 0013). A carrier without a manifest operation does not manifest;
-    such a consignment (if one reaches here) is dispatched immediately, as it
-    already was at paperwork. The rows are flushed so callers can enqueue send
-    jobs by manifest id in the same transaction (ADR 0004)."""
+    them (ADR 0013). A consignment whose carrier has no manifest operation is
+    dispatched here instead - only reachable if the definition dropped that
+    operation after paperwork left it "allocated". The rows are flushed so
+    callers can enqueue send jobs by manifest id in the same transaction
+    (ADR 0004)."""
     Group = tuple[str, str | None]
     groups: dict[Group, list[Consignment]] = {}
     for consignment in consignments:

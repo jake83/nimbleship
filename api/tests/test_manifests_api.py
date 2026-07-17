@@ -1,9 +1,10 @@
 """Dispatch confirmation to Manifest (CONTEXT.md: Manifest): the WMS
-confirms consignments have physically left, NimbleShip marks them
-dispatched, groups them per carrier and warehouse into Manifests, and
-enqueues one send job per Manifest in the same transaction (ADR 0004).
-The queue here is Procrastinate's in-memory test connector: jobs are
-recorded, never executed."""
+confirms consignments, NimbleShip groups the manifest-carrier ones per
+carrier and warehouse into Manifests (moving them to "on_manifest", not yet
+dispatched - the send does that, ADR 0013), and enqueues one send job per
+Manifest in the same transaction (ADR 0004). A non-manifest consignment is
+already dispatched from paperwork, so naming it is a no-op. The queue here is
+Procrastinate's in-memory test connector: jobs are recorded, never executed."""
 
 from typing import cast
 

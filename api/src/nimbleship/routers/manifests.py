@@ -40,9 +40,8 @@ class ManifestOut(BaseModel):
 
 
 class DispatchConfirmationOut(BaseModel):
-    # The order numbers whose confirmation was accepted. A non-manifest
-    # consignment is already dispatched (no-op); a manifest carrier's is now
-    # on_manifest, dispatched later when its manifest is sent (ADR 0013).
+    # Accepted order numbers: manifest carriers land on_manifest, already-
+    # dispatched non-manifest ones are no-ops (ADR 0013).
     confirmed: list[str]
     manifests: list[ManifestOut]
 
