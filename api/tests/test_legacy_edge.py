@@ -1296,11 +1296,31 @@ def test_mark_ready_faults_on_an_unknown_code(
     assert "unknown consignmentCode" in response.text
 
 
-def test_mark_ready_faults_on_a_consignment_that_is_not_allocatable(
+def test_mark_ready_is_a_no_op_on_an_already_dispatched_consignment(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
-    # A dispatched consignment has already left; it cannot be marked ready.
+    # A non-manifest carrier's consignment is already dispatched at paperwork;
+    # naming it in a mark-ready batch is a no-op, not an error, matching the JSON
+    # dispatch-confirmation (ADR 0013) - so a mixed batch is not hard-faulted.
     _seed_staged_consignment(app, "95000254580", "NS0000001", status="dispatched")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body(["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _status_of(app, "95000254580") == "dispatched"
+
+
+def test_mark_ready_faults_on_a_genuinely_unmanifestable_status(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # on_manifest (already on a manifest) is neither allocated nor a graceful
+    # no-op - readying it again is a real conflict, so it faults.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="on_manifest")
 
     response = client.post(
         "/ConsignmentService",
@@ -1311,7 +1331,35 @@ def test_mark_ready_faults_on_a_consignment_that_is_not_allocatable(
 
     assert response.status_code == 500
     assert "cannot be marked ready" in response.text
-    assert _status_of(app, "95000254580") == "dispatched"
+    assert _status_of(app, "95000254580") == "on_manifest"
+
+
+def test_mark_ready_faults_with_no_codes(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body([]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "no consignmentCodes" in response.text
+
+
+def test_mark_ready_faults_on_a_blank_code(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/ConsignmentService",
+        content=_mark_ready_body([""]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "blank consignmentCode" in response.text
 
 
 def test_mark_ready_rolls_back_the_whole_batch_when_one_code_is_bad(

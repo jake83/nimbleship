@@ -37,9 +37,11 @@ def handle(
 
 def _mark_ready_to_manifest(request: soap.SoapRequest, session: Session) -> bytes:
     """Selectively mark named consignments ready for a later manifest (ADR 0013):
-    allocated -> ready_to_manifest. Idempotent on an already-ready one; any other
-    status faults, since only an allocated consignment (a manifest carrier's,
-    awaiting its manifest) can be readied. Returns a bare boolean true."""
+    allocated -> ready_to_manifest. A no-op on an already-ready or already-
+    dispatched consignment (a non-manifest carrier's, gone at paperwork) -
+    matching the JSON dispatch-confirmation's allow-set, this is a manifest
+    trigger, not an error. Any other status faults. Returns a bare boolean
+    true."""
     codes = request.string_array(request.operation, "consignmentCodes")
     if not codes:
         raise soap.SoapFault("markConsignmentsAsReadyToManifest: no consignmentCodes")
@@ -53,7 +55,10 @@ def _mark_ready_to_manifest(request: soap.SoapRequest, session: Session) -> byte
                 "markConsignmentsAsReadyToManifest: a blank consignmentCode"
             )
         consignment = _resolve_consignment(code, session)
-        if consignment.status == "ready_to_manifest":
+        # Already ready, or already dispatched at paperwork (a non-manifest
+        # carrier's): a no-op, like the JSON edge's ("allocated", "dispatched")
+        # allow-set, so a mixed batch is not hard-faulted (ADR 0013).
+        if consignment.status in ("ready_to_manifest", "dispatched"):
             continue
         if consignment.status != "allocated":
             raise soap.SoapFault(
