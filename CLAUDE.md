@@ -109,9 +109,12 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
    per feature, each on its own branch doing TDD + gates and reporting its
    branch back. The main loop keeps everything that does not parallelise: make
    every design decision FIRST (grill the owner - never fan out on a guessed
-   call), then dispatch the builds, and afterwards run each local review, push,
-   triage each PR's review loop, and merge (self-merge authority stays with the
-   main loop, which also holds the accumulated domain context). Hard limits, or
+   call), then dispatch the builds, and take each reported branch through the
+   normal per-PR loop - a local review only if it is fat (step 1), then push it
+   as it lands (so the AI reviews overlap, per step 2's independent shape),
+   triage, and merge; do NOT hold the branches for one serialized local pass.
+   Self-merge authority and the accumulated domain context stay with the main
+   loop. Hard limits, or
    it trips up:
    - Only file-disjoint items, and at most ONE schema/migration change per wave
      - Alembic's revision chain is linear, so two migrations off one parent
