@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import paperwork_service, soap, staging
-from nimbleship.models import ORDER_NUMBER_MAX, Consignment, LegacyConsignmentStaging
+from nimbleship.models import (
+    ORDER_NUMBER_MAX,
+    Consignment,
+    LegacyConsignmentStaging,
+    OrderEvent,
+)
 from nimbleship.uploaders import FileUploader
 
 
@@ -28,6 +33,10 @@ def handle(
         return _create_consignments(request, session)
     if request.method == "markConsignmentsAsReadyToManifest":
         return _mark_ready_to_manifest(request, session)
+    if request.method == "markConsignmentsAsPrinted":
+        return _mark_printed(request, session)
+    if request.method == "deleteConsignment":
+        return _delete_consignment()
     if request.method == "createPaperworkForConsignments":
         return paperwork_service.create_paperwork(
             request, session, store, http_client, uploaders
@@ -54,7 +63,9 @@ def _mark_ready_to_manifest(request: soap.SoapRequest, session: Session) -> byte
             raise soap.SoapFault(
                 "markConsignmentsAsReadyToManifest: a blank consignmentCode"
             )
-        consignment = _resolve_consignment(code, session)
+        consignment = _resolve_consignment(
+            code, session, "markConsignmentsAsReadyToManifest"
+        )
         # Already ready, or already dispatched at paperwork (a non-manifest
         # carrier's): a no-op, like the JSON edge's ("allocated", "dispatched")
         # allow-set, so a mixed batch is not hard-faulted (ADR 0013).
@@ -79,7 +90,49 @@ def _mark_ready_to_manifest(request: soap.SoapRequest, session: Session) -> byte
     return soap.response("markConsignmentsAsReadyToManifestResponse", build)
 
 
-def _resolve_consignment(code: str, session: Session) -> Consignment:
+def _mark_printed(request: soap.SoapRequest, session: Session) -> bytes:
+    """Record that the WMS printed labels for the named consignments: one
+    "printed" event per consignment on the append-only timeline. Returns a bare
+    boolean true; faults on an unknown code, like the other code-taking ops.
+    Every code resolves before any event is written, so one bad code faults the
+    whole batch."""
+    codes = request.string_array(request.operation, "consignmentCodes")
+    if not codes:
+        raise soap.SoapFault("markConsignmentsAsPrinted: no consignmentCodes")
+    printed: list[Consignment] = []
+    for code in codes:
+        if not code:
+            raise soap.SoapFault("markConsignmentsAsPrinted: a blank consignmentCode")
+        printed.append(_resolve_consignment(code, session, "markConsignmentsAsPrinted"))
+    for consignment in printed:
+        session.add(
+            OrderEvent(
+                order_number=consignment.order_number,
+                stage="printed",
+                detail={"carrier": consignment.carrier},
+            )
+        )
+    session.flush()
+
+    def build(operation_element: ET.Element) -> None:
+        soap.text_child(operation_element, "markConsignmentsAsPrintedReturn", "true")
+
+    return soap.response("markConsignmentsAsPrintedResponse", build)
+
+
+def _delete_consignment() -> bytes:
+    """A mock acknowledgement (bare true). Real cancellation - a cancelled
+    status, reversing a carrier booking, guarding a dispatched consignment - is
+    a deferred lifecycle epic; this satisfies the WMS's call shape without a
+    state change, matching the legacy system's always-success behaviour."""
+
+    def build(operation_element: ET.Element) -> None:
+        soap.text_child(operation_element, "deleteConsignmentReturn", "true")
+
+    return soap.response("deleteConsignmentResponse", build)
+
+
+def _resolve_consignment(code: str, session: Session, operation: str) -> Consignment:
     row = session.execute(
         select(LegacyConsignmentStaging).where(
             LegacyConsignmentStaging.consignment_code == code
@@ -87,7 +140,7 @@ def _resolve_consignment(code: str, session: Session) -> Consignment:
     ).scalar_one_or_none()
     if row is None:
         raise soap.SoapFault(
-            f"markConsignmentsAsReadyToManifest: unknown consignmentCode '{code}' - "
+            f"{operation}: unknown consignmentCode '{code}' - "
             "createConsignments must run first"
         )
     consignment = session.execute(
@@ -95,8 +148,8 @@ def _resolve_consignment(code: str, session: Session) -> Consignment:
     ).scalar_one_or_none()
     if consignment is None:
         raise soap.SoapFault(
-            f"markConsignmentsAsReadyToManifest: consignmentCode '{code}' has no "
-            "paperwork yet - createPaperworkForConsignments must run first"
+            f"{operation}: consignmentCode '{code}' has no paperwork yet - "
+            "createPaperworkForConsignments must run first"
         )
     return consignment
 
