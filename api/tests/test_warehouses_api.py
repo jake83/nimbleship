@@ -9,6 +9,7 @@ WAREHOUSE = {
     "address_lines": ["Unit 5, Trading Estate", "Industry Way"],
     "postcode": "LE1 1AA",
     "country": "GB",
+    "timezone": "Europe/London",
 }
 
 
@@ -165,3 +166,31 @@ def test_warehouse_without_address_lines_is_rejected(client: TestClient) -> None
     response = client.post("/api/warehouses", json={**WAREHOUSE, "address_lines": []})
 
     assert response.status_code == 422
+
+
+def test_creating_a_warehouse_stores_and_returns_its_timezone(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/warehouses", json={**WAREHOUSE, "timezone": "America/Los_Angeles"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["timezone"] == "America/Los_Angeles"
+
+
+def test_warehouse_without_a_timezone_is_rejected(client: TestClient) -> None:
+    payload = {key: value for key, value in WAREHOUSE.items() if key != "timezone"}
+
+    response = client.post("/api/warehouses", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_warehouse_with_an_unknown_timezone_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/warehouses", json={**WAREHOUSE, "timezone": "Mars/Olympus_Mons"}
+    )
+
+    assert response.status_code == 422
+    assert "unknown timezone" in response.text

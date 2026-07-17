@@ -475,6 +475,7 @@ def _create_depot1(client: TestClient) -> None:
             "address_lines": ["1 Dock Road"],
             "postcode": "M1 1AA",
             "country": "GB",
+            "timezone": "Europe/London",
         },
     )
     assert response.status_code == 201

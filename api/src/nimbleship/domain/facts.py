@@ -3,6 +3,9 @@ per fact root, shared by live booking, the publish render gate, and Golden
 Replay - a definition must render from identical facts in all three, or
 replay would diff phantom differences."""
 
+from datetime import UTC
+from zoneinfo import ZoneInfo
+
 from nimbleship.models import Consignment, Manifest, Warehouse
 
 
@@ -29,11 +32,18 @@ def shipment_facts(consignment: Consignment) -> dict[str, object]:
 
 
 def manifest_facts(
-    manifest: Manifest, consignments: list[Consignment]
+    manifest: Manifest, consignments: list[Consignment], timezone: str
 ) -> dict[str, object]:
+    # The manifest date is the warehouse's LOCAL dispatch day, not the UTC date:
+    # a near-midnight scan-out must declare the day the warehouse observes.
+    # created_at is UTC (naive when SQLite round-trips it, so pin the zone).
+    created = manifest.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    local_date = created.astimezone(ZoneInfo(timezone)).date().isoformat()
     return {
         "carrier": manifest.carrier,
-        "date": manifest.created_at.date().isoformat(),
+        "date": local_date,
         "consignment_count": len(consignments),
         "consignments": [
             {

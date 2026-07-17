@@ -140,6 +140,10 @@ class Warehouse(Base):
     address_lines: Mapped[list[str]] = mapped_column(JSON)
     postcode: Mapped[str] = mapped_column(String(32))
     country: Mapped[str] = mapped_column(String(3))
+    # IANA name (e.g. "Europe/London"): the warehouse's local day, so a manifest
+    # declares the dispatch date the warehouse observes, not the UTC date a
+    # near-midnight scan-out would otherwise skew.
+    timezone: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     # One row per warehouse; None only transiently, before first flush.

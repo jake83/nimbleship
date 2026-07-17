@@ -637,6 +637,7 @@ def _add_warehoused_history(
                 address_lines=["1 Depot Way"],
                 postcode="AB1 2CD",
                 country="GB",
+                timezone="Europe/London",
             )
         )
         session.add(

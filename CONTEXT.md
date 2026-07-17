@@ -33,8 +33,12 @@ A logical dispatch identity, not (necessarily) a physical building - the
 Metapack-style concept the company already works with. The WMS names a
 Warehouse per order, which determines sender address and dispatch details;
 websites are also mapped to Warehouses so delivery options can be configured
-per site. Carries collection days and holidays.
-_Avoid_: assuming one warehouse, treating it as only a physical location
+per site. Carries collection days and holidays, and its own timezone: the
+dispatch day a Warehouse observes is its local day, so a Manifest declares the
+local date of its creation, not the UTC date (a near-midnight scan-out would
+otherwise be dated to the wrong day).
+_Avoid_: assuming one warehouse, treating it as only a physical location,
+dating dispatch in UTC rather than the Warehouse's local day
 
 **Parcel Barcode**:
 The scannable identity of one parcel, formed as the order number, a dash, and

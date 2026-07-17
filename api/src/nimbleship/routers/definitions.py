@@ -251,7 +251,9 @@ def _render_gate(session: Session, carrier: str, definition: CarrierDefinition) 
                 created_at=datetime.now(UTC),
             )
             manifest_batch: dict[str, object] = {
-                "manifest": manifest_facts(synthetic, carrier_recent),
+                # The gate only checks the mapping renders; the synthetic date's
+                # zone is immaterial, so UTC stands in.
+                "manifest": manifest_facts(synthetic, carrier_recent, "UTC"),
                 "config": config,
             }
             if representative_warehouse is not None:

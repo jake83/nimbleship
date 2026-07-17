@@ -6,6 +6,7 @@ Manifest failed instead of losing it. All carrier HTTP is a MockTransport."""
 
 import json
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -15,6 +16,7 @@ from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from nimbleship.db import Base
+from nimbleship.domain.facts import manifest_facts
 from nimbleship.domain.manifests import manifest_consignments, send_manifest
 from nimbleship.engine.execute import CarrierCallError
 from nimbleship.models import (
@@ -575,3 +577,36 @@ def test_the_final_attempt_boundary_agrees_with_procrastinate() -> None:
     assert queue_gives_up(max_attempts) and run_marks_final(max_attempts)
     assert not queue_gives_up(max_attempts - 1)
     assert not run_marks_final(max_attempts - 1)
+
+
+def test_manifest_date_is_the_warehouse_local_day() -> None:
+    # 02:00 UTC on 1 July is still 30 June in Los Angeles (UTC-7 in summer), so
+    # the manifest declares the warehouse's local dispatch day, not the UTC one.
+    manifest = Manifest(
+        carrier="brightpost",
+        created_at=datetime(2026, 7, 1, 2, 0, tzinfo=UTC),
+    )
+    facts = manifest_facts(manifest, [], "America/Los_Angeles")
+    assert facts["date"] == "2026-06-30"
+
+
+def test_manifest_date_uses_utc_when_the_manifest_has_no_warehouse() -> None:
+    manifest = Manifest(
+        carrier="brightpost",
+        created_at=datetime(2026, 7, 1, 2, 0, tzinfo=UTC),
+    )
+    assert manifest_facts(manifest, [], "UTC")["date"] == "2026-07-01"
+
+
+def test_send_faults_when_the_named_warehouse_is_absent(session: Session) -> None:
+    # A manifest naming a warehouse whose row is gone cannot be dated or given
+    # sender facts, so the send raises rather than dispatching a broken manifest.
+    manifest = _seed_manifest(session, DEFINITION)
+    manifest.warehouse = "GHOST-DEPOT"
+    session.flush()
+
+    with (
+        _client(lambda request: httpx.Response(200, json=SUCCESS)) as http_client,
+        pytest.raises(ValueError, match="no longer exists"),
+    ):
+        send_manifest(session, manifest, http_client, {})
