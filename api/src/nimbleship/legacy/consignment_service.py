@@ -192,8 +192,12 @@ def _update_consignments(request: soap.SoapRequest, session: Session) -> bytes:
         ).scalar_one_or_none()
         if papered is None:
             row.created_data = data
-        parcels = data["parcels"]
-        parcel_count = len(parcels) if isinstance(parcels, list) else 0
+        # Count from what is actually staged, not the submitted payload: on the
+        # no-op path the amendment was discarded, so echoing its count would tell
+        # the WMS an update took effect that did not.
+        stored = row.created_data or {}
+        stored_parcels = stored.get("parcels")
+        parcel_count = len(stored_parcels) if isinstance(stored_parcels, list) else 0
         assert row.consignment_code is not None  # minted when the row was created
         updated.append((row.consignment_code, order_number, parcel_count))
     session.flush()

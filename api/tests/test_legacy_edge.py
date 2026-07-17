@@ -1939,6 +1939,74 @@ def test_update_consignments_is_a_no_op_after_paperwork(
     assert response.status_code == 200
     created_after, _ = _staging_data(app, "NS0000001")
     assert created_after == {"order_number": "95000254580"}
+    # The response reports the stored parcel count (0 - the seeded row has no
+    # parcels), not the 2 parcels the discarded submission carried, so the WMS
+    # is not told an update took effect that did not.
+    assert "<parcelCount>0</parcelCount>" in response.text
+    assert "<parcelCount>2</parcelCount>" not in response.text
+
+
+def test_update_consignments_faults_with_no_consignments(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    body = (
+        b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        b' xmlns:tns="urn:DeliveryManager/services">'
+        b"<soap:Body><tns:updateConsignments/></soap:Body></soap:Envelope>"
+    )
+    response = client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "no consignments element" in response.text
+
+
+def test_deallocate_faults_with_no_codes(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/AllocationService",
+        content=_codes_body("deallocate", []),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "no consignmentCodes" in response.text
+
+
+def test_deallocate_faults_on_a_blank_code(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    response = client.post(
+        "/AllocationService",
+        content=_codes_body("deallocate", [""]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "blank consignmentCode" in response.text
+
+
+def test_deallocate_faults_on_a_duplicate_code_in_one_batch(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="allocated")
+
+    response = client.post(
+        "/AllocationService",
+        content=_codes_body("deallocate", ["NS0000001", "NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "duplicate consignmentCode" in response.text
 
 
 def test_update_consignments_faults_on_an_unknown_order(
