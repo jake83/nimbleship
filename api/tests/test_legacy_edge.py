@@ -7,15 +7,17 @@ import json
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from procrastinate.testing import InMemoryConnector
 from sqlalchemy import select
 
 from nimbleship.http_client import get_http_client
-from nimbleship.models import Consignment, LegacyConsignmentStaging
+from nimbleship.models import Consignment, LegacyConsignmentStaging, Manifest
 
 WMS_USER = "wms"
 WMS_PASSWORD = "s3cret"
@@ -1188,6 +1190,8 @@ def _seed_staged_consignment(
     order_number: str,
     code: str,
     status: str = "allocated",
+    warehouse: str | None = None,
+    carrier: str = "brightpost",
 ) -> None:
     # mark-ready resolves a consignment_code via its staging row to the domain
     # Consignment, so both rows must exist; only a manifest carrier is left
@@ -1209,8 +1213,9 @@ def _seed_staged_consignment(
                 postcode="SW1A 2AA",
                 destination_country="GB",
                 status=status,
-                carrier="brightpost",
+                carrier=carrier,
                 service="BP-STD",
+                warehouse=warehouse,
                 allocation={},
             )
         )
@@ -1423,3 +1428,222 @@ def test_mark_ready_tolerates_a_duplicate_code_in_one_batch(
 
     assert response.status_code == 200
     assert _status_of(app, "95000254580") == "ready_to_manifest"
+
+
+_MANIFEST_DEFINITION = {
+    "carrier": "brightpost",
+    "name": "Bright Post",
+    "auth": {
+        "scheme": "header_key",
+        "header": "X-Api-Key",
+        "secret": "config.api_key",
+    },
+    "operations": {
+        "book": {
+            "steps": [],
+            "label": {"source": "local_render", "template": "standard_a6"},
+        },
+        "manifest": {
+            "steps": [
+                {
+                    "name": "declare",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.manifest_url",
+                        "content_type": "json",
+                        "mapping": [{"target": "date", "source": "manifest.date"}],
+                    },
+                    "response": {
+                        "format": "json",
+                        "success_when": {"path": "manifest_id"},
+                        "extract": [
+                            {"name": "manifest_reference", "path": "manifest_id"}
+                        ],
+                    },
+                }
+            ]
+        },
+    },
+}
+
+
+def _publish_manifest_carrier(client: TestClient) -> None:
+    config = client.put(
+        "/api/carriers/brightpost/config",
+        json={
+            "api_key": "SECRET-KEY",
+            "manifest_url": "https://api.brightpost.example/manifests",
+        },
+    )
+    assert config.status_code == 200, config.text
+    draft = client.post(
+        "/api/carriers/brightpost/definitions/drafts",
+        json={"author": "jake", "definition": _MANIFEST_DEFINITION},
+    )
+    assert draft.status_code == 201, draft.text
+    version = draft.json()["version"]
+    published = client.post(
+        f"/api/carriers/brightpost/definitions/versions/{version}/publish"
+    )
+    assert published.status_code == 200, published.text
+
+
+def _create_manifest_body(carrier: str, warehouse: str) -> bytes:
+    return (
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        ' xmlns:tns="urn:DeliveryManager/services">'
+        "<soap:Body>"
+        "<tns:createManifest>"
+        f"<carrierCode>{carrier}</carrierCode>"
+        f"<warehouseCode>{warehouse}</warehouseCode>"
+        "</tns:createManifest>"
+        "</soap:Body></soap:Envelope>"
+    ).encode()
+
+
+def _queue_jobs(app: FastAPI) -> list[dict[str, object]]:
+    connector = cast(InMemoryConnector, app.state.queue_connector)
+    return list(connector.jobs.values())
+
+
+def _manifest_return(xml: str) -> str:
+    # Assert the array's actual wire shape: a createManifestReturn wrapper whose
+    # members are <Item> elements (this edge's array convention), not a loose
+    # tree walk that would pass on any nesting.
+    root = ET.fromstring(xml)
+    wrappers = [
+        el for el in root.iter() if _localname_str(el.tag) == "createManifestReturn"
+    ]
+    assert wrappers, xml
+    items = [c for c in wrappers[0] if _localname_str(c.tag) == "Item"]
+    assert items, f"createManifestReturn should hold <Item> members: {xml}"
+    text = items[0].text
+    assert text, xml
+    return text
+
+
+def _localname_str(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def test_create_manifest_closes_ready_consignments_and_returns_a_code(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    _publish_manifest_carrier(client)
+    _seed_staged_consignment(
+        app, "M-1", "NS0000001", status="ready_to_manifest", warehouse="DEPOT1"
+    )
+    _seed_staged_consignment(
+        app, "M-2", "NS0000002", status="ready_to_manifest", warehouse="DEPOT1"
+    )
+
+    response = client.post(
+        "/ManifestService",
+        content=_create_manifest_body("brightpost", "DEPOT1"),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    code = _manifest_return(response.text)
+    assert code.startswith("NSM")
+    # The readied consignments move onto the manifest (dispatch is the send).
+    assert _status_of(app, "M-1") == "on_manifest"
+    assert _status_of(app, "M-2") == "on_manifest"
+    with app.state.session_factory() as session:
+        manifest = session.execute(select(Manifest)).scalar_one()
+        assert manifest.carrier == "brightpost"
+        assert manifest.warehouse == "DEPOT1"
+        assert manifest.status == "pending"
+        # The returned code is stored on the Manifest it closed (ADR 0013).
+        assert manifest.code == code
+    # The send is deferred to the queue, not run inline.
+    [job] = _queue_jobs(app)
+    assert job["task_name"] == "manifests.send"
+
+
+def test_create_manifest_returns_a_code_when_the_sweep_is_empty(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A carrier the WMS never readied anything for still gets a valid code back,
+    # but no Manifest is created and no send is enqueued (ADR 0013).
+    response = client.post(
+        "/ManifestService",
+        content=_create_manifest_body("brightpost", "DEPOT1"),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _manifest_return(response.text).startswith("NSM")
+    with app.state.session_factory() as session:
+        assert not list(session.execute(select(Manifest)).scalars())
+    assert _queue_jobs(app) == []
+
+
+def test_create_manifest_sweeps_only_the_named_carrier_and_warehouse(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    _publish_manifest_carrier(client)
+    _seed_staged_consignment(
+        app, "W1-1", "NS0000001", status="ready_to_manifest", warehouse="DEPOT1"
+    )
+    _seed_staged_consignment(
+        app, "W2-1", "NS0000002", status="ready_to_manifest", warehouse="DEPOT2"
+    )
+
+    response = client.post(
+        "/ManifestService",
+        content=_create_manifest_body("brightpost", "DEPOT1"),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    # Only DEPOT1's consignment is closed; DEPOT2's stays ready for its own call.
+    assert _status_of(app, "W1-1") == "on_manifest"
+    assert _status_of(app, "W2-1") == "ready_to_manifest"
+    with app.state.session_factory() as session:
+        [manifest] = list(session.execute(select(Manifest)).scalars())
+        assert manifest.warehouse == "DEPOT1"
+
+
+def test_create_manifest_faults_without_a_carrier_code(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    body = (
+        b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        b' xmlns:tns="urn:DeliveryManager/services">'
+        b"<soap:Body><tns:createManifest>"
+        b"<warehouseCode>DEPOT1</warehouseCode>"
+        b"</tns:createManifest></soap:Body></soap:Envelope>"
+    )
+    response = client.post(
+        "/ManifestService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "missing carrierCode" in response.text
+
+
+def test_manifest_service_faults_on_an_unsupported_operation(
+    client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    body = (
+        b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        b' xmlns:tns="urn:DeliveryManager/services">'
+        b"<soap:Body><tns:deleteManifest/></soap:Body></soap:Envelope>"
+    )
+    response = client.post(
+        "/ManifestService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "unsupported ManifestService operation" in response.text

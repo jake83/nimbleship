@@ -100,3 +100,17 @@ distinct prefixes are a feature during any parallel run.)
   two new states, dispatch-at-send, non-manifest dispatch-at-paperwork, the
   dispatch-confirmations no-op), then the two SOAP operations and the manifest
   code minting on top.
+
+## Clarification: how the manifest code is minted (2026-07-17)
+
+The "database sequence" is a dedicated `manifest_codes` table whose
+autoincrement id is the number in the code (`NSM0000001`), one row per
+`createManifest` call - the same table-as-sequence trick the consignment code
+uses on the staging row, but its own table rather than the `Manifest` id. The
+reason it is not the `Manifest` id: `createManifest` must return a valid code
+even when its sweep is empty (a carrier the WMS never readied anything for),
+where no `Manifest` row exists to derive one from. The minted code is stored on
+the `Manifest` it closes (`Manifest.code`, null for a manifest the JSON
+dispatch-confirmation created, which returns no code) so the WMS-facing code and
+the internal row are correlated. An empty sweep still mints and returns a code
+but creates no `Manifest` and enqueues no send.
