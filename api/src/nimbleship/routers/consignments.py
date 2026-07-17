@@ -14,6 +14,7 @@ from nimbleship.db import get_session
 from nimbleship.domain import consignments as consignments_domain
 from nimbleship.domain.allocation import AllocationResult
 from nimbleship.domain.consignments import (
+    LABELLED_STATUSES,
     ConsignmentError,
     ConsignmentRequest,
     create_consignment,
@@ -97,7 +98,7 @@ class ConsignmentDetailOut(ConsignmentOut):
 
 
 def _label_url(consignment: Consignment) -> str | None:
-    if consignment.status != "allocated":
+    if consignment.status not in LABELLED_STATUSES:
         return None
     return f"/api/consignments/{consignment.order_number}/label.pdf"
 

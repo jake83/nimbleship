@@ -182,7 +182,7 @@ def test_publishing_a_draft_changes_live_allocation(client: TestClient) -> None:
     retry = client.post(
         "/api/consignments", json={**US_CONSIGNMENT, "order_number": "95000254582"}
     )
-    assert retry.json()["status"] == "allocated"
+    assert retry.json()["status"] == "dispatched"
     assert retry.json()["service"] == "DROPOUT-XL"
 
 

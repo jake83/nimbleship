@@ -40,7 +40,9 @@ class ManifestOut(BaseModel):
 
 
 class DispatchConfirmationOut(BaseModel):
-    dispatched: list[str]
+    # Accepted order numbers: manifest carriers land on_manifest, already-
+    # dispatched non-manifest ones are no-ops (ADR 0013).
+    confirmed: list[str]
     manifests: list[ManifestOut]
 
 
@@ -72,10 +74,12 @@ def _order_numbers(session: Session, manifest: Manifest) -> list[str]:
 def confirm_dispatch(
     payload: DispatchConfirmationIn, session: SessionDep
 ) -> DispatchConfirmationOut:
-    """The confirmation is transactional: every named consignment must
-    exist and be dispatchable, or nothing is dispatched - a partial
-    confirmation silently splitting into shipped-and-not would be exactly
-    the ambiguity the Manifest concept exists to remove."""
+    """The confirmation is transactional: every named consignment must exist
+    and be confirmable, or nothing happens - a partial confirmation silently
+    splitting into shipped-and-not would be exactly the ambiguity the Manifest
+    concept exists to remove. A manifest carrier's consignment is manifested
+    here (allocated -> on_manifest); a non-manifest one is already dispatched
+    from paperwork, so naming it is an idempotent no-op (ADR 0013)."""
     duplicates = sorted(
         number for number, count in Counter(payload.order_numbers).items() if count > 1
     )
@@ -87,8 +91,8 @@ def confirm_dispatch(
         session.execute(
             # Lock the rows for the confirmation's lifetime: two overlapping
             # confirmations for the same orders would otherwise both read
-            # 'allocated', both dispatch, and declare the same consignments
-            # on two manifests. The second now blocks, then sees 'dispatched'
+            # 'allocated', both manifest, and declare the same consignments
+            # on two manifests. The second now blocks, then sees 'on_manifest'
             # and is rejected below. (A no-op on SQLite, which the unit suite
             # uses; the Postgres deployment is where the race is real.)
             select(Consignment)
@@ -104,25 +108,31 @@ def confirm_dispatch(
         raise HTTPException(
             422, f"no consignment for order numbers: {', '.join(unknown)}"
         )
-    undispatchable = [
+    unconfirmable = [
         f"{n} ({by_number[n].status})"
         for n in payload.order_numbers
-        if by_number[n].status != "allocated"
+        if by_number[n].status not in ("allocated", "dispatched")
     ]
-    if undispatchable:
+    if unconfirmable:
         raise HTTPException(
             409,
-            "only allocated consignments can be dispatched: "
-            + ", ".join(undispatchable),
+            "only allocated or already-dispatched consignments can be confirmed: "
+            + ", ".join(unconfirmable),
         )
 
-    consignments = [by_number[n] for n in payload.order_numbers]
-    manifests = create_manifests(session, consignments)
+    # Only the allocated (manifest-carrier) consignments need manifesting; an
+    # already-dispatched one is a no-op it rides through as confirmed.
+    to_manifest = [
+        by_number[n]
+        for n in payload.order_numbers
+        if by_number[n].status == "allocated"
+    ]
+    manifests = create_manifests(session, to_manifest)
     for manifest in manifests:
         defer_manifest_send(session, manifest.id)
 
     return DispatchConfirmationOut(
-        dispatched=[c.order_number for c in consignments],
+        confirmed=list(payload.order_numbers),
         manifests=[_manifest_out(m, _order_numbers(session, m)) for m in manifests],
     )
 

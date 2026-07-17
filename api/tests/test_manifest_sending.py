@@ -15,7 +15,7 @@ from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from nimbleship.db import Base
-from nimbleship.domain.manifests import send_manifest
+from nimbleship.domain.manifests import manifest_consignments, send_manifest
 from nimbleship.engine.execute import CarrierCallError
 from nimbleship.models import (
     CarrierConfig,
@@ -160,7 +160,7 @@ def _seed_manifest(session: Session, definition: dict[str, object]) -> Manifest:
             address_lines=["10 Downing Street"],
             postcode="SW1A 2AA",
             destination_country="GB",
-            status="dispatched",
+            status="on_manifest",
             carrier="brightpost",
             service="BP-STD",
             tracking_reference=f"BP{i}0001",
@@ -219,6 +219,9 @@ def test_sending_declares_the_consignments_and_marks_the_manifest_sent(
 
     assert manifest.status == "sent"
     assert manifest.sent_at is not None
+    # The send is what dispatches a manifest carrier's consignments (ADR 0013).
+    for consignment in manifest_consignments(session, manifest):
+        assert consignment.status == "dispatched"
 
     events = session.execute(select(OrderEvent).order_by(OrderEvent.id)).scalars().all()
     assert [(e.order_number, e.stage) for e in events] == [
