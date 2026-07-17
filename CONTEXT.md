@@ -192,12 +192,16 @@ _Avoid_: treating ManoMano as a one-off special case, "the IOSS number" (as
 if there were only one)
 
 **Tracking Event**:
-A carrier-agnostic record of a consignment's progress. Voila is currently the
-main source (a webhook aggregator), but the structure is generic: direct
-carrier integrations feed the same shape. Moving carriers off Voila is out of
+A carrier-agnostic record of a consignment's progress, ingested from a source
+into its own store (not the OrderEvent timeline, ADR 0014). Voila is currently
+the main source (a webhook aggregator), but the structure is generic: direct
+carrier integrations feed the same shape. Each event keeps the source's raw
+status code and a canonical status normalised at ingestion; the canonical
+vocabulary is: in_transit, out_for_delivery, delivered, exception, returned,
+unknown (an unmapped raw code is unknown). Moving carriers off Voila is out of
 scope for NimbleShip; supporting both source types is in scope.
 _Avoid_: Voila tracking event (as the generic name), naming Voila outside the
-Voila adapter
+Voila adapter, dropping an unmapped status instead of recording it as unknown
 
 ## Relationships
 

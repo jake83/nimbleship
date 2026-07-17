@@ -1,0 +1,55 @@
+"""Tracking webhooks (ADR 0014): a source POSTs tracking updates here; the
+source's adapter normalises them into the Tracking Event store. Closed until the
+source's webhook secret is configured - never open by omission, like the legacy
+edge."""
+
+import secrets
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy.orm import Session
+
+from nimbleship.config import get_settings
+from nimbleship.db import get_session
+from nimbleship.domain.tracking import SOURCE_ADAPTERS, TrackingError, ingest
+
+router = APIRouter(prefix="/tracking", tags=["tracking"])
+
+SessionDep = Annotated[Session, Depends(get_session)]
+
+
+def _source_secret(source: str) -> str | None:
+    # A known source's secret is settings.<source>_webhook_secret, kept generic
+    # so a new source names itself in config, not here. Runs before the adapter
+    # lookup, so source is still the raw path value (unknown sources included).
+    secret = getattr(get_settings(), f"{source}_webhook_secret", None)
+    return secret if isinstance(secret, str) else None
+
+
+@router.post("/webhooks/{source}", status_code=200)
+def receive_tracking_webhook(
+    source: str,
+    payload: dict[str, object],
+    session: SessionDep,
+    x_webhook_secret: Annotated[str | None, Header()] = None,
+) -> dict[str, int]:
+    # Auth before the source lookup: an unknown source has no configured secret,
+    # so it falls to the same 401 as a bad secret rather than a 404 that would
+    # let an unauthenticated caller enumerate which sources exist. Constant-time
+    # compared, and closed until configured.
+    expected = _source_secret(source)
+    if (
+        expected is None
+        or x_webhook_secret is None
+        or not secrets.compare_digest(x_webhook_secret, expected)
+    ):
+        raise HTTPException(401, "invalid or missing webhook secret")
+    adapter = SOURCE_ADAPTERS.get(source)
+    if adapter is None:
+        raise HTTPException(404, f"unknown tracking source '{source}'")
+    try:
+        events = adapter(payload)
+        stored = ingest(session, source, events)
+    except TrackingError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"events_stored": stored}

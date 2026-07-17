@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # it is never open by omission.
     legacy_wms_username: str | None = None
     legacy_wms_password: str | None = None
+    # Shared secret for the Voila tracking webhook. Unset by default, so the
+    # webhook rejects every post until an install configures it.
+    voila_webhook_secret: str | None = None
 
 
 def get_settings() -> Settings:

@@ -14,6 +14,7 @@ from nimbleship.routers.quotes import router as quotes_router
 from nimbleship.routers.rulebook import router as rulebook_router
 from nimbleship.routers.service_groups import router as service_groups_router
 from nimbleship.routers.shipping_areas import router as shipping_areas_router
+from nimbleship.routers.tracking import router as tracking_router
 from nimbleship.routers.warehouses import router as warehouses_router
 
 # Every route lives under /api: the ingress forwards the prefix unstripped,
@@ -60,6 +61,7 @@ def create_app() -> FastAPI:
     router.include_router(rulebook_router)
     router.include_router(service_groups_router)
     router.include_router(shipping_areas_router)
+    router.include_router(tracking_router)
     router.include_router(warehouses_router)
     app.include_router(router)
     # The Legacy Interface mounts outside /api: the WMS posts to the MetaPack
