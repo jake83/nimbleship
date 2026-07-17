@@ -18,6 +18,9 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "reportlab>=5.0.0",
     "sqlalchemy>=2.0.51",
+    # zoneinfo's fallback tz database: the slim runtime image ships no OS tzdata,
+    # so without this every ZoneInfo(...) lookup fails in the container.
+    "tzdata>=2025.1",
     "uvicorn[standard]>=0.51.0",
 ]
 

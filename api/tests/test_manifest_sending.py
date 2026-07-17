@@ -610,3 +610,25 @@ def test_send_faults_when_the_named_warehouse_is_absent(session: Session) -> Non
         pytest.raises(ValueError, match="no longer exists"),
     ):
         send_manifest(session, manifest, http_client, {})
+
+
+def test_manifest_date_uses_the_local_day_after_a_sqlite_naive_round_trip(
+    engine: Engine,
+) -> None:
+    # SQLite hands created_at back naive; manifest_facts must still treat it as
+    # UTC and convert to the warehouse's local day - the path the two unit tests
+    # above (which build aware datetimes) never exercise.
+    with sessionmaker(bind=engine)() as writer:
+        writer.add(
+            Manifest(
+                carrier="brightpost",
+                status="pending",
+                created_at=datetime(2026, 7, 1, 2, 0, tzinfo=UTC),
+            )
+        )
+        writer.commit()
+    with sessionmaker(bind=engine)() as reader:
+        reloaded = reader.execute(select(Manifest)).scalar_one()
+        assert reloaded.created_at.tzinfo is None  # naive round-trip confirmed
+        facts = manifest_facts(reloaded, [], "America/Los_Angeles")
+        assert facts["date"] == "2026-06-30"
