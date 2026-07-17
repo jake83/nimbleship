@@ -28,9 +28,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.add_column("manifests", sa.Column("code", sa.String(length=32), nullable=True))
-    op.create_index(
-        op.f("ix_manifests_code"), "manifests", ["code"], unique=True
-    )
+    op.create_index(op.f("ix_manifests_code"), "manifests", ["code"], unique=True)
     # ### end Alembic commands ###
 
 
