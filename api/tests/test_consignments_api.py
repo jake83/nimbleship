@@ -21,7 +21,9 @@ def test_creating_a_consignment_allocates_and_produces_a_label(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["status"] == "allocated"
+    # dropout declares no manifest operation, so the consignment is dispatched
+    # as soon as its label exists (ADR 0013); the label is still downloadable.
+    assert body["status"] == "dispatched"
     assert body["carrier"] == "dropout"
     assert body["service"] == "DROPOUT-STD"
     assert body["label_url"] == "/api/consignments/95000254580/label.pdf"
@@ -48,7 +50,11 @@ def test_timeline_records_allocation_and_label_creation(
 
     assert response.status_code == 200
     body = response.json()
-    assert [e["stage"] for e in body["events"]] == ["allocated", "label_created"]
+    assert [e["stage"] for e in body["events"]] == [
+        "allocated",
+        "label_created",
+        "dispatched",
+    ]
     # Weights are stored rounded to 2dp (the company's convention).
     assert body["parcels"] == [
         {
@@ -197,7 +203,7 @@ def test_bought_proposition_filters_dispatch_to_fulfilling_services(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["status"] == "allocated"
+    assert body["status"] == "dispatched"
     # DROPOUT-STD is cheaper but only fulfils economy; the promise wins.
     assert body["service"] == "DROPOUT-XL"
 
@@ -354,7 +360,7 @@ def test_destination_in_a_blocked_area_excludes_the_blocking_service(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["status"] == "allocated"
+    assert body["status"] == "dispatched"
     assert body["service"] == "EVERYWHERE"
     blocked = next(
         r
@@ -451,7 +457,7 @@ def test_force_service_pins_the_allocation_when_testing_tools_are_enabled(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["status"] == "allocated"
+    assert body["status"] == "dispatched"
     assert body["service"] == "DROPOUT-XL"
     assert body["allocation"]["reason"] == "forced by testing tools"
 

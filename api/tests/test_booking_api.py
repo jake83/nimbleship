@@ -108,7 +108,9 @@ def test_booking_stores_tracking_reference_and_carrier_barcodes(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["status"] == "allocated"
+    # furdeco declares no manifest operation, so its consignment dispatches the
+    # moment its label is produced (ADR 0013).
+    assert body["status"] == "dispatched"
     assert body["carrier"] == "furdeco"
     assert body["tracking_reference"] == "F12345678910"
 
@@ -127,7 +129,7 @@ def test_booking_adds_a_booked_event_with_the_step_outcomes(
 
     detail = furdeco_client.get("/api/consignments/95000254580").json()
     stages = [e["stage"] for e in detail["events"]]
-    assert stages == ["allocated", "booked", "label_created"]
+    assert stages == ["allocated", "booked", "label_created", "dispatched"]
     [booked] = [e for e in detail["events"] if e["stage"] == "booked"]
     assert booked["detail"]["carrier"] == "furdeco"
     assert booked["detail"]["tracking_reference"] == "F12345678910"

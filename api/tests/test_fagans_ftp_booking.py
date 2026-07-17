@@ -107,7 +107,8 @@ def test_booking_uploads_the_rendered_csv_to_the_carrier(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["status"] == "allocated"
+    # fagans declares no manifest operation, so it dispatches at label time.
+    assert body["status"] == "dispatched"
     assert body["carrier"] == "fagans"
     # Fire-and-forget: Fagans returns nothing to track by.
     assert body["tracking_reference"] is None

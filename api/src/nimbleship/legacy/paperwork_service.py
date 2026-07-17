@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.consignments import (
+    LABELLED_STATUSES,
     ConsignmentError,
     ConsignmentRequest,
     create_consignment,
@@ -132,9 +133,11 @@ def _produce(
             f"createPaperworkForConsignments: {request.order_number}: {error.detail}"
         ) from error
     consignment = result.consignment
-    if consignment.status != "allocated":
+    if consignment.status not in LABELLED_STATUSES:
         # No carrier could serve the shipment, so there is no label to return;
         # the WMS is told loudly rather than handed an empty paperwork response.
+        # A non-manifest consignment comes back already "dispatched" (ADR 0013),
+        # which still has a label - only a rejection has none.
         raise soap.SoapFault(
             f"createPaperworkForConsignments: {request.order_number} could not be "
             f"allocated ({result.allocation.reason})"

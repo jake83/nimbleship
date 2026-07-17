@@ -64,6 +64,15 @@ class ConsignmentError(Exception):
         self.detail = detail
 
 
+# The statuses a consignment holds once its label has been produced: a label
+# exists and can be served. A non-manifest carrier's consignment goes straight
+# to "dispatched"; a manifest carrier's is "allocated", then "on_manifest" once
+# its Manifest is created, then "dispatched" once that manifest is sent
+# (ADR 0013). The failure statuses (rejected, booking_failed, label_failed)
+# have no label.
+LABELLED_STATUSES = frozenset({"allocated", "on_manifest", "dispatched"})
+
+
 @dataclass
 class ConsignmentRequest:
     order_number: str
@@ -565,6 +574,22 @@ def create_consignment(
                 detail={"pages": len(request.parcel_weights)},
             )
         )
+        if "manifest" not in definition.operations:
+            # A carrier with no manifest operation dispatches the moment its
+            # label is produced - there is no manifest and no separate
+            # departure signal (ADR 0013). A manifest carrier stays
+            # "allocated" here and dispatches when its manifest is sent.
+            consignment.status = "dispatched"
+            session.add(
+                OrderEvent(
+                    order_number=request.order_number,
+                    stage="dispatched",
+                    detail={
+                        "carrier": selected.carrier,
+                        "warehouse": request.warehouse,
+                    },
+                )
+            )
 
     try:
         session.flush()

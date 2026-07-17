@@ -125,6 +125,18 @@ an EDI file; the format is per-carrier, the concept is universal.
 _Avoid_: scan-out (warehouse-internal jargon for the trigger), EDI (that is
 one carrier's file format, not the concept)
 
+**Dispatched**:
+A consignment has physically left the warehouse (LDG). The moment is set by
+carrier type, not by which edge entered the order (ADR 0013): a manifest
+carrier (Dachser) is dispatched when its **Manifest is sent**; every other
+carrier is dispatched the moment **labels are returned** (there is no manifest
+and no separate departure signal). Between allocation and dispatch a
+manifest-carrier consignment passes through `ready_to_manifest` (the WMS marked
+it ready, selectively) and `on_manifest` (a pending Manifest exists, not yet
+sent).
+_Avoid_: the packing-bench "dispatch" milestone (that is a workflow step, not
+physical departure); marking dispatched at manifest creation rather than send
+
 **Delivery Proposition**:
 The customer-facing delivery promise: next day, next day pre-10, economy,
 Saturday, and so on. Sold at checkout, honoured at dispatch: services declare

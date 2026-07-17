@@ -164,7 +164,7 @@ def _queue_jobs(app: FastAPI) -> list[dict[str, object]]:
     return list(connector.jobs.values())
 
 
-def test_dispatch_confirmation_dispatches_and_manifests_per_carrier(
+def test_dispatch_confirmation_manifests_per_carrier(
     app: FastAPI, brightpost_client: TestClient
 ) -> None:
     for order, weight in (("A-1", "4.2"), ("A-2", "8.0"), ("A-3", "45.0")):
@@ -175,6 +175,12 @@ def test_dispatch_confirmation_dispatches_and_manifests_per_carrier(
             == 201
         )
 
+    # dropout (the heavy A-3) has no manifest operation, so it is already
+    # dispatched from its create call, before any confirmation (ADR 0013).
+    a3_before = brightpost_client.get("/api/consignments/A-3").json()
+    assert a3_before["status"] == "dispatched"
+    assert a3_before["events"][-1]["stage"] == "dispatched"
+
     response = brightpost_client.post(
         "/api/dispatch-confirmations",
         json={"order_numbers": ["A-1", "A-2", "A-3"]},
@@ -182,18 +188,23 @@ def test_dispatch_confirmation_dispatches_and_manifests_per_carrier(
 
     assert response.status_code == 201
     body = response.json()
-    assert sorted(body["dispatched"]) == ["A-1", "A-2", "A-3"]
-    # dropout has no manifest operation: its consignment is dispatched but
-    # manifests nothing; brightpost's two share one Manifest.
+    assert sorted(body["confirmed"]) == ["A-1", "A-2", "A-3"]
+    # brightpost's two share one Manifest; A-3 (dropout) manifests nothing and
+    # rides through as an already-dispatched no-op.
     [manifest] = body["manifests"]
     assert manifest["carrier"] == "brightpost"
     assert manifest["status"] == "pending"
     assert manifest["order_numbers"] == ["A-1", "A-2"]
 
-    for order in ("A-1", "A-2", "A-3"):
+    # A manifest carrier's consignments are on_manifest, not yet dispatched -
+    # the send does that; A-3 is untouched by the confirmation.
+    for order in ("A-1", "A-2"):
         detail = brightpost_client.get(f"/api/consignments/{order}").json()
-        assert detail["status"] == "dispatched"
-        assert detail["events"][-1]["stage"] == "dispatched"
+        assert detail["status"] == "on_manifest"
+        assert detail["events"][-1]["stage"] == "on_manifest"
+    a3_after = brightpost_client.get("/api/consignments/A-3").json()
+    assert a3_after["status"] == "dispatched"
+    assert a3_after["events"][-1]["stage"] == "dispatched"
 
 
 def test_dispatch_confirmation_enqueues_one_send_job_per_manifest(
@@ -318,17 +329,22 @@ def test_duplicate_order_numbers_in_one_confirmation_are_rejected(
     assert "F-1" in response.json()["detail"]
 
 
-def test_a_manifestless_confirmation_dispatches_without_manifests(
+def test_confirming_an_already_dispatched_consignment_is_a_no_op(
     app: FastAPI, brightpost_client: TestClient
 ) -> None:
-    # dropout only: dispatched, no Manifest rows, no jobs.
+    # dropout (heavy G-1) has no manifest operation, so it dispatched at create;
+    # a confirmation naming it is an idempotent no-op - no Manifest, no job, and
+    # it stays dispatched (ADR 0013).
     brightpost_client.post("/api/consignments", json=_consignment("G-1", "45.0"))
+    before = brightpost_client.get("/api/consignments/G-1").json()
+    assert before["status"] == "dispatched"
 
     response = brightpost_client.post(
         "/api/dispatch-confirmations", json={"order_numbers": ["G-1"]}
     )
 
     assert response.status_code == 201
+    assert response.json()["confirmed"] == ["G-1"]
     assert response.json()["manifests"] == []
     assert _queue_jobs(app) == []
     with app.state.session_factory() as session:

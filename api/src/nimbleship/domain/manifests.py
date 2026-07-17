@@ -27,12 +27,13 @@ from nimbleship.uploaders import FileUploader
 def create_manifests(
     session: Session, consignments: list[Consignment]
 ) -> list[Manifest]:
-    """Mark the consignments dispatched and group them into one pending
-    Manifest per (carrier, warehouse) - for carriers whose published
-    definition declares a manifest operation. A carrier without one simply
-    does not manifest; its consignments are still dispatched. The rows are
-    flushed so callers can enqueue send jobs by manifest id in the same
-    transaction (ADR 0004)."""
+    """Group the consignments into one pending Manifest per (carrier,
+    warehouse) - for carriers whose published definition declares a manifest
+    operation - and move them to "on_manifest"; the send is what dispatches
+    them (ADR 0013). A carrier without a manifest operation does not manifest;
+    such a consignment (if one reaches here) is dispatched immediately, as it
+    already was at paperwork. The rows are flushed so callers can enqueue send
+    jobs by manifest id in the same transaction (ADR 0004)."""
     Group = tuple[str, str | None]
     groups: dict[Group, list[Consignment]] = {}
     for consignment in consignments:
@@ -71,15 +72,18 @@ def create_manifests(
         manifests.append(manifest)
 
     for consignment in consignments:
-        consignment.status = "dispatched"
         assert consignment.carrier is not None
         manifest_for = manifest_by_group.get(
             (consignment.carrier, consignment.warehouse)
         )
+        # On a manifest = pending its send, not yet gone. Without one, the
+        # carrier does not manifest, so it is dispatched now (ADR 0013).
+        stage = "on_manifest" if manifest_for is not None else "dispatched"
+        consignment.status = stage
         session.add(
             OrderEvent(
                 order_number=consignment.order_number,
-                stage="dispatched",
+                stage=stage,
                 detail={
                     "carrier": consignment.carrier,
                     "warehouse": consignment.warehouse,
@@ -189,6 +193,9 @@ def send_manifest(
     manifest.status = "sent"
     manifest.sent_at = datetime.now(UTC)
     for consignment, outputs in emitted:
+        # The manifest is away, so the goods have physically left: a manifest
+        # carrier dispatches here, at send, not at manifest creation (ADR 0013).
+        consignment.status = "dispatched"
         # The carrier's extracted outputs are author-named, so they live under
         # their own key: splatting them alongside the internal audit fields
         # would let an extraction named "manifest_id" overwrite the link back

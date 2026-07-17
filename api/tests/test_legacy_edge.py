@@ -529,7 +529,10 @@ def test_paperwork_runs_the_domain_and_returns_labels_and_the_parcels_string(
             .scalars()
             .one()
         )
-        assert consignment.status == "allocated"
+        # dropout declares no manifest operation, so paperwork dispatches it
+        # the moment its label is produced - dispatch timing is by carrier
+        # type, the same on either edge (ADR 0013).
+        assert consignment.status == "dispatched"
         assert consignment.carrier == "dropout"
         # The accepted groups are persisted so a dry-run replays the filter.
         assert consignment.accepted_service_groups == ["ECONOMY"]
