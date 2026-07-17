@@ -11,7 +11,12 @@ from datetime import UTC, datetime
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from nimbleship.models import TrackingEvent
+from nimbleship.models import (
+    ORDER_NUMBER_MAX,
+    TRACKING_ID_MAX,
+    TRACKING_RAW_STATUS_MAX,
+    TrackingEvent,
+)
 
 # The canonical status a raw carrier code normalises to. Small and
 # carrier-neutral; a code with no mapping becomes "unknown".
@@ -43,11 +48,26 @@ class ParsedTrackingEvent:
     raw: dict[str, object]
 
 
+def _reject_long(label: str, value: str | None, limit: int) -> None:
+    if value is not None and len(value) > limit:
+        raise TrackingError(f"{label} exceeds {limit} characters")
+
+
 def ingest(session: Session, source: str, events: list[ParsedTrackingEvent]) -> int:
     """Store the parsed events, skipping any already seen for this source, and
     return how many were new. Idempotency is the (source, external_id) unique
     constraint, enforced per event in a savepoint: a redelivery - including two
-    concurrent ones racing the same event - resolves to a skip, never a 500."""
+    concurrent ones racing the same event - resolves to a skip, never a 500.
+
+    Over-length source fields are rejected up front (TrackingError -> 422): on
+    Postgres a VARCHAR overflow is a driver DataError the savepoint's
+    IntegrityError catch would miss, so it must not reach the column."""
+    for event in events:
+        _reject_long("order number", event.order_number, ORDER_NUMBER_MAX)
+        _reject_long("external id", event.external_id, TRACKING_ID_MAX)
+        _reject_long("shipment id", event.source_shipment_id, TRACKING_ID_MAX)
+        _reject_long("tracking code", event.tracking_code, TRACKING_ID_MAX)
+        _reject_long("raw status", event.raw_status, TRACKING_RAW_STATUS_MAX)
     stored = 0
     for event in events:
         try:

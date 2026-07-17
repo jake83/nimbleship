@@ -23,6 +23,12 @@ RECIPIENT_NAME_MAX = 255
 POSTCODE_MAX = 32
 COUNTRY_CODE_MAX = 3
 PARCEL_WEIGHT_MAX = 16
+# Tracking Event caps for source-supplied fields. The columns below and
+# domain.tracking's length guard both reference these, so a payload too long
+# for a column is rejected as a clean 422 rather than reaching the DB as an
+# uncaught driver error (ADR 0014).
+TRACKING_ID_MAX = 128
+TRACKING_RAW_STATUS_MAX = 64
 
 
 def _now() -> datetime:
@@ -399,8 +405,7 @@ class TrackingEvent(Base):
     ingested from a source (a carrier or aggregator webhook) into a dedicated
     store, kept separate from the internal OrderEvent timeline. Each carries the
     source's raw status plus a normalised canonical status, so a downstream read
-    queries one vocabulary while the raw code survives for audit and remapping.
-    Idempotent on (source, external_id): a redelivered event is not re-stored."""
+    queries one vocabulary while the raw code survives for audit and remapping."""
 
     __tablename__ = "tracking_events"
     __table_args__ = (UniqueConstraint("source", "external_id"),)
@@ -410,11 +415,15 @@ class TrackingEvent(Base):
     # The ingesting source (e.g. "voila"); one order can be tracked by several.
     source: Mapped[str] = mapped_column(String(32))
     # The source's own id for this event, the idempotency key for redelivery.
-    external_id: Mapped[str] = mapped_column(String(128))
-    source_shipment_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    tracking_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    external_id: Mapped[str] = mapped_column(String(TRACKING_ID_MAX))
+    source_shipment_id: Mapped[str | None] = mapped_column(
+        String(TRACKING_ID_MAX), nullable=True
+    )
+    tracking_code: Mapped[str | None] = mapped_column(
+        String(TRACKING_ID_MAX), nullable=True
+    )
     # The source's raw status code, kept verbatim for audit and remapping.
-    raw_status: Mapped[str] = mapped_column(String(64))
+    raw_status: Mapped[str] = mapped_column(String(TRACKING_RAW_STATUS_MAX))
     # The canonical status the raw code normalised to (unknown if unmapped).
     status: Mapped[str] = mapped_column(String(32))
     # When the event happened at the carrier; None if the source omits it.

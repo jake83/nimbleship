@@ -20,8 +20,8 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 def _source_secret(source: str) -> str | None:
     # A known source's secret is settings.<source>_webhook_secret, kept generic
-    # so a new source names itself in config, not here (source is already an
-    # SOURCE_ADAPTERS key by the time this runs).
+    # so a new source names itself in config, not here. Runs before the adapter
+    # lookup, so source is still the raw path value (unknown sources included).
     secret = getattr(get_settings(), f"{source}_webhook_secret", None)
     return secret if isinstance(secret, str) else None
 
@@ -49,6 +49,7 @@ def receive_tracking_webhook(
         raise HTTPException(404, f"unknown tracking source '{source}'")
     try:
         events = adapter(payload)
+        stored = ingest(session, source, events)
     except TrackingError as error:
         raise HTTPException(422, str(error)) from error
-    return {"events_stored": ingest(session, source, events)}
+    return {"events_stored": stored}

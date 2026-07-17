@@ -195,6 +195,25 @@ def test_an_unknown_source_is_rejected_like_a_bad_secret(
     assert response.status_code == 401
 
 
+def test_an_over_length_field_is_rejected_before_it_reaches_the_db(
+    app: FastAPI, client: TestClient, voila_secret: str
+) -> None:
+    # A source field longer than its column is a clean 422, not a driver error
+    # the savepoint would miss on Postgres; the whole delivery is rejected and
+    # nothing is stored (the guard runs before any insert).
+    payload = _voila_payload(order_number="X" * 200)
+
+    response = client.post(
+        "/api/tracking/webhooks/voila",
+        json=payload,
+        headers={"X-Webhook-Secret": voila_secret},
+    )
+
+    assert response.status_code == 422
+    assert "order number" in response.text
+    assert _stored(app) == []
+
+
 def test_voila_events_carry_a_utc_aware_timestamp() -> None:
     # A source timestamp with no offset is pinned to UTC, so the tz-aware column
     # stores an unambiguous instant (not read back in the DB's session tz).
