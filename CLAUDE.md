@@ -97,6 +97,25 @@ pass. Step 1 applies only to fat PRs, as defined in step 1 itself:
    Prefer the independent shape - it overlaps review too, and dodges the rebase.
    Caveat: a review that materially changes THIS PR forces rework of anything
    built on it (owner-granted 2026-07-17).
+
+   Fanning out wider (more than one next step at once): when several steps are
+   genuinely independent, build them in parallel with worktree-isolated
+   sub-agents (the Agent tool, `isolation: worktree`, run in background) - one
+   per feature, each on its own branch doing TDD + gates and reporting its
+   branch back. The main loop keeps everything that does not parallelise: make
+   every design decision FIRST (grill the owner - never fan out on a guessed
+   call), then dispatch the builds, and afterwards run each local review, push,
+   triage each PR's review loop, and merge (self-merge authority stays with the
+   main loop, which also holds the accumulated domain context). Hard limits, or
+   it trips up:
+   - Only file-disjoint items, and at most ONE schema/migration change per wave
+     - Alembic's revision chain is linear, so two migrations off one parent
+       branch the history and need a hand-written merge migration.
+   - Independent items merge in any order, so NO stacking across parallel agents
+     (stacked work is the single-branch case above, done by the main loop).
+   - More agents trade tokens for wall-clock and multiply the review loops the
+     main loop must triage: use it for a real batch of independent work, not a
+     one-off (owner-granted 2026-07-17).
 3. Triage every AI finding per "Handling review feedback" below; push fixes,
    post rebuttals. The pipeline re-runs on each push until settled.
 4. When the loop is settled, post a wrap-up comment ("AI loop complete:
