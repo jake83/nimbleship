@@ -29,7 +29,12 @@ def ready_to_manifest(
     session: Session, carrier: str, warehouse: str | None
 ) -> list[Consignment]:
     """The consignments a mark-ready call left ready for this carrier and
-    warehouse, in creation order - what a createManifest sweep closes over."""
+    warehouse, in creation order - what a createManifest sweep closes over.
+    Locks them for the sweep's transaction: two overlapping createManifest calls
+    for the same carrier and warehouse would otherwise both read the same ready
+    rows and declare them on two manifests, sending the carrier the same
+    dispatch twice - the hazard the JSON dispatch-confirmation locks against too
+    (a no-op on SQLite, real on the Postgres deployment)."""
     return list(
         session.execute(
             select(Consignment)
@@ -39,6 +44,7 @@ def ready_to_manifest(
                 Consignment.status == "ready_to_manifest",
             )
             .order_by(Consignment.id)
+            .with_for_update()
         )
         .scalars()
         .all()
