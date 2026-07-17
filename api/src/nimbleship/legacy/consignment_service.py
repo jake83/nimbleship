@@ -137,7 +137,7 @@ def _delete_consignment() -> bytes:
     """A mock acknowledgement (bare true). Real cancellation - a cancelled
     status, reversing a carrier booking, guarding a dispatched consignment - is
     a deferred lifecycle epic; this satisfies the WMS's call shape without a
-    state change, matching the legacy system's always-success behaviour."""
+    state change. The WMS expects an unconditional success here."""
 
     def build(operation_element: ET.Element) -> None:
         soap.text_child(operation_element, "deleteConsignmentReturn", "true")
