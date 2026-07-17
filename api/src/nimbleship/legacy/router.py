@@ -17,7 +17,12 @@ from nimbleship.config import get_settings
 from nimbleship.db import get_session
 from nimbleship.http_client import get_http_client
 from nimbleship.labels.store import LabelStore, get_label_store
-from nimbleship.legacy import allocation_service, consignment_service, soap
+from nimbleship.legacy import (
+    allocation_service,
+    consignment_service,
+    manifest_service,
+    soap,
+)
 from nimbleship.legacy.soap import SoapFault
 from nimbleship.uploaders import FileUploader, get_carrier_uploaders
 
@@ -97,6 +102,13 @@ def consignment_service_endpoint(
 @router.post("/AllocationService", dependencies=[WmsAuth])
 def allocation_service_endpoint(body: RawBody, session: SessionDep) -> Response:
     return _dispatch(session, lambda: allocation_service.handle(body, session))
+
+
+@router.post("/ManifestService", dependencies=[WmsAuth])
+def manifest_service_endpoint(body: RawBody, session: SessionDep) -> Response:
+    # createManifest defers the carrier send to the queue, so it needs no
+    # carrier-call dependencies - only the session.
+    return _dispatch(session, lambda: manifest_service.handle(body, session))
 
 
 def _dispatch(session: Session, run: Callable[[], bytes]) -> Response:

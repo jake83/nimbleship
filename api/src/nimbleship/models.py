@@ -305,6 +305,10 @@ class Manifest(Base):
     # The Warehouse code the manifested consignments dispatched from; a
     # denormalised copy, like Consignment.warehouse.
     warehouse: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The NS-native manifest code returned to the WMS when the legacy
+    # createManifest created this manifest (ADR 0013); null for a manifest the
+    # JSON dispatch-confirmation created, which returns no code.
+    code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # pending -> sent, or -> failed once the send job exhausts its retries.
     status: Mapped[str] = mapped_column(String(16))
     # Send attempts so far - the queue owns scheduling; this is the audit.
@@ -314,6 +318,18 @@ class Manifest(Base):
     sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class ManifestCode(Base):
+    """The manifest-code sequence: one row per legacy createManifest call, its
+    autoincrement id the number in the NS-native code (ADR 0013). A dedicated
+    sequence, not the Manifest id, because createManifest must return a code
+    even when the sweep is empty and no Manifest row exists."""
+
+    __tablename__ = "manifest_codes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class ManifestConsignment(Base):

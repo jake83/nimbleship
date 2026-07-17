@@ -17,11 +17,42 @@ from nimbleship.models import (
     CarrierTraffic,
     Consignment,
     Manifest,
+    ManifestCode,
     ManifestConsignment,
     OrderEvent,
     Warehouse,
 )
 from nimbleship.uploaders import FileUploader
+
+
+def ready_to_manifest(
+    session: Session, carrier: str, warehouse: str | None
+) -> list[Consignment]:
+    """The consignments a mark-ready call left ready for this carrier and
+    warehouse, in creation order - what a createManifest sweep closes over."""
+    return list(
+        session.execute(
+            select(Consignment)
+            .where(
+                Consignment.carrier == carrier,
+                Consignment.warehouse == warehouse,
+                Consignment.status == "ready_to_manifest",
+            )
+            .order_by(Consignment.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def mint_manifest_code(session: Session) -> str:
+    """The next NS-native manifest code from its own sequence (ADR 0013), so a
+    createManifest returns a valid code even when its sweep is empty and no
+    Manifest row exists to derive one from."""
+    row = ManifestCode()
+    session.add(row)
+    session.flush()  # assigns the id the code derives from
+    return f"NSM{row.id:07d}"
 
 
 def create_manifests(
