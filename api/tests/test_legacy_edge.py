@@ -162,6 +162,60 @@ def test_create_consignments_faults_on_a_duplicate_order_in_one_batch(
         assert not list(session.execute(select(LegacyConsignmentStaging)).scalars())
 
 
+def test_create_consignments_faults_on_an_over_long_order_number(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # order_number is the staging key (an indexed column written before the
+    # domain runs), so the edge length-checks this one field at intake.
+    body = _fixture("create_consignments_request.xml").replace(
+        b"95000254580</orderNumber>", b"A" * 65 + b"</orderNumber>"
+    )
+    response = client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "orderNumber exceeds" in response.text
+    with app.state.session_factory() as session:
+        assert not list(session.execute(select(LegacyConsignmentStaging)).scalars())
+
+
+def test_paperwork_faults_on_a_domain_invariant_the_edge_no_longer_checks(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A zero-parcel consignment stages fine (the edge does not re-check domain
+    # invariants), and the domain rejects it at paperwork - the single source of
+    # truth, mapped to a SOAP fault (ADR 0002 clarification).
+    _create_depot1(client)
+    body = _fixture("create_consignments_request.xml").replace(
+        b'<Item href="#id6"/>\n            <Item href="#id7"/>', b""
+    )
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        code = row.consignment_code
+        assert isinstance(code, str)
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "at least one parcel" in response.text
+
+
 def test_malformed_xml_returns_a_soap_fault(
     client: TestClient, wms_auth: tuple[str, str]
 ) -> None:

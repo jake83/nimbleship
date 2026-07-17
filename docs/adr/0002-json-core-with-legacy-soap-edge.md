@@ -47,3 +47,33 @@ paperwork responses) - the SOAP shapes never leak inward.
 - Cost: the adapter must be maintained and contract-tested against real
   recorded WMS traffic, and the domain core carries the obligation to satisfy
   legacy semantics even where a fresh design might not have included them.
+
+## Clarification: what "no validation policy" means (2026-07-17)
+
+"No validation policy of its own" means no business or decision policy. Field
+and shape invariants of a Consignment - length limits, at least one parcel, a
+parcel weight that fits its column - are domain facts, so the domain core
+(`create_consignment`) owns them and raises `ConsignmentError`; each edge maps
+that to its own error shape (the JSON API to an HTTPException, the legacy edge
+to a SOAP fault). Every such limit is a single shared constant, referenced by
+the column, the JSON pydantic bound, and the domain check, so the three cannot
+drift. The edge still performs the structural gatekeeping its own translation
+requires - a batch item with no key or a duplicate key, malformed XML, and the
+one length check on `order_number` that protects the pre-domain staging write
+(its indexed key). That is translation feasibility and bookkeeping integrity,
+not business policy.
+
+## Clarification: what "no validation policy" means (2026-07-17)
+
+"No validation policy of its own" means no business or decision policy. Field
+and shape invariants of a Consignment - length limits, at least one parcel, a
+parcel weight that fits its column - are domain facts, so the domain core
+(`create_consignment`) owns them and raises `ConsignmentError`; each edge maps
+that to its own error shape (the JSON API to an HTTPException, the legacy edge
+to a SOAP fault). Every such limit is a single shared constant, referenced by
+the column, the JSON pydantic bound, and the domain check, so the three cannot
+drift. The edge still performs the structural gatekeeping its own translation
+requires - a batch item with no key or a duplicate key, malformed XML, and the
+one length check on `order_number` that protects the pre-domain staging write
+(its indexed key). That is translation feasibility and bookkeeping integrity,
+not business policy.

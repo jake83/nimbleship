@@ -20,7 +20,14 @@ from nimbleship.domain.consignments import (
 )
 from nimbleship.http_client import get_http_client
 from nimbleship.labels.store import LabelStore, get_label_store
-from nimbleship.models import Consignment, OrderEvent
+from nimbleship.models import (
+    COUNTRY_CODE_MAX,
+    ORDER_NUMBER_MAX,
+    POSTCODE_MAX,
+    RECIPIENT_NAME_MAX,
+    Consignment,
+    OrderEvent,
+)
 from nimbleship.uploaders import FileUploader, get_carrier_uploaders
 
 router = APIRouter(prefix="/consignments", tags=["consignments"])
@@ -37,12 +44,16 @@ class ParcelIn(BaseModel):
 
 class ConsignmentIn(BaseModel):
     # ASCII only: order numbers become Code 128 barcodes, whose encoder
-    # rejects anything outside Latin-1 (refuter finding, PR #6).
-    order_number: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    recipient_name: str
+    # rejects anything outside Latin-1 (refuter finding, PR #6). Length caps are
+    # the shared column constants, so the JSON bound and the domain check (which
+    # also guards the legacy path) never drift (ADR 0002 clarification).
+    order_number: str = Field(
+        min_length=1, max_length=ORDER_NUMBER_MAX, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+    recipient_name: str = Field(max_length=RECIPIENT_NAME_MAX)
     address_lines: list[str]
-    postcode: str
-    destination_country: str = Field(min_length=2, max_length=3)
+    postcode: str = Field(max_length=POSTCODE_MAX)
+    destination_country: str = Field(min_length=2, max_length=COUNTRY_CODE_MAX)
     # The Delivery Proposition the customer bought (CONTEXT.md); dispatch
     # selects only among services fulfilling it. None = no filter.
     proposition: str | None = Field(default=None, min_length=1, max_length=64)
