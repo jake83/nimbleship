@@ -784,6 +784,40 @@ def test_paperwork_faults_on_a_non_finite_parcel_weight(
     assert "is not a number" in response.text
 
 
+def test_paperwork_faults_on_a_huge_magnitude_parcel_weight(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A finite weight past the decimal context precision makes the domain's
+    # quantize raise; it must reach the WMS as a SOAP fault, not a bare 500
+    # outside the fault contract.
+    _create_depot1(client)
+    body = _fixture("create_consignments_request.xml").replace(
+        b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>',
+        b'<parcelWeight xsi:type="xsd:double">1E+50</parcelWeight>',
+    )
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        code = row.consignment_code
+        assert isinstance(code, str)
+    _allocate(client, wms_auth, code)
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "out of range" in response.text
+
+
 def test_paperwork_treats_a_non_finite_parcel_dimension_as_absent(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:

@@ -143,6 +143,14 @@ def test_an_absurd_parcel_weight_is_rejected(client: TestClient) -> None:
     assert client.post("/api/consignments", json=payload).status_code == 422
 
 
+def test_a_huge_magnitude_parcel_weight_faults_cleanly(client: TestClient) -> None:
+    # A magnitude past the decimal context precision makes quantize itself raise;
+    # it must fault as a 422, not escape as an uncaught 500.
+    payload = {**CONSIGNMENT, "parcels": [{"weight_kg": "1E+50"}]}
+
+    assert client.post("/api/consignments", json=payload).status_code == 422
+
+
 PROPOSITION_DRAFT = {
     "author": "jake",
     "services": [

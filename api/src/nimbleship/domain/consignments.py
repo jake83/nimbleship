@@ -8,7 +8,7 @@ import base64
 import binascii
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import httpx
 from sqlalchemy import select
@@ -100,9 +100,9 @@ def order_exists(session: Session, order_number: str) -> bool:
 
 
 def _validate_request(request: ConsignmentRequest) -> None:
-    """The Consignment's field and shape invariants (ADR 0002 clarification):
-    the domain owns them so both edges enforce the same rules and each maps the
-    ConsignmentError to its own shape. Limits are the shared column constants."""
+    """The Consignment's field and shape invariants: the domain owns them so both
+    edges enforce the same rules, each mapping the ConsignmentError to its own
+    shape (ADR 0002 clarification). Caps are the shared models.py constants."""
     if not request.parcel_weights:
         raise ConsignmentError(422, "a consignment must have at least one parcel")
     _reject_long("order number", request.order_number, ORDER_NUMBER_MAX)
@@ -117,12 +117,18 @@ def _reject_long(label: str, value: str, limit: int) -> None:
 
 
 def _round_weight(weight: Decimal) -> Decimal:
-    """Round a parcel weight to 2dp and reject one that is non-finite or whose
-    stored form would overflow its column. Non-finite is caught here too because
-    the domain owns weight validity, not just the parsing edge."""
+    """Round a parcel weight to 2dp. Non-finite is rejected here too - the domain
+    owns weight validity, not just the parsing edge. quantize itself raises on a
+    magnitude past the decimal context precision, so a huge-but-finite weight
+    faults cleanly rather than escaping as an uncaught 500."""
     if not weight.is_finite():
         raise ConsignmentError(422, f"a parcel weight '{weight}' is not a number")
-    rounded = weight.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    try:
+        rounded = weight.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation as error:
+        raise ConsignmentError(
+            422, f"a parcel weight '{weight}' is out of range"
+        ) from error
     if len(str(rounded)) > PARCEL_WEIGHT_MAX:
         raise ConsignmentError(422, f"a parcel weight '{weight}' is out of range")
     return rounded
@@ -355,9 +361,8 @@ def create_consignment(
     if order_exists(session, request.order_number):
         raise ConsignmentError(409, "a consignment already exists for this order")
     _validate_request(request)
-    # Weights round to 2dp (the company's convention) here, once, so the derived
-    # consignment weight is always the sum of the stored parcel weights - no
-    # rounding drift that a carrier would reject.
+    # Rounded once so the derived total always equals the sum of the stored
+    # parcels (no drift a carrier would reject).
     weights = [_round_weight(weight) for weight in request.parcel_weights]
     warehouse = _resolve_warehouse(session, request.warehouse)
 

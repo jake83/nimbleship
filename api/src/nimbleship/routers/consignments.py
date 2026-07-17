@@ -44,9 +44,8 @@ class ParcelIn(BaseModel):
 
 class ConsignmentIn(BaseModel):
     # ASCII only: order numbers become Code 128 barcodes, whose encoder
-    # rejects anything outside Latin-1 (refuter finding, PR #6). Length caps are
-    # the shared column constants, so the JSON bound and the domain check (which
-    # also guards the legacy path) never drift (ADR 0002 clarification).
+    # rejects anything outside Latin-1 (refuter finding, PR #6). Length caps
+    # mirror models.py's shared constants.
     order_number: str = Field(
         min_length=1, max_length=ORDER_NUMBER_MAX, pattern=r"^[A-Za-z0-9_-]+$"
     )
