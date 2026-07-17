@@ -241,6 +241,7 @@ WAREHOUSE = {
     "address_lines": ["Unit 5, Trading Estate"],
     "postcode": "LE1 1AA",
     "country": "GB",
+    "timezone": "Europe/London",
 }
 
 

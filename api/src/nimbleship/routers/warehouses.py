@@ -5,9 +5,10 @@ data, not an event stream."""
 
 import datetime
 from typing import Annotated
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -37,8 +38,21 @@ class WarehouseIn(BaseModel):
     address_lines: list[str] = Field(min_length=1)
     postcode: str = Field(min_length=1, max_length=32)
     country: str = Field(min_length=2, max_length=3)
+    # IANA name driving the warehouse's local dispatch day (e.g. its manifest
+    # date). Required: a warehouse without a real timezone would silently fall
+    # back to UTC and misdate a near-midnight manifest.
+    timezone: str = Field(min_length=1, max_length=64)
     collection_days: CollectionDays = CollectionDays()
     holidays: list[HolidayIn] = []
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone_is_a_known_zone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(f"unknown timezone '{value}'") from error
+        return value
 
     @model_validator(mode="after")
     def _holiday_dates_are_unique(self) -> "WarehouseIn":
@@ -62,6 +76,7 @@ class WarehouseOut(BaseModel):
     address_lines: list[str]
     postcode: str
     country: str
+    timezone: str
     collection_days: CollectionDays
     holidays: list[HolidayOut]
 
@@ -77,6 +92,7 @@ def _warehouse_out(warehouse: Warehouse) -> WarehouseOut:
         address_lines=warehouse.address_lines,
         postcode=warehouse.postcode,
         country=warehouse.country,
+        timezone=warehouse.timezone,
         collection_days=(
             CollectionDays.model_validate(days, from_attributes=True)
             if days is not None
@@ -100,6 +116,7 @@ def _apply(session: Session, payload: WarehouseIn, warehouse: Warehouse) -> None
     warehouse.address_lines = payload.address_lines
     warehouse.postcode = payload.postcode
     warehouse.country = payload.country
+    warehouse.timezone = payload.timezone
     flags = payload.collection_days.model_dump()
     if warehouse.collection_days is None:
         warehouse.collection_days = WarehouseCollectionDay(**flags)

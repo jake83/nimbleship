@@ -237,6 +237,7 @@ def test_manifests_split_per_warehouse(
                     "address_lines": ["1 Dock Road"],
                     "postcode": "M1 1AA",
                     "country": "GB",
+                    "timezone": "Europe/London",
                 },
             ).status_code
             == 201

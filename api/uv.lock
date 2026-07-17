@@ -800,6 +800,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "reportlab" },
     { name = "sqlalchemy" },
+    { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -826,6 +827,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "reportlab", specifier = ">=5.0.0" },
     { name = "sqlalchemy", specifier = ">=2.0.51" },
+    { name = "tzdata", specifier = ">=2025.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.51.0" },
 ]
 

@@ -177,12 +177,21 @@ def send_manifest(
     consignments = manifest_consignments(session, manifest)
     config = carrier_config(session, manifest.carrier)
     warehouse_facts_value: dict[str, object] | None = None
+    # No warehouse = UTC; a named warehouse must resolve, or the manifest would
+    # go out missing its sender facts and misdated (its local day is unknown) -
+    # a data-integrity failure the send raises on rather than sends silently.
+    timezone = "UTC"
     if manifest.warehouse is not None:
         warehouse = session.execute(
             select(Warehouse).where(Warehouse.code == manifest.warehouse)
         ).scalar_one_or_none()
-        if warehouse is not None:
-            warehouse_facts_value = warehouse_facts(warehouse)
+        if warehouse is None:
+            raise ValueError(
+                f"manifest {manifest.id} names warehouse '{manifest.warehouse}', "
+                "which no longer exists; it cannot be sent"
+            )
+        warehouse_facts_value = warehouse_facts(warehouse)
+        timezone = warehouse.timezone
 
     def run(facts: dict[str, object], traffic_key: str) -> dict[str, object]:
         # Each rendered document's traffic is keyed to what it declares: a
@@ -223,7 +232,10 @@ def send_manifest(
             emitted.append((consignment, outputs))
     else:
         batch = run(
-            {"manifest": manifest_facts(manifest, consignments), "config": config},
+            {
+                "manifest": manifest_facts(manifest, consignments, timezone),
+                "config": config,
+            },
             f"manifest-{manifest.id}",
         )
         emitted = [(consignment, batch) for consignment in consignments]
