@@ -392,3 +392,34 @@ class LegacyConsignmentStaging(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class TrackingEvent(Base):
+    """A carrier tracking signal for an order (CONTEXT.md: Tracking Event) -
+    ingested from a source (a carrier or aggregator webhook) into a dedicated
+    store, kept separate from the internal OrderEvent timeline. Each carries the
+    source's raw status plus a normalised canonical status, so a downstream read
+    queries one vocabulary while the raw code survives for audit and remapping.
+    Idempotent on (source, external_id): a redelivered event is not re-stored."""
+
+    __tablename__ = "tracking_events"
+    __table_args__ = (UniqueConstraint("source", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_number: Mapped[str] = mapped_column(String(ORDER_NUMBER_MAX), index=True)
+    # The ingesting source (e.g. "voila"); one order can be tracked by several.
+    source: Mapped[str] = mapped_column(String(32))
+    # The source's own id for this event, the idempotency key for redelivery.
+    external_id: Mapped[str] = mapped_column(String(128))
+    source_shipment_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tracking_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The source's raw status code, kept verbatim for audit and remapping.
+    raw_status: Mapped[str] = mapped_column(String(64))
+    # The canonical status the raw code normalised to (unknown if unmapped).
+    status: Mapped[str] = mapped_column(String(32))
+    # When the event happened at the carrier; None if the source omits it.
+    event_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    raw: Mapped[dict[str, object]] = mapped_column(JSON)
