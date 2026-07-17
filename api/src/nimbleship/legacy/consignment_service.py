@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from nimbleship.domain.consignments import LABELLED_STATUSES
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import paperwork_service, soap, staging
 from nimbleship.models import (
@@ -95,15 +96,27 @@ def _mark_printed(request: soap.SoapRequest, session: Session) -> bytes:
     "printed" event per consignment on the append-only timeline. Returns a bare
     boolean true; faults on an unknown code, like the other code-taking ops.
     Every code resolves before any event is written, so one bad code faults the
-    whole batch."""
+    whole batch. A code repeated in one call is one print run, so it records one
+    event; a consignment with no label to print (a failed one) faults - printing
+    it is not a fact that can be true."""
     codes = request.string_array(request.operation, "consignmentCodes")
     if not codes:
         raise soap.SoapFault("markConsignmentsAsPrinted: no consignmentCodes")
     printed: list[Consignment] = []
+    seen: set[str] = set()
     for code in codes:
         if not code:
             raise soap.SoapFault("markConsignmentsAsPrinted: a blank consignmentCode")
-        printed.append(_resolve_consignment(code, session, "markConsignmentsAsPrinted"))
+        if code in seen:
+            continue
+        seen.add(code)
+        consignment = _resolve_consignment(code, session, "markConsignmentsAsPrinted")
+        if consignment.status not in LABELLED_STATUSES:
+            raise soap.SoapFault(
+                f"markConsignmentsAsPrinted: consignmentCode '{code}' "
+                f"(status {consignment.status}) has no label to print"
+            )
+        printed.append(consignment)
     for consignment in printed:
         session.add(
             OrderEvent(

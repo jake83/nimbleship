@@ -1747,6 +1747,42 @@ def test_mark_printed_faults_with_no_codes(
     assert "no consignmentCodes" in response.text
 
 
+def test_mark_printed_dedupes_a_repeated_code(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # The same consignment named twice in one print run is one print: one event.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="dispatched")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001", "NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 200
+    assert _event_stages(app, "95000254580").count("printed") == 1
+
+
+def test_mark_printed_faults_on_a_consignment_with_no_label(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A label_failed consignment has no label, so "printed" cannot be a true
+    # fact about it; recording one would forge the timeline.
+    _seed_staged_consignment(app, "95000254580", "NS0000001", status="label_failed")
+
+    response = client.post(
+        "/ConsignmentService",
+        content=_codes_body("markConsignmentsAsPrinted", ["NS0000001"]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+
+    assert response.status_code == 500
+    assert "has no label to print" in response.text
+    assert _event_stages(app, "95000254580") == []
+
+
 def test_delete_consignment_acknowledges_without_changing_state(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
