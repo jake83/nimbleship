@@ -23,6 +23,11 @@ RECIPIENT_NAME_MAX = 255
 POSTCODE_MAX = 32
 COUNTRY_CODE_MAX = 3
 PARCEL_WEIGHT_MAX = 16
+# Column width for the derived max_dimension_cm / max_girth_cm decimal strings.
+# Girth is arithmetic (longest + 2*(sum - longest)), so it can outgrow this at a
+# large-but-in-column input; a derived value that would overflow degrades to None
+# rather than reaching Postgres as an uncaught StringDataRightTruncation.
+DIMENSION_STR_MAX = 16
 # Tracking Event caps for source-supplied fields. The columns below and
 # domain.tracking's length guard both reference these, so a payload too long
 # for a column is rejected as a clean 422 rather than reaching the DB as an
@@ -56,7 +61,15 @@ class Consignment(Base):
     # The consignment's largest single dimension in cm (a decimal string, like
     # a parcel weight); kept so dry-run replays the dimension check. None when no
     # dimension was supplied (JSON orders, or a WMS order sending only sentinels).
-    max_dimension_cm: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    max_dimension_cm: Mapped[str | None] = mapped_column(
+        String(DIMENSION_STR_MAX), nullable=True
+    )
+    # The consignment's maximum parcel girth in cm (longest side plus twice the
+    # other two, maxed across parcels); kept, like max_dimension_cm, so dry-run
+    # replays the girth check. None when no parcel carried usable dimensions.
+    max_girth_cm: Mapped[str | None] = mapped_column(
+        String(DIMENSION_STR_MAX), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(32))
     carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
     service: Mapped[str | None] = mapped_column(String(64), nullable=True)

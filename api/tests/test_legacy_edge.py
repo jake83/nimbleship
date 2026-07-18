@@ -762,6 +762,68 @@ def test_dry_run_replays_a_legacy_orders_derived_max_dimension(
     assert result["draft_service"] is None
 
 
+_PARCEL_GIRTH_450 = (
+    b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>',
+    b'<parcelWeight xsi:type="xsd:double">1.3</parcelWeight>'
+    b'<parcelHeight xsi:type="xsd:double">150</parcelHeight>'
+    b'<parcelWidth xsi:type="xsd:double">100</parcelWidth>'
+    b'<parcelDepth xsi:type="xsd:double">50</parcelDepth>',
+)
+
+
+def test_dry_run_replays_a_legacy_orders_derived_max_girth(
+    app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
+) -> None:
+    # A 150x100x50 parcel has girth 150 + 2*(300-150) = 450. It allocates against
+    # the limit-free demo rulebook; a draft adding a 300cm girth cap must exclude
+    # it on replay - which needs the derived girth persisted, not re-derived as
+    # absent.
+    _create_depot1(client)
+    body = _fixture("create_consignments_request.xml").replace(*_PARCEL_GIRTH_450)
+    client.post(
+        "/ConsignmentService",
+        content=body,
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    with app.state.session_factory() as session:
+        row = session.execute(select(LegacyConsignmentStaging)).scalars().one()
+        code = row.consignment_code
+        assert isinstance(code, str)
+    _allocate(client, wms_auth, code)
+    client.post(
+        "/ConsignmentService",
+        content=_paperwork_body([code]),
+        headers={"Content-Type": "text/xml"},
+        auth=wms_auth,
+    )
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "DROPOUT-STD",
+                "carrier": "dropout",
+                "name": "Drop Out Standard",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "4.50",
+                "tie_break_order": 1,
+                "service_groups": ["ECONOMY"],
+                "max_girth_cm": "300",
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+
+    response = client.post(f"/api/rulebook/versions/{version}/dry-run", json={})
+
+    assert response.status_code == 200
+    [result] = response.json()["results"]
+    # The 450cm girth was replayed, so the 300cm-capped draft excludes it.
+    assert result["draft_service"] is None
+
+
 def test_paperwork_faults_on_a_non_finite_parcel_weight(
     app: FastAPI, client: TestClient, wms_auth: tuple[str, str]
 ) -> None:
