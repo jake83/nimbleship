@@ -201,6 +201,7 @@ def _consignment_request(
         proposition=None,
         parcel_weights=[_weight(parcel) for parcel in parcel_list],
         max_dimension_cm=_max_dimension_cm(created),
+        max_girth_cm=_max_girth_cm(created),
         warehouse=_optional_str(created.get("warehouse")),
         force_service=None,
         accepted_service_groups=accepted_service_groups,
@@ -226,6 +227,28 @@ def _max_dimension_cm(created: Mapping[str, object]) -> Decimal | None:
                 if dimension is not None:
                     candidates.append(dimension)
     return max(candidates) if candidates else None
+
+
+def _max_girth_cm(created: Mapping[str, object]) -> Decimal | None:
+    """The consignment's maximum parcel girth: per parcel, the longest side plus
+    twice the other two (longest + 2*(sum - longest)), maxed across parcels. A
+    missing or sentinel-zero dimension counts as 0 - an under-estimate that keeps
+    the check optimistic (ADR 0007) rather than faulting - and None means no
+    parcel carried any usable dimension at all."""
+    max_girth = Decimal(0)
+    parcels = created.get("parcels")
+    if isinstance(parcels, list):
+        for parcel in parcels:
+            if not isinstance(parcel, dict):
+                continue
+            dims = [
+                _positive_decimal(parcel.get(key)) or Decimal(0)
+                for key in ("height_cm", "width_cm", "depth_cm")
+            ]
+            longest = max(dims)
+            girth = longest + 2 * (sum(dims) - longest)
+            max_girth = max(max_girth, girth)
+    return max_girth if max_girth > 0 else None
 
 
 def _positive_decimal(value: object) -> Decimal | None:

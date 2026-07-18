@@ -154,6 +154,11 @@ def _shipment_from(session: Session, consignment: Consignment) -> Shipment:
             if consignment.max_dimension_cm is not None
             else None
         ),
+        max_girth_cm=(
+            Decimal(consignment.max_girth_cm)
+            if consignment.max_girth_cm is not None
+            else None
+        ),
         shipping_areas=resolve_shipping_areas(
             session, consignment.postcode, consignment.destination_country
         ),

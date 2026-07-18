@@ -89,6 +89,9 @@ class ConsignmentRequest:
     # ADR 0007); the Legacy Interface derives it from per-parcel dimensions, the
     # JSON API sends none.
     max_dimension_cm: Decimal | None = None
+    # The consignment's maximum parcel girth in cm; derived and optional the same
+    # way as max_dimension_cm.
+    max_girth_cm: Decimal | None = None
     # Service Group codes the order accepts (ADR 0012); the Legacy Interface
     # supplies them, the JSON API leaves them empty (it filters by proposition).
     accepted_service_groups: list[str] = field(default_factory=list)
@@ -397,6 +400,7 @@ def create_consignment(
         parcel_count=len(request.parcel_weights),
         proposition=request.proposition,
         max_dimension_cm=request.max_dimension_cm,
+        max_girth_cm=request.max_girth_cm,
         shipping_areas=shipping_areas,
         warehouse=request.warehouse,
         accepted_service_groups=request.accepted_service_groups,
@@ -449,6 +453,9 @@ def create_consignment(
             str(request.max_dimension_cm)
             if request.max_dimension_cm is not None
             else None
+        ),
+        max_girth_cm=(
+            str(request.max_girth_cm) if request.max_girth_cm is not None else None
         ),
         status="allocated" if selected else "rejected",
         carrier=selected.carrier if selected else None,

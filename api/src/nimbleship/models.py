@@ -57,6 +57,10 @@ class Consignment(Base):
     # a parcel weight); kept so dry-run replays the dimension check. None when no
     # dimension was supplied (JSON orders, or a WMS order sending only sentinels).
     max_dimension_cm: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The consignment's maximum parcel girth in cm (longest side plus twice the
+    # other two, maxed across parcels); kept, like max_dimension_cm, so dry-run
+    # replays the girth check. None when no parcel carried usable dimensions.
+    max_girth_cm: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(32))
     carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
     service: Mapped[str | None] = mapped_column(String(64), nullable=True)
