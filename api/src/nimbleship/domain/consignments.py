@@ -366,7 +366,7 @@ def _book_with_carrier(
         )
         # Persist explicitly: raising unwinds the caller before its normal commit,
         # and a failure's timeline must survive the 502 (the traffic already
-        # committed in its own transaction above). A duplicate that won the row is
+        # committed by the default recorder above). A duplicate that won the row is
         # surfaced as the success path's 409 by the default persister.
         side_effects.persist_failure()
         raise ConsignmentError(502, str(error)) from error

@@ -96,10 +96,12 @@ pitch.
     client-minted allocations) on separate sessions so they survive a crash - the
     opposite of what replay needs. Rather than let those commit and discard a
     scratch database (which makes safety a deployment discipline and mixes two
-    isolation models), the traffic recorder and the SSCC source become injected
-    collaborators defaulting to today's real committers; shadow overrides them
-    with an in-memory traffic sink and a recorded-SSCC source, keeping the one
-    rolled-back-savepoint isolation model across every slice.
+    isolation models), the transaction-escaping writes become injected
+    collaborators defaulting to today's real committers, so shadow overrides them
+    with savepoint-contained ones and keeps the one rolled-back-savepoint isolation
+    model across every slice. Rung 1 injects the traffic recorder and the
+    failure persister (both booking commits); the SSCC source is designed the same
+    way and injected in the fed-SSCC rung (Dachser).
   - **Recorded identifiers, uniformly.** Client-minted SSCCs (minted before the
     call, so NimbleShip's would differ from the incumbent's) are fed from the
     golden, exactly as carrier-returned barcodes are - the diff stays an exact
