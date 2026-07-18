@@ -127,9 +127,24 @@ FedEx -> PalletForce, Fagans for ftp_upload, Dachser as its own mini-epic,
 DPD/PalletTrack reserved as the AI onboarding flow's first real customers.
 MetaPack explicitly excluded (legacy edge, not a definition).
 
-## Phase 3 - Integration engine and real carriers
+## Phase 3 - Integration engine and real carriers (DELIVERED 2026-07-18)
 
-Goal: the spec language demonstrably expresses reality.
+Delivered: the integration engine (render + execute, golden-replay traffic), the
+carrier-definition spec language with authoring-vs-load validation (ADR 0009),
+the six-rung proving ladder (DropOut, Furdeco, FedEx, PalletForce, Fagans,
+Dachser - each with a definition and tests), the plugin seams in use
+(`oauth_client_credentials`; the number-range/SSCC and consignment-number field
+plugins; the ftp/sftp uploaders), Manifests as a first-class concept with
+job-queue retries and warehouse-local dates, and Tracking Events (store + Voila
+webhook + read API, ADR 0014). Every carried-forward hardening item below is
+resolved except stalled send-job recovery (Phase 7). Two items carry forward as
+genuinely open: carrier operations as toggleable capabilities, and direct-carrier
+tracking sources (blocked on a real webhook spec - the reference only ever
+ingested Voila; the adapter seam is a drop-in the moment one exists). The two
+plugin extension points ADR 0009 names but no carrier yet needs (pre-booking
+checks, post-booking transforms) and DigiDocs stay deferred by design.
+
+Original goal: the spec language demonstrably expresses reality.
 
 - Integration engine v1 executing carrier definitions; definitions are
   versioned data on the draft/test/publish rails.
@@ -141,9 +156,12 @@ Goal: the spec language demonstrably expresses reality.
 - Manifest as a first-class concept (the trigger is the WMS dispatch
   confirmation; the format is per-carrier), with retries via the job queue.
 - Carrier operations as toggleable capabilities (manual manifest resend,
-  availability calendar upload) - generic tools, no one-off pages.
+  availability calendar upload) - generic tools, no one-off pages. (OPEN - not
+  yet built; carries forward.)
 - Tracking Events: generic store and ingestion, Voila webhook as the first
-  source adapter, direct-carrier sources later.
+  source adapter, direct-carrier sources later. (Store, Voila webhook, and read
+  API delivered; a direct-carrier source is OPEN, blocked on a real webhook spec;
+  the tracking UX stays deferred.)
 
 Carried forward (manifests + job queue, PR #34):
 
@@ -152,11 +170,11 @@ Carried forward (manifests + job queue, PR #34):
   synthesized from the carrier's own recent consignments (a fan-out manifest
   gates per shipment, like a book op), so a broken manifest mapping is caught
   at publish, not at trailer-close. The `_render_gate` docstring is corrected.
-- Warehouse-local manifest date semantics: the manifest date is the UTC
-  date of manifest creation, so a scan-out near local midnight declares the
-  wrong day. Needs a Warehouse timezone (a domain decision), and covers the
-  related silent omission of warehouse facts when a referenced Warehouse row
-  is absent at send time.
+- Warehouse-local manifest date semantics (resolved): `Warehouse.timezone` is a
+  required field and `manifest_facts` computes the date in the warehouse's local
+  zone, so a near-midnight scan-out declares the day the warehouse observes. The
+  related gap is closed too: `send_manifest` faults loudly when a manifest names a
+  Warehouse row that no longer exists, rather than silently omitting its facts.
 - Stalled send-job recovery: a worker killed mid-send leaves the job in
   Procrastinate's `doing` state forever and the Manifest `pending` with no
   alarm. Wire stalled-job requeue (heartbeat + periodic reset); production
@@ -164,13 +182,11 @@ Carried forward (manifests + job queue, PR #34):
 
 Carried forward (ftp_upload + Fagans, PR #36):
 
-- CSV/formula injection defence: the CSV renderer writes unconstrained
-  fields (recipient name, address) raw, so a value starting with `=`/`+`/
-  `-`/`@` would evaluate if a human opened the file in a spreadsheet. Fagans
-  machine-parses its file, so a blanket prefix-with-quote in the shared
-  renderer would corrupt real deliveries - the mitigation must be
-  per-carrier/opt-in (a definition flag for a human-opened CSV carrier) or
-  input-level, decided when the first such carrier lands.
+- CSV/formula injection defence (resolved): the shared CSV renderer neutralises
+  a field starting with `=`/`+`/`-`/`@` (and tab/CR) by prefixing a single quote,
+  applied on every field. The mitigation is universal rather than a per-carrier
+  flag - a machine-parsing carrier reads the quote back harmlessly - so it needed
+  no per-carrier opt-in.
 - Unexecutable upload transports (resolved, PR #39): `sftp_upload` now has a
   paramiko backend, and the executor selects backends from a
   transport->uploader registry (matching the auth/field plugin pattern). A
