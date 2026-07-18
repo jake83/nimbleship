@@ -374,8 +374,9 @@ _SSCC_DEFINITION = {
 
 
 def _publish_sscc_econ_carrier(client: TestClient) -> None:
-    # Publish ssccarrier as the sole ECONOMY-group service so the fixture order's
-    # ECONOMY-filtered allocate selects it - the booking carrier the guard refuses.
+    # Publish ssccarrier (client-minted SSCCs + base64_pdf label) as the sole
+    # ECONOMY-group service, so the fixture order's ECONOMY-filtered allocate
+    # selects it.
     client.put(
         "/api/carriers/ssccarrier/config",
         json={
@@ -412,13 +413,14 @@ def _publish_sscc_econ_carrier(client: TestClient) -> None:
     assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
 
 
-def test_a_booking_carrier_is_a_divergence_not_a_leak(
+def test_an_sscc_carrier_without_fed_sscc_is_refused_not_a_leak(
     app: FastAPI, client: TestClient
 ) -> None:
-    # A booking carrier (SSCC mint + carrier call) selected by a replayed order:
-    # the slice must refuse it and mint nothing, since those escape the savepoint.
+    # An SSCC carrier whose recording carries no SSCCs to feed can't be replayed
+    # faithfully: the slice refuses it (rather than mint, which would escape the
+    # savepoint) and leaves nothing behind.
     _publish_sscc_econ_carrier(client)
-    recording = _paperwork_recording(_INCUMBENT_PARCELS)
+    recording = _paperwork_recording(_INCUMBENT_PARCELS)  # no incumbent_sscc
 
     with app.state.session_factory() as session:
         diff = replay_paperwork(session, recording)
@@ -775,3 +777,49 @@ def test_a_malformed_incumbent_label_is_a_divergence_not_a_crash(
         assert not diff.matched
         assert diff.nimbleship.error is not None
         assert "not valid base64" in diff.nimbleship.error
+
+
+# --- Live-API carrier slice, rung 3: fed SSCCs (client-minted allocations).
+_SSCC_LABEL_PDF = b"%PDF-1.4 sscc carrier label\n%%EOF\n"
+_FED_SSCC = ("001234567800000019", "001234567800000026")
+_FED_SSCC_PARCELS = (
+    "95000254580-parcel-1:001234567800000019,95000254580-parcel-2:001234567800000026"
+)
+
+
+def test_an_sscc_carrier_replays_with_fed_sscc_minting_nothing(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The recording feeds the incumbent's client-minted SSCCs, so replay never mints
+    # (no number-range code burned, no separate-session commit): the Parcels String
+    # uses the fed SSCCs and the base64_pdf label byte-diffs, all inside the
+    # rolled-back savepoint. CarrierNumberSequence staying empty proves nothing was
+    # minted.
+    _publish_sscc_econ_carrier(client)
+    label_b64 = base64.b64encode(_SSCC_LABEL_PDF).decode()
+    recording = GoldenRecording(
+        order_number="95000254580",
+        create_consignments=_fixture("create_consignments_request.xml"),
+        incumbent_code=_INCUMBENT_CODE,
+        allocate_consignments=_allocate_body([_INCUMBENT_CODE], ["ECONOMY"]),
+        incumbent=AllocationOutcome(allocated=True, carrier="ssccarrier"),
+        incumbent_parcels_string=_FED_SSCC_PARCELS,
+        carrier_book_response=CarrierBookResponse(
+            status=200, body=json.dumps({"label_pdf": label_b64})
+        ),
+        incumbent_label_base64=label_b64,
+        incumbent_sscc=_FED_SSCC,
+    )
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.error is None
+    assert diff.nimbleship.parcels_string == _FED_SSCC_PARCELS
+    assert diff.nimbleship.label == _SSCC_LABEL_PDF
+    assert diff.matched
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(CarrierNumberSequence)).scalars().all() == []
+        assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(CarrierTraffic)).scalars().all() == []

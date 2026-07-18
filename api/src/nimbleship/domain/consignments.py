@@ -262,19 +262,24 @@ def _mint_parcel_allocations(
 
 type TrafficRecorder = Callable[[str, str, StepRecord], None]
 type FailurePersister = Callable[[], None]
+type AllocationMinter = Callable[
+    [Session, Consignment, list[AllocationSpec], dict[str, object]], None
+]
 
 
 @dataclass(frozen=True)
 class BookingSideEffects:
     """The booking path's durability that escapes the caller's transaction: each
-    step's carrier traffic, and a booking/label failure's audit rows. Both must
-    survive the re-raise that unwinds the request before its normal commit, so
-    production commits them out of band. Injectable as one collaborator so shadow
-    replay keeps every such write inside its rolled-back savepoint - discarding
-    traffic, not committing failures - instead of leaking past it (ADR 0015)."""
+    step's carrier traffic, a booking/label failure's audit rows, and (for SSCC
+    carriers) the client-minted parcel allocations. Each commits out of band in
+    production so it survives the re-raise or a crash. Injectable as one
+    collaborator so shadow replay keeps every such write inside its rolled-back
+    savepoint - discarding traffic, not committing failures, feeding the recorded
+    SSCCs rather than minting new ones - instead of leaking past it (ADR 0015)."""
 
     record_traffic: TrafficRecorder
     persist_failure: FailurePersister
+    mint_allocations: AllocationMinter
 
 
 def _committing_side_effects(session: Session) -> BookingSideEffects:
@@ -282,7 +287,7 @@ def _committing_side_effects(session: Session) -> BookingSideEffects:
     the moment the call returns, so no later failure can discard the audit trail of
     a call that really reached the carrier (refuter, PR #30). Failure: the audit
     rows flushed and committed so they survive the re-raise; a duplicate winning the
-    row surfaces as the success path's 409."""
+    row surfaces as the success path's 409. Allocations: minted for real."""
 
     def record_traffic(carrier: str, order_number: str, step: StepRecord) -> None:
         with Session(session.get_bind()) as traffic_session:
@@ -308,7 +313,9 @@ def _committing_side_effects(session: Session) -> BookingSideEffects:
             ) from dup
 
     return BookingSideEffects(
-        record_traffic=record_traffic, persist_failure=persist_failure
+        record_traffic=record_traffic,
+        persist_failure=persist_failure,
+        mint_allocations=_mint_parcel_allocations,
     )
 
 
@@ -587,7 +594,7 @@ def create_consignment(
             # hazard _book_with_carrier guards the same way).
             with session.no_autoflush:
                 config = carrier_config(session, selected.carrier or "")
-            _mint_parcel_allocations(session, consignment, book.allocate, config)
+            effects.mint_allocations(session, consignment, book.allocate, config)
         outputs: dict[str, object] = {}
         if book.steps:
             outputs = _book_with_carrier(
