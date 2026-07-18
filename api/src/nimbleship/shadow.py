@@ -266,11 +266,9 @@ class PaperworkDiff:
 
 def _savepoint_side_effects(recording: GoldenRecording) -> BookingSideEffects:
     """Shadow's booking side effects, all kept inside the rolled-back savepoint
-    (ADR 0015): discard carrier traffic, do not commit a failure (its raised error
-    still becomes a divergence), and feed the incumbent's recorded SSCCs rather than
-    minting new ones - so a client-minted-allocation carrier replays without burning
-    a number-range code or committing on a separate session, and its Parcels String
-    diffs exactly."""
+    (ADR 0015): discard carrier traffic, don't commit a failure (its raised error
+    still becomes a divergence), and feed the recorded SSCCs rather than mint new
+    ones - so a minting carrier replays without a separate-session commit."""
 
     def discard_traffic(carrier: str, order_number: str, step: StepRecord) -> None:
         pass
@@ -284,8 +282,11 @@ def _savepoint_side_effects(recording: GoldenRecording) -> BookingSideEffects:
         specs: list[AllocationSpec],
         config: dict[str, object],
     ) -> None:
+        # strict=True enforces _unfeedable_mint's one-SSCC-per-parcel invariant at
+        # the point it's consumed: a drift faults loudly, never silently reverting
+        # to the internal Parcel Barcode this feeding exists to replace.
         for parcel, sscc in zip(
-            consignment.parcels, recording.incumbent_sscc, strict=False
+            consignment.parcels, recording.incumbent_sscc, strict=True
         ):
             parcel.carrier_barcode = sscc
 
@@ -417,15 +418,11 @@ def _replay_paperwork(
 def _unfeedable_mint(
     session: Session, code: str, recording: GoldenRecording
 ) -> str | None:
-    """The selected carrier's name if its book operation mints client-side
-    allocations (SSCC) but the recording doesn't carry one SSCC per parcel to feed,
-    else None. Shadow feeds recorded SSCCs instead of minting (minting would commit
-    on a separate session the savepoint can't roll back and burn a number-range
-    code); a wrong count - including none - can't replay the carrier faithfully and
-    would silently fall back to the internal Parcel Barcode, so it refuses rather
-    than mis-diagnose the resulting mismatch as a product divergence (ADR 0015). A
-    carrier call by itself is fine - its traffic goes to the in-memory sink inside
-    the savepoint - so http-book carriers replay."""
+    """The selected carrier's name if its book operation mints SSCCs but the
+    recording doesn't carry one per parcel to feed, else None. A wrong count would
+    silently fall back to the internal Parcel Barcode, so it refuses rather than
+    mis-diagnose that as a product divergence (ADR 0015); a carrier call alone is
+    fine (its traffic goes to the in-memory sink), so http-book carriers replay."""
     selected = paperwork_service.shadow_allocate(session, code).selected
     if selected is None:
         return None

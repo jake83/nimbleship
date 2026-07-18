@@ -417,13 +417,10 @@ def _publish_sscc_econ_carrier(client: TestClient) -> None:
 def test_an_sscc_carrier_without_one_sscc_per_parcel_is_refused_not_a_leak(
     app: FastAPI, client: TestClient
 ) -> None:
-    # An SSCC carrier needs one recorded SSCC per parcel to replay (the fixture order
-    # has two). A recording with the wrong count - none, or too few - can't be fed
-    # faithfully; the slice refuses it (rather than mint, which would escape the
-    # savepoint, or silently fall back to internal barcodes and mis-diagnose the
-    # mismatch as a product divergence) and leaves nothing behind.
+    # A wrong SSCC count (none, short, or over the fixture's two parcels) is refused,
+    # not fed partially or leaked - see _unfeedable_mint for why.
     _publish_sscc_econ_carrier(client)
-    for sscc in ((), ("001234567800000019",)):  # empty, then one short of two
+    for sscc in ((), ("A",), ("A", "B", "C")):  # empty, one short, one over
         recording = replace(
             _paperwork_recording(_INCUMBENT_PARCELS), incumbent_sscc=sscc
         )
