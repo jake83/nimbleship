@@ -236,6 +236,7 @@ export function DraftEditorPage() {
   const [rows, setRows] = useState<Row[] | null>(null)
   const [seedLabel, setSeedLabel] = useState<string | null>(null)
   const [author, setAuthor] = useState('')
+  const [description, setDescription] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -299,6 +300,7 @@ export function DraftEditorPage() {
       const created = await createDraft(
         rows!.map((row) => toDeclaration(row.service)),
         author.trim(),
+        description.trim() === '' ? null : description.trim(),
       )
       navigate(`/rulebook/versions/${created.version}`)
     } catch (caught) {
@@ -386,6 +388,16 @@ export function DraftEditorPage() {
             {author !== '' && authorError && (
               <p className="text-xs text-destructive">{authorError}</p>
             )}
+          </div>
+          <div className="flex max-w-md flex-col gap-1.5">
+            <Label htmlFor="draft-description">Description (optional)</Label>
+            <Input
+              id="draft-description"
+              value={description}
+              maxLength={280}
+              placeholder="Why this version exists"
+              onChange={(event) => setDescription(event.target.value)}
+            />
           </div>
           {saveError !== null && (
             <p role="alert" className="text-sm text-destructive">

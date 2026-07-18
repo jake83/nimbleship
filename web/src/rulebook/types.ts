@@ -28,6 +28,7 @@ export interface VersionSummary {
   version: number
   status: VersionStatus
   author: string
+  description: string | null
   created_at: string
 }
 

@@ -61,13 +61,60 @@ def test_versions_lists_seed_and_new_draft(client: TestClient) -> None:
 
     created = client.post("/api/rulebook/drafts", json=DRAFT_WITH_US)
     assert created.status_code == 201
-    assert created.json() == {"version": 2, "status": "draft", "author": "jake"}
+    assert created.json() == {
+        "version": 2,
+        "status": "draft",
+        "author": "jake",
+        "description": None,
+    }
 
     versions = client.get("/api/rulebook/versions").json()
     assert [(v["version"], v["status"]) for v in versions] == [
         (1, "published"),
         (2, "draft"),
     ]
+
+
+def test_a_draft_description_round_trips(client: TestClient) -> None:
+    # The optional rationale note (ADR 0017) is stored and surfaced on the version,
+    # so a later reader sees why it exists, not just a diff.
+    client.get("/api/rulebook/active")
+    draft = {**DRAFT_WITH_US, "description": "Add US shipping for the Q4 launch"}
+
+    created = client.post("/api/rulebook/drafts", json=draft)
+
+    assert created.status_code == 201
+    version = created.json()["version"]
+    assert created.json()["description"] == "Add US shipping for the Q4 launch"
+    fetched = client.get(f"/api/rulebook/versions/{version}").json()
+    assert fetched["description"] == "Add US shipping for the Q4 launch"
+    listed = client.get("/api/rulebook/versions").json()
+    assert next(v for v in listed if v["version"] == version)["description"] == (
+        "Add US shipping for the Q4 launch"
+    )
+
+
+def test_a_blank_description_normalises_to_none(client: TestClient) -> None:
+    # A version is immutable, so a whitespace-only note would be a permanent empty
+    # line no edit could remove; the write path strips it to None instead of storing
+    # it (matters for a direct API caller that skips the web client's own trim).
+    client.get("/api/rulebook/active")
+    draft = {**DRAFT_WITH_US, "description": "   "}
+
+    created = client.post("/api/rulebook/drafts", json=draft)
+
+    assert created.status_code == 201
+    assert created.json()["description"] is None
+
+
+def test_overlong_description_is_rejected_not_a_server_error(
+    client: TestClient,
+) -> None:
+    draft = {**DRAFT_WITH_US, "description": "x" * 281}
+
+    response = client.post("/api/rulebook/drafts", json=draft)
+
+    assert response.status_code == 422
 
 
 def test_get_single_version_returns_metadata_and_services(

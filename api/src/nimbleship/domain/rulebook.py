@@ -111,15 +111,26 @@ def get_version(session: Session, version: int) -> RulebookVersion | None:
     return session.get(RulebookVersion, version)
 
 
+def description_of(row: RulebookVersion) -> str | None:
+    """The version's optional rationale note (ADR 0017), stored in the data blob -
+    provenance an operator reads instead of reverse-engineering the diff."""
+    value = (row.data or {}).get("description")
+    return value if isinstance(value, str) else None
+
+
 def create_draft(
-    session: Session, services: list[ServiceDeclaration], author: str
+    session: Session,
+    services: list[ServiceDeclaration],
+    author: str,
+    description: str | None = None,
 ) -> RulebookVersion:
     """Create an immutable draft version. Validation (unique codes and
     tie-break orders) happens by constructing the Rulebook model before
     anything is stored; the version number is only meaningful once saved.
     Proposition references are checked against the catalogue here, at
     authoring time, so a typo fails the author instead of silently never
-    matching any shipment at allocation time."""
+    matching any shipment at allocation time. An optional description records
+    why the version exists (ADR 0017)."""
     _seed_if_fresh(session)
     Rulebook(version=0, services=services)
     named = {code for service in services for code in service.propositions}
@@ -132,11 +143,16 @@ def create_draft(
         raise ValueError(
             "unknown service group codes: " + ", ".join(sorted(unknown_groups))
         )
-    row = RulebookVersion(
-        status="draft",
-        author=author,
-        data={"services": [s.model_dump(mode="json") for s in services]},
-    )
+    data: dict[str, object] = {
+        "services": [s.model_dump(mode="json") for s in services]
+    }
+    # Normalise here, at the one write path, so a blank or whitespace note never
+    # persists: versions are immutable, so a stored "" would be a permanent empty
+    # line no edit could remove.
+    note = description.strip() if description is not None else ""
+    if note:
+        data["description"] = note
+    row = RulebookVersion(status="draft", author=author, data=data)
     session.add(row)
     session.flush()
     return row
