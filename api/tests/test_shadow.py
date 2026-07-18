@@ -2,6 +2,7 @@
 create+allocate SOAP plus the incumbent's outcome is replayed through the real
 legacy edge, side-effect-free, and NimbleShip's allocation is diffed against it."""
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from nimbleship.models import (
 )
 from nimbleship.shadow import (
     AllocationOutcome,
+    CarrierBookResponse,
     GoldenRecording,
     replay_all,
     replay_allocation,
@@ -483,3 +485,114 @@ def test_paperwork_no_staged_consignment_is_isolated(
     assert not diff.matched
     assert diff.nimbleship.error is not None
     assert "no staged consignment" in diff.nimbleship.error
+
+
+# --- Live-API carrier slice, rung 1: Furdeco (http-book, local-render, no SSCC).
+_FURDECO_EXAMPLE = Path(__file__).parent.parent / "examples" / "furdeco.definition.json"
+_FURDECO_BOOK_RESPONSE = (
+    "<response>"
+    "<success>Order Created</success>"
+    "<carrier_reference>F12345678910</carrier_reference>"
+    "<barcodes>001122334455667688, 123456789123456789</barcodes>"
+    "</response>"
+)
+_FURDECO_TRACKING = "F12345678910"
+_FURDECO_PARCELS = (
+    "95000254580-parcel-1:001122334455667688,95000254580-parcel-2:123456789123456789"
+)
+
+
+def _publish_furdeco_econ(client: TestClient) -> None:
+    # Furdeco as the sole ECONOMY-group service, so the fixture order's
+    # ECONOMY-filtered allocate selects it - a real booking carrier the slice
+    # replays (http call, local-render label, no client-side mint).
+    _seed_warehouse(client)
+    client.put(
+        "/api/carriers/furdeco/config",
+        json={
+            "api_key": "SECRET-KEY",
+            "base_url": "https://api.furdeco.example/orders",
+            "trading_name": "Acme Trading",
+        },
+    )
+    definition = json.loads(_FURDECO_EXAMPLE.read_text())
+    version = client.post(
+        "/api/carriers/furdeco/definitions/drafts",
+        json={"author": "jake", "definition": definition},
+    ).json()["version"]
+    published = client.post(
+        f"/api/carriers/furdeco/definitions/versions/{version}/publish"
+    )
+    assert published.status_code == 200, published.text
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "FURDECO-STD",
+                "carrier": "furdeco",
+                "name": "Furdeco Std",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "5.00",
+                "tie_break_order": 1,
+                "service_groups": ["ECONOMY"],
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+
+def _furdeco_recording(tracking: str | None, parcels: str | None) -> GoldenRecording:
+    return GoldenRecording(
+        order_number="95000254580",
+        create_consignments=_fixture("create_consignments_request.xml"),
+        incumbent_code=_INCUMBENT_CODE,
+        allocate_consignments=_allocate_body([_INCUMBENT_CODE], ["ECONOMY"]),
+        incumbent=AllocationOutcome(allocated=True, carrier="furdeco"),
+        incumbent_parcels_string=parcels,
+        incumbent_tracking_reference=tracking,
+        carrier_book_response=CarrierBookResponse(
+            status=200, body=_FURDECO_BOOK_RESPONSE
+        ),
+    )
+
+
+def test_a_matching_http_book_carrier_is_no_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A booking carrier's recorded response replays through the real book step:
+    # NimbleShip's parsed tracking reference and carrier barcodes match, it renders
+    # a label, and no CarrierTraffic escapes the savepoint (in-memory sink).
+    _publish_furdeco_econ(client)
+    recording = _furdeco_recording(_FURDECO_TRACKING, _FURDECO_PARCELS)
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.error is None
+    assert diff.nimbleship.label_produced
+    assert diff.nimbleship.parcels_string == _FURDECO_PARCELS
+    assert diff.nimbleship.tracking_reference == _FURDECO_TRACKING
+    assert diff.matched
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(CarrierTraffic)).scalars().all() == []
+        assert session.execute(select(Consignment)).scalars().all() == []
+
+
+def test_a_differing_tracking_reference_is_a_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The tracking reference is its own diff dimension: a byte-perfect everything
+    # else must still diverge when NimbleShip's extracted reference disagrees.
+    _publish_furdeco_econ(client)
+    recording = _furdeco_recording("A-DIFFERENT-REF", _FURDECO_PARCELS)
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.tracking_reference == _FURDECO_TRACKING  # NimbleShip's real
+    assert diff.nimbleship.parcels_string == _FURDECO_PARCELS
+    assert not diff.matched

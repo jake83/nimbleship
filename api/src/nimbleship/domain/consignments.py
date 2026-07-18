@@ -6,7 +6,7 @@ carrying the status and message each edge maps to its own error shape."""
 
 import base64
 import binascii
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
@@ -260,6 +260,34 @@ def _mint_parcel_allocations(
         mint_session.commit()
 
 
+# How a booking step's traffic is persisted: (carrier, order_number, record).
+# Injectable so shadow replay can swap the committing default for an in-memory
+# sink and stay inside its rolled-back savepoint (ADR 0015).
+type CarrierTrafficRecorder = Callable[[str, str, StepRecord], None]
+
+
+def _committing_traffic_recorder(session: Session) -> CarrierTrafficRecorder:
+    """The default recorder: each step's traffic committed in its own transaction
+    the moment the call returns, so no later failure of the request can discard the
+    audit trail of a call that really reached the carrier (refuter, PR #30)."""
+
+    def record(carrier: str, order_number: str, step: StepRecord) -> None:
+        with Session(session.get_bind()) as traffic_session:
+            traffic_session.add(
+                CarrierTraffic(
+                    carrier=carrier,
+                    order_number=order_number,
+                    step=step.step,
+                    request=step.request.model_dump(mode="json"),
+                    response_status=step.response_status,
+                    response_body=step.response_body,
+                )
+            )
+            traffic_session.commit()
+
+    return record
+
+
 def _book_with_carrier(
     session: Session,
     definition: CarrierDefinition,
@@ -267,21 +295,18 @@ def _book_with_carrier(
     warehouse: Warehouse | None,
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
+    record_traffic: CarrierTrafficRecorder,
 ) -> dict[str, object]:
-    """Execute the book operation's http steps, recording every step as carrier
-    traffic (ADR 0009's golden corpus grows from real calls). On success the
+    """Execute the book operation's http steps, recording every step through
+    record_traffic (ADR 0009's golden corpus grows from real calls). On success the
     extracted tracking reference and carrier barcodes land on the consignment;
     on failure a booking_failed event is committed before the 502 - never a
-    silent success.
-
-    Carrier contact always commits traffic: every step's traffic row is
-    committed in its own transaction the moment the call returns, so no later
-    failure of the request - a duplicate-order 409 losing the unique-constraint
-    race, a label error, anything - can discard the audit trail of a call that
-    really reached the carrier (refuter, PR #30)."""
+    silent success. The default recorder commits each step's traffic in its own
+    transaction (see _committing_traffic_recorder); shadow replay injects an
+    in-memory one."""
     # Facts are gathered without autoflush: the request session must not hold an
     # open write transaction (its speculative consignment insert) while the
-    # carrier is on the line - the traffic commits below run on their own
+    # carrier is on the line - the default recorder's commits run on their own
     # connections and must never queue behind this request's locks, and a racing
     # duplicate submission must not block on this request's uncommitted row.
     with session.no_autoflush:
@@ -293,18 +318,7 @@ def _book_with_carrier(
             facts["warehouse"] = warehouse_facts(warehouse)
 
     def record(step_record: StepRecord) -> None:
-        with Session(session.get_bind()) as traffic_session:
-            traffic_session.add(
-                CarrierTraffic(
-                    carrier=consignment.carrier or "",
-                    order_number=consignment.order_number,
-                    step=step_record.step,
-                    request=step_record.request.model_dump(mode="json"),
-                    response_status=step_record.response_status,
-                    response_body=step_record.response_body,
-                )
-            )
-            traffic_session.commit()
+        record_traffic(consignment.carrier or "", consignment.order_number, step_record)
 
     try:
         result = execute_operation(
@@ -445,6 +459,7 @@ def create_consignment(
     store: LabelStore,
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
+    record_traffic: CarrierTrafficRecorder | None = None,
 ) -> CreatedConsignment:
     if order_exists(session, request.order_number):
         raise ConsignmentError(409, "a consignment already exists for this order")
@@ -556,7 +571,15 @@ def create_consignment(
         outputs: dict[str, object] = {}
         if book.steps:
             outputs = _book_with_carrier(
-                session, definition, consignment, warehouse, http_client, uploaders
+                session,
+                definition,
+                consignment,
+                warehouse,
+                http_client,
+                uploaders,
+                record_traffic
+                if record_traffic is not None
+                else _committing_traffic_recorder(session),
             )
         if label_spec.source == "base64_pdf":
             # The carrier returned the label as a base64 PDF in its book response;

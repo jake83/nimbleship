@@ -5,13 +5,14 @@ incumbent did - flagging divergences for review, never cloning bug-for-bug.
 A recording holds an order's real create+allocate SOAP plus the incumbent's own
 outcome; replay drives it through the edge in a rolled-back savepoint, so nothing
 survives. Two slices: `replay_allocation` diffs the allocation decision (stops at
-allocate_only, before booking); `replay_paperwork` goes further for a local-render
-order (dropout) that makes no carrier call - producing the label into an in-memory
-store - and diffs the Parcels String and that a valid label was produced.
+allocate_only, before booking); `replay_paperwork` goes further and diffs the
+label, Parcels String, and tracking reference. A booking carrier's real book step
+runs against the recorded carrier response, with traffic sent to an in-memory sink
+so nothing escapes the savepoint; SSCC-minting carriers are not yet replayed.
 """
 
 import base64
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import httpx
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from nimbleship.domain.consignments import ConsignmentError
 from nimbleship.domain.definitions import active_definition
+from nimbleship.engine.execute import StepRecord
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import allocation_service, consignment_service, paperwork_service
 from nimbleship.legacy.soap import SoapFault
@@ -40,6 +42,17 @@ class AllocationOutcome:
 
 
 @dataclass(frozen=True)
+class CarrierBookResponse:
+    """The carrier's own book response recorded from real traffic; replay feeds it
+    back through the real book step via a mock transport, so NimbleShip's own
+    response parsing is diffed, not stubbed (ADR 0015). One response covers a
+    single-step book operation (all carriers on the ladder so far)."""
+
+    status: int
+    body: str
+
+
+@dataclass(frozen=True)
 class GoldenRecording:
     """An order's real incumbent traffic plus the incumbent's own allocation
     outcome. The create/allocate SOAP replays through the edge; `incumbent_code` is
@@ -54,6 +67,12 @@ class GoldenRecording:
     # The incumbent's Parcels String, for the paperwork slice; None for a
     # recording diffed only at allocation.
     incumbent_parcels_string: str | None = None
+    # The incumbent's carrier-minted tracking reference; None for a local-render
+    # order (no carrier call) or an allocation-only recording.
+    incumbent_tracking_reference: str | None = None
+    # The carrier's recorded book response, for a booking-carrier paperwork diff;
+    # None for a local-render order that never calls a carrier.
+    carrier_book_response: CarrierBookResponse | None = None
 
 
 @dataclass(frozen=True)
@@ -196,10 +215,12 @@ class _InMemoryLabelStore(LabelStore):
 @dataclass(frozen=True)
 class PaperworkOutcome:
     """NimbleShip's paperwork result for a recording: whether it produced a valid
-    label, its Parcels String, or the error it raised."""
+    label, its Parcels String, its carrier tracking reference, or the error it
+    raised. Each is a separate output the WMS consumes on its own."""
 
     label_produced: bool
     parcels_string: str | None = None
+    tracking_reference: str | None = None
     error: str | None = None
 
 
@@ -207,6 +228,7 @@ class PaperworkOutcome:
 class PaperworkDiff:
     order_number: str
     incumbent_parcels_string: str | None
+    incumbent_tracking_reference: str | None
     nimbleship: PaperworkOutcome
 
     @property
@@ -215,23 +237,49 @@ class PaperworkDiff:
             self.nimbleship.error is None
             and self.nimbleship.label_produced
             and self.nimbleship.parcels_string == self.incumbent_parcels_string
+            and self.nimbleship.tracking_reference == self.incumbent_tracking_reference
         )
 
 
-def _refuse(request: httpx.Request) -> httpx.Response:
-    raise AssertionError("shadow paperwork replay must not call a carrier")
+def _discard_traffic(carrier: str, order_number: str, step: StepRecord) -> None:
+    """Shadow's traffic sink: a booking replay records nothing, keeping the book
+    step's audit-trail commits out of the rolled-back savepoint (ADR 0015)."""
+
+
+def _carrier_responder(
+    recording: GoldenRecording,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """A mock transport that answers the book call with the carrier's recorded
+    response, so NimbleShip's real book step runs without a live call. A
+    local-render order never reaches it; a booking order without a recorded
+    response is a bad recording, faulted loudly rather than silently mis-diffed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = recording.carrier_book_response
+        if response is None:
+            raise AssertionError(
+                "shadow paperwork replay reached a carrier call with no recorded "
+                f"response for order '{recording.order_number}'"
+            )
+        return httpx.Response(response.status, text=response.body)
+
+    return handler
 
 
 def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkDiff:
-    """Replay create+allocate+paperwork for a local-render order through the real
-    edge and diff NimbleShip's Parcels String (and that it produced a label)
-    against the incumbent's. Side-effect-free: an in-memory label store (no disk),
-    no carrier call (local-render), all in a rolled-back savepoint (ADR 0015)."""
+    """Replay create+allocate+paperwork through the real edge and diff NimbleShip's
+    label, Parcels String, and tracking reference against the incumbent's. A booking
+    carrier's real book step runs against the recorded response; side-effect-free
+    via an in-memory label store, an in-memory traffic sink, and a rolled-back
+    savepoint (ADR 0015). SSCC-minting carriers are not yet replayed."""
     store = _InMemoryLabelStore()
     savepoint = session.begin_nested()
     try:
-        with httpx.Client(transport=httpx.MockTransport(_refuse)) as http_client:
-            nimbleship = _replay_paperwork(session, recording, store, http_client)
+        transport = httpx.MockTransport(_carrier_responder(recording))
+        with httpx.Client(transport=transport) as http_client:
+            nimbleship = _replay_paperwork(
+                session, recording, store, http_client, _discard_traffic
+            )
     except (ConsignmentError, SoapFault) as error:
         nimbleship = PaperworkOutcome(label_produced=False, error=str(error))
     except NoResultFound:
@@ -243,7 +291,10 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
     finally:
         savepoint.rollback()
     return PaperworkDiff(
-        recording.order_number, recording.incumbent_parcels_string, nimbleship
+        recording.order_number,
+        recording.incumbent_parcels_string,
+        recording.incumbent_tracking_reference,
+        nimbleship,
     )
 
 
@@ -252,6 +303,7 @@ def _replay_paperwork(
     recording: GoldenRecording,
     store: LabelStore,
     http_client: httpx.Client,
+    record_traffic: Callable[[str, str, StepRecord], None],
 ) -> PaperworkOutcome:
     uploaders: Mapping[str, FileUploader] = {}
     consignment_service.handle(
@@ -262,19 +314,18 @@ def _replay_paperwork(
         recording.incumbent_code.encode(), code.encode()
     )
     allocation_service.handle(allocate, session)
-    external = _books_outside_savepoint(session, code)
+    external = _mints_outside_savepoint(session, code)
     if external is not None:
-        # The message states the structural fact (not local-render), not that
-        # booking was reached: an unsupported label source would fault first (see
-        # _books_outside_savepoint).
+        # See _mints_outside_savepoint: the SSCC mint commits on a separate session
+        # the rolled-back savepoint can't undo, and the slice does not yet feed
+        # recorded SSCCs, so refuse rather than leak.
         return PaperworkOutcome(
             label_produced=False,
-            error=f"carrier '{external}' is not a local-render carrier (its book "
-            "operation declares an allocation mint or a carrier call); the "
-            "paperwork slice replays local-render carriers only",
+            error=f"carrier '{external}' mints client-side allocations (SSCC), "
+            "not yet replayed by the paperwork slice",
         )
     paperwork = paperwork_service.shadow_paperwork(
-        session, code, store, http_client, uploaders
+        session, code, store, http_client, uploaders, record_traffic
     )
     label = (
         base64.b64decode(paperwork.labels_base64) if paperwork.labels_base64 else b""
@@ -282,20 +333,22 @@ def _replay_paperwork(
     return PaperworkOutcome(
         label_produced=label.startswith(b"%PDF"),
         parcels_string=paperwork.parcels,
+        tracking_reference=paperwork.tracking_reference,
     )
 
 
-def _books_outside_savepoint(session: Session, code: str) -> str | None:
-    """The selected carrier's name if its book operation declares an allocation
-    mint or a carrier call, else None. Both run on a separate committing session
-    that the outer savepoint can't roll back (an SSCC burn survives), so such a
-    carrier makes replay_paperwork's side-effect-free promise false and the
-    paperwork slice refuses it rather than book (ADR 0015)."""
+def _mints_outside_savepoint(session: Session, code: str) -> str | None:
+    """The selected carrier's name if its book operation mints client-side
+    allocations (SSCC), else None. Minting commits on a separate session the outer
+    savepoint can't roll back, and the paperwork slice does not yet feed recorded
+    SSCCs, so it refuses such a carrier rather than leak (ADR 0015). A carrier call
+    by itself is fine - its traffic goes to shadow's in-memory sink, inside the
+    savepoint - so http-book carriers replay."""
     selected = paperwork_service.shadow_allocate(session, code).selected
     if selected is None:
         return None
     definition = active_definition(session, selected.carrier)
     book = definition.operations.get("book") if definition is not None else None
-    if book is not None and (book.allocate or book.steps):
+    if book is not None and book.allocate:
         return selected.carrier
     return None
