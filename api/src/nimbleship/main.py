@@ -6,6 +6,7 @@ from fastapi import APIRouter, FastAPI
 
 from nimbleship.labels.store import get_label_store
 from nimbleship.legacy.router import router as legacy_router
+from nimbleship.routers.assistant import router as assistant_router
 from nimbleship.routers.consignments import router as consignments_router
 from nimbleship.routers.definitions import router as definitions_router
 from nimbleship.routers.manifests import router as manifests_router
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    router.include_router(assistant_router)
     router.include_router(consignments_router)
     router.include_router(definitions_router)
     router.include_router(manifests_router)
