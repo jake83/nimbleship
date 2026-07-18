@@ -50,6 +50,18 @@ def test_absent_when_no_parcel_carries_a_dimension() -> None:
     assert _max_girth_cm(created) is None
 
 
+def test_a_girth_too_wide_for_the_column_degrades_to_none() -> None:
+    # Girth is arithmetic, so an absurd dimension yields a value wider than the
+    # column (17+ digits); it degrades to None (unknown) rather than reaching
+    # Postgres as an uncaught StringDataRightTruncation.
+    created = {
+        "parcels": [{"height_cm": "9999999999999999", "width_cm": "1", "depth_cm": "1"}]
+    }
+
+    # Raw girth is 10000000000000003 (17 chars > the 16-char column).
+    assert _max_girth_cm(created) is None
+
+
 def test_non_finite_dimensions_count_as_zero_not_a_crash() -> None:
     # Decimal parses NaN/Infinity and comparing a NaN raises; a hostile or
     # malformed WMS value must degrade to 0, never propagate as a 500.

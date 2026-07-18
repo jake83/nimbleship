@@ -33,7 +33,7 @@ from nimbleship.domain.consignments import (
 from nimbleship.domain.service_groups import known_service_group_codes
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import soap
-from nimbleship.models import LegacyConsignmentStaging
+from nimbleship.models import DIMENSION_STR_MAX, LegacyConsignmentStaging
 from nimbleship.uploaders import FileUploader
 
 # The Parcels String wire format (CONTEXT.md): comma-joined
@@ -234,7 +234,9 @@ def _max_girth_cm(created: Mapping[str, object]) -> Decimal | None:
     twice the other two (longest + 2*(sum - longest)), maxed across parcels. A
     missing or sentinel-zero dimension counts as 0 - an under-estimate that keeps
     the check optimistic (ADR 0007) rather than faulting - and None means no
-    parcel carried any usable dimension at all."""
+    parcel carried any usable dimension at all. Girth is arithmetic, so an
+    absurdly large dimension can produce a value too wide for the column; such a
+    value degrades to None rather than reaching Postgres as an uncaught error."""
     max_girth = Decimal(0)
     parcels = created.get("parcels")
     if isinstance(parcels, list):
@@ -248,7 +250,9 @@ def _max_girth_cm(created: Mapping[str, object]) -> Decimal | None:
             longest = max(dims)
             girth = longest + 2 * (sum(dims) - longest)
             max_girth = max(max_girth, girth)
-    return max_girth if max_girth > 0 else None
+    if max_girth <= 0 or len(str(max_girth)) > DIMENSION_STR_MAX:
+        return None
+    return max_girth
 
 
 def _positive_decimal(value: object) -> Decimal | None:

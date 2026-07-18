@@ -777,8 +777,7 @@ def test_dry_run_replays_a_legacy_orders_derived_max_girth(
     # A 150x100x50 parcel has girth 150 + 2*(300-150) = 450. It allocates against
     # the limit-free demo rulebook; a draft adding a 300cm girth cap must exclude
     # it on replay - which needs the derived girth persisted, not re-derived as
-    # absent. Guards the bug where max_girth_cm was never populated on any path,
-    # so a girth-capped service could never exclude an oversized shipment.
+    # absent.
     _create_depot1(client)
     body = _fixture("create_consignments_request.xml").replace(*_PARCEL_GIRTH_450)
     client.post(
