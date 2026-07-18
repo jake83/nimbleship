@@ -28,18 +28,19 @@ orders reroute. The 5a assistant (ADR 0016) established the tool-use loop, the
   the live rulebook and calls `add_service` / `update_service` / `remove_service`
   against an in-memory working copy; untouched services are preserved byte-for-byte
   (the model never re-types them, so it can't silently perturb an unrelated
-  carrier's weight band). Each edit is a discrete, named, reviewable operation - the
-  unit ADR 0008 asks for - and complex routing rules build up over several turns,
-  which a single-shot emit can't express reliably.
+  carrier's weight band). Each edit is a discrete, named, reviewable operation, and
+  complex routing rules build up over several turns, which a single-shot emit can't
+  express reliably.
 - **Dry-run inline, on the working copy, before any draft is saved.** The candidate
   rulebook is replayed over historical orders without persisting a draft, so impact
   ("reroutes 12 orders, 3 to a pricier carrier") is visible as the rule takes shape.
   Dry-run is a tool the AI can call, so it reasons about impact and self-corrects
   before the operator commits. It reuses the existing allocate-over-history engine.
 - **Scope: eligibility plus the flat cost.** The builder authors the routing
-  decision - every constraint field (weight bands, countries, areas, propositions,
-  service groups, dimensions, girth) - plus the flat `cost` a new service needs to
-  compete in the cheapest-eligible tiebreak. Banded `cost_bands`/`charge_bands` are
+  decision - every Service Declaration field (weight bands, countries, areas,
+  propositions, service groups, dimensions, girth) - plus the flat `cost` a new
+  service needs to compete in the cheapest-eligible tiebreak. Banded
+  `cost_bands`/`charge_bands` are
   out by nature, not merely deferred: they are pricing, feeding only the cheapest
   tiebreak (charges not even that), managed as a rate card elsewhere - not a routing
   rule the builder authors.
