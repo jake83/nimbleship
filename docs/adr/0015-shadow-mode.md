@@ -35,10 +35,17 @@ pitch.
   narrower dimension added later.
 - **Offline replay**, not a live dual-run: recorded requests are replayed in
   batch, decoupled from the live system.
-- **Side-effect-free (a hard invariant).** A replay must never book a carrier,
-  write a label, or enqueue a manifest - it runs in a rolled-back savepoint, and
-  it must stop before booking, whose commits run on separate sessions a rollback
-  would not undo.
+- **Side-effect-free, against a non-production database copy.** A replay must
+  never book a carrier, write a label, or enqueue a manifest - it runs in a
+  rolled-back savepoint, and it must stop before booking, whose commits run on
+  separate sessions a rollback would not undo. The savepoint keeps rows out of
+  the database, but it is not the whole story: staging mints a consignment code
+  from an autoincrement id, and on Postgres that sequence advance is
+  non-transactional (a rollback does not undo it), so replaying a batch would
+  durably jump the id sequence. That is why shadow runs against a **copy** of the
+  data, never live production - the sequence drift is harmless there (codes are
+  opaque), and the copy is discarded. A scratch database is the deployment model,
+  not the live one.
   NimbleShip's legacy allocation happens at paperwork (ADR 0011), which books, so
   the replay uses an `allocate_only` path: `create_consignment`'s pure allocation
   prefix, extracted so both it and shadow call the *same* logic, stopping before

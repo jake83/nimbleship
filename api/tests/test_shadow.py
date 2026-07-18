@@ -212,3 +212,32 @@ def test_a_fault_where_the_incumbent_allocated_is_a_divergence_carrying_the_erro
     assert diff.nimbleship.error is not None
     assert "warehouse" in diff.nimbleship.error
     assert not diff.matched
+
+
+def test_a_mismatched_recording_is_isolated_not_a_batch_crash(
+    app: FastAPI, client: TestClient, tmp_path: Path
+) -> None:
+    # A recording whose order_number disagrees with its own create payload is a
+    # capture glitch; it must be flagged, not abort the whole batch report.
+    _seed_config(client)
+    store, http_client, uploaders = _deps(tmp_path)
+    bad = GoldenRecording(
+        order_number="NOT-THE-STAGED-ORDER",  # its payload stages 95000254580
+        create_consignments=_fixture("create_consignments_request.xml"),
+        incumbent_code=_INCUMBENT_CODE,
+        allocate_consignments=_allocate_body([_INCUMBENT_CODE], ["ECONOMY"]),
+        incumbent=AllocationOutcome(allocated=True, carrier="dropout"),
+    )
+    good = _recording(
+        AllocationOutcome(allocated=True, carrier="dropout", service="DROPOUT-STD")
+    )
+
+    with app.state.session_factory() as session:
+        report = replay_all(session, [bad, good], store, http_client, uploaders)
+
+    assert len(report.diffs) == 2  # the batch completed despite the bad recording
+    [bad_diff] = [d for d in report.diffs if d.order_number == "NOT-THE-STAGED-ORDER"]
+    assert bad_diff.nimbleship.error is not None
+    assert not bad_diff.matched
+    [good_diff] = [d for d in report.diffs if d.order_number == "95000254580"]
+    assert good_diff.matched  # the valid recording still processed

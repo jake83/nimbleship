@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.consignments import ConsignmentError
@@ -78,14 +79,11 @@ def replay_allocation(
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
 ) -> AllocationDiff:
-    """Replay one recording's create+allocate through the real edge and diff
-    NimbleShip's allocation against the incumbent's. Strictly side-effect-free: it
-    runs inside a savepoint that is always rolled back, so no staged row survives.
-    This is only safe because the replay stops at allocate_only - the booking path
-    commits carrier traffic and minted ranges on separate sessions a savepoint
-    rollback would not undo, so shadow must never reach it. store/http_client/
-    uploaders are the edge's paperwork deps, inert here - shadow replays
-    create+allocate, never the booking paperwork call."""
+    """Replay one recording's create+allocate through the real edge, diff its
+    allocation against the incumbent's, side-effect-free via a rolled-back savepoint
+    - safe only because replay stops at allocate_only; the booking path commits
+    carrier traffic on separate sessions a rollback can't undo. store/http_client/
+    uploaders are inert here (the edge's paperwork deps, never reached)."""
     savepoint = session.begin_nested()
     try:
         nimbleship = _replay(session, recording, store, http_client, uploaders)
@@ -93,6 +91,15 @@ def replay_allocation(
         # NimbleShip rejecting or faulting where the incumbent allocated is a
         # divergence to review, not a harness crash.
         nimbleship = AllocationOutcome(allocated=False, error=str(error))
+    except NoResultFound:
+        # The recording's order_number did not stage - a capture-quality glitch
+        # (its order_number disagrees with its own create payload). Isolate it as
+        # a bad recording so replay_all still processes the rest of the batch.
+        nimbleship = AllocationOutcome(
+            allocated=False,
+            error=f"no staged consignment for order '{recording.order_number}': "
+            "the recording's order_number may not match its create payload",
+        )
     finally:
         savepoint.rollback()
     return AllocationDiff(recording.order_number, recording.incumbent, nimbleship)
