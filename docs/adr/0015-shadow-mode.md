@@ -82,9 +82,9 @@ pitch.
   PDF: the incumbent and NimbleShip render different PDFs from the same data, so a
   byte match would false-diverge on every order; the shipping-critical data is
   the barcodes (the Parcels String).
-- Live-API carrier slice (rung 1 built - Furdeco; rungs 2-3 designed): extends the
-  paperwork diff to booking carriers (Furdeco, Dachser, ...) without a live carrier
-  call.
+- Live-API carrier slice (rungs 1-2 built - Furdeco, base64_pdf byte-diff; rung 3
+  designed): extends the paperwork diff to booking carriers (Furdeco, Dachser, ...)
+  without a live carrier call.
   - **Replay the recorded carrier response through the real edge.** The golden
     recording carries the carrier's own book response; replay feeds it back
     through NimbleShip's real book-step execution via a mock transport, so the

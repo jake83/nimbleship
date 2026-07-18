@@ -2,6 +2,7 @@
 create+allocate SOAP plus the incumbent's outcome is replayed through the real
 legacy edge, side-effect-free, and NimbleShip's allocation is diffed against it."""
 
+import base64
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -624,3 +625,153 @@ def test_a_failed_book_response_is_a_divergence_not_a_leak(
     with app.state.session_factory() as session:
         assert session.execute(select(Consignment)).scalars().all() == []
         assert session.execute(select(CarrierTraffic)).scalars().all() == []
+
+
+# --- Live-API carrier slice, rung 2: base64_pdf label byte-diff (synthetic).
+_LABELCARRIER_PDF = b"%PDF-1.4 synthetic carrier label\n%%EOF\n"
+_LABELCARRIER_TRACKING = "LC-9001"
+_LABELCARRIER_DEFINITION = {
+    "carrier": "labelcarrier",
+    "name": "Label Carrier",
+    "auth": {"scheme": "none"},
+    "operations": {
+        "book": {
+            "steps": [
+                {
+                    "name": "labels",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.labels_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"}
+                        ],
+                    },
+                    "response": {
+                        "format": "json",
+                        "success_when": {"path": "label_pdf"},
+                        "extract": [
+                            {"name": "tracking_reference", "path": "shipment_number"},
+                            {"name": "label_pdf", "path": "label_pdf"},
+                        ],
+                    },
+                }
+            ],
+            "label": {"source": "base64_pdf", "from_extract": "label_pdf"},
+        }
+    },
+}
+
+
+def _publish_labelcarrier_econ(client: TestClient) -> None:
+    # A base64_pdf carrier (label is the carrier's returned PDF, no SSCC) as the
+    # sole ECONOMY-group service, so the fixture order selects it.
+    _seed_warehouse(client)
+    client.put(
+        "/api/carriers/labelcarrier/config",
+        json={"labels_url": "https://api.label.example/labels"},
+    )
+    version = client.post(
+        "/api/carriers/labelcarrier/definitions/drafts",
+        json={"author": "jake", "definition": _LABELCARRIER_DEFINITION},
+    ).json()["version"]
+    published = client.post(
+        f"/api/carriers/labelcarrier/definitions/versions/{version}/publish"
+    )
+    assert published.status_code == 200, published.text
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "LC-STD",
+                "carrier": "labelcarrier",
+                "name": "Label Carrier Std",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "5.00",
+                "tie_break_order": 1,
+                "service_groups": ["ECONOMY"],
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+
+def _labelcarrier_recording(incumbent_label_base64: str) -> GoldenRecording:
+    label_b64 = base64.b64encode(_LABELCARRIER_PDF).decode()
+    body = json.dumps(
+        {"shipment_number": _LABELCARRIER_TRACKING, "label_pdf": label_b64}
+    )
+    return GoldenRecording(
+        order_number="95000254580",
+        create_consignments=_fixture("create_consignments_request.xml"),
+        incumbent_code=_INCUMBENT_CODE,
+        allocate_consignments=_allocate_body([_INCUMBENT_CODE], ["ECONOMY"]),
+        incumbent=AllocationOutcome(allocated=True, carrier="labelcarrier"),
+        incumbent_parcels_string=_INCUMBENT_PARCELS,
+        incumbent_tracking_reference=_LABELCARRIER_TRACKING,
+        carrier_book_response=CarrierBookResponse(status=200, body=body),
+        incumbent_label_base64=incumbent_label_base64,
+    )
+
+
+def test_a_matching_base64_pdf_label_byte_diffs_clean(
+    app: FastAPI, client: TestClient
+) -> None:
+    # NimbleShip decodes the same recorded carrier PDF the incumbent did, so the
+    # label byte-matches - a stronger check than "a valid label was produced".
+    _publish_labelcarrier_econ(client)
+    recording = _labelcarrier_recording(base64.b64encode(_LABELCARRIER_PDF).decode())
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.error is None
+    assert diff.nimbleship.label == _LABELCARRIER_PDF
+    assert diff.matched
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(CarrierTraffic)).scalars().all() == []
+
+
+def test_a_differing_base64_pdf_label_is_a_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    # Everything matches except the incumbent's stored label bytes: the byte diff
+    # must catch it even though a valid PDF was produced and the rest agrees.
+    _publish_labelcarrier_econ(client)
+    different = base64.b64encode(
+        b"%PDF-1.4 a different carrier label\n%%EOF\n"
+    ).decode()
+    recording = _labelcarrier_recording(different)
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.label_produced  # a valid PDF was produced
+    assert diff.nimbleship.parcels_string == _INCUMBENT_PARCELS
+    assert diff.nimbleship.tracking_reference == _LABELCARRIER_TRACKING
+    assert not diff.matched  # ... but its bytes differ from the incumbent's
+
+
+def test_a_malformed_incumbent_label_is_a_divergence_not_a_crash(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A corrupt captured incumbent label is a bad recording: the replay must surface
+    # a divergence, not raise out of the harness. Both bad padding (binascii.Error)
+    # and non-ASCII (a plain ValueError b64decode raises before binascii) must be
+    # handled - a mojibake/accented capture is a plausible glitch.
+    _publish_labelcarrier_econ(client)
+    for corrupt in ("not-valid-base64!!!", "not-válid-base64"):
+        recording = _labelcarrier_recording(corrupt)
+
+        with app.state.session_factory() as session:
+            diff = replay_paperwork(session, recording)
+
+        assert not diff.matched
+        assert diff.nimbleship.error is not None
+        assert "not valid base64" in diff.nimbleship.error
