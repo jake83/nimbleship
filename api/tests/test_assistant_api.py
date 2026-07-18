@@ -1,5 +1,5 @@
 """The assistant route (ADR 0016): fails closed without a key, and runs the tool-use
-loop over a scripted fake client injected through the dependency - never the real API."""
+loop over a scripted fake injected through the dependency - never the real API."""
 
 from collections.abc import Sequence
 
