@@ -241,3 +241,51 @@ def test_voila_events_carry_a_utc_aware_timestamp() -> None:
     )
 
     assert event.event_at == datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
+
+
+def test_an_out_of_vocabulary_status_is_rejected_before_storage(app: FastAPI) -> None:
+    # A source adapter maps onto the closed canonical vocabulary (ADR 0014); a
+    # mapping typo producing an unknown status faults loudly (422) rather than
+    # persisting an out-of-vocabulary value nothing downstream expects.
+    from nimbleship.domain.tracking import ParsedTrackingEvent, TrackingError, ingest
+
+    bad = ParsedTrackingEvent(
+        order_number="ORD-1",
+        external_id="E1",
+        raw_status="4",
+        status="in_transitt",  # a typo: not a member of TRACKING_STATUSES
+        source_shipment_id=None,
+        tracking_code=None,
+        event_at=None,
+        raw={},
+    )
+    with app.state.session_factory() as session:
+        with pytest.raises(TrackingError, match="canonical tracking status"):
+            ingest(session, "voila", [bad])
+        assert session.execute(select(TrackingEvent)).scalars().all() == []
+
+
+def test_a_present_but_falsy_shipment_id_or_tracking_code_is_kept() -> None:
+    # 0 and "" are values the source sent, not absence: coercing them to None
+    # would silently drop a real id. Only a genuinely missing key is None.
+    from nimbleship.domain.tracking import parse_voila
+
+    [event] = parse_voila(
+        {
+            "tracking_update": {
+                "shipment_id": 0,
+                "shipment": {"reference": "ORD-1"},
+                "parcels": [
+                    {
+                        "tracking_code": "",
+                        "tracking_events": [
+                            {"status_code": 7, "update_id": "E1", "update_date": None}
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert event.source_shipment_id == "0"
+    assert event.tracking_code == ""

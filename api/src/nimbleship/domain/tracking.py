@@ -54,20 +54,22 @@ def _reject_long(label: str, value: str | None, limit: int) -> None:
 
 
 def ingest(session: Session, source: str, events: list[ParsedTrackingEvent]) -> int:
-    """Store the parsed events, skipping any already seen for this source, and
-    return how many were new. Idempotency is the (source, external_id) unique
-    constraint, enforced per event in a savepoint: a redelivery - including two
-    concurrent ones racing the same event - resolves to a skip, never a 500.
-
-    Over-length source fields are rejected up front (TrackingError -> 422): on
-    Postgres a VARCHAR overflow is a driver DataError the savepoint's
-    IntegrityError catch would miss, so it must not reach the column."""
+    """Store new events, skipping duplicates via a per-event savepoint on the
+    (source, external_id) unique constraint - a redelivery, including a
+    concurrent race, resolves to a skip, never a 500. A pre-pass rejects
+    (TrackingError -> 422) any event whose fields overflow their column - a
+    Postgres VARCHAR overflow raises DataError, which that savepoint's
+    IntegrityError catch would miss - or whose canonical status is outside
+    TRACKING_STATUSES, so an adapter's mapping typo faults loudly instead of
+    persisting an out-of-vocabulary status."""
     for event in events:
         _reject_long("order number", event.order_number, ORDER_NUMBER_MAX)
         _reject_long("external id", event.external_id, TRACKING_ID_MAX)
         _reject_long("shipment id", event.source_shipment_id, TRACKING_ID_MAX)
         _reject_long("tracking code", event.tracking_code, TRACKING_ID_MAX)
         _reject_long("raw status", event.raw_status, TRACKING_RAW_STATUS_MAX)
+        if event.status not in TRACKING_STATUSES:
+            raise TrackingError(f"'{event.status}' is not a canonical tracking status")
     stored = 0
     for event in events:
         try:
@@ -164,8 +166,12 @@ def parse_voila(payload: Mapping[str, object]) -> list[ParsedTrackingEvent]:
                     external_id=str(update_id),
                     raw_status=raw_status,
                     status=_VOILA_STATUS.get(raw_status, "unknown"),
-                    source_shipment_id=str(shipment_id) if shipment_id else None,
-                    tracking_code=str(tracking_code) if tracking_code else None,
+                    source_shipment_id=(
+                        str(shipment_id) if shipment_id is not None else None
+                    ),
+                    tracking_code=(
+                        str(tracking_code) if tracking_code is not None else None
+                    ),
                     event_at=_voila_event_at(event_map.get("update_date")),
                     raw=dict(event_map),
                 )
