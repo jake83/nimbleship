@@ -203,6 +203,31 @@ scope for NimbleShip; supporting both source types is in scope.
 _Avoid_: Voila tracking event (as the generic name), naming Voila outside the
 Voila adapter, dropping an unmapped status instead of recording it as unknown
 
+**Shadow Mode**:
+Replaying recorded incumbent (3PL proxy) traffic through NimbleShip and diffing
+its outcomes against what the incumbent actually did, for cutover confidence and
+the pitch (ADR 0015). It is a diff-and-review tool, not a bug-for-bug clone:
+NimbleShip is the successor and diverges deliberately in places, so a run
+surfaces divergences for a human to bucket, never auto-fails on difference. The
+replay is offline and strictly side-effect-free (no real booking, label, or
+manifest).
+_Avoid_: "regression suite" (it is not pass/fail), replaying with side effects,
+treating every divergence as a bug
+
+**Golden Recording**:
+One order's real incumbent traffic - its WMS SOAP request(s) and the incumbent's
+own outcome - the unit a Shadow Mode run replays and diffs against. Because the
+incumbent mints its own server-side codes, a recording also carries that code so
+the replay can map it to NimbleShip's.
+_Avoid_: "fixture" (a recording is real captured traffic, not synthetic), golden
+file (that is the carrier-side term, ADR 0009)
+
+**Divergence**:
+An order where NimbleShip's replayed outcome differs from the incumbent's Golden
+Recording. Reviewed and bucketed as match / deliberate improvement / regression;
+only regressions are defects to fix before cutover.
+_Avoid_: failure, mismatch-as-bug
+
 ## Relationships
 
 - The **WMS** talks only to the **Legacy Interface**; everything else talks to

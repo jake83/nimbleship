@@ -371,15 +371,13 @@ def _book_with_carrier(
     return result.outputs
 
 
-def create_consignment(
-    session: Session,
-    request: ConsignmentRequest,
-    store: LabelStore,
-    http_client: httpx.Client,
-    uploaders: Mapping[str, FileUploader],
-) -> CreatedConsignment:
-    if order_exists(session, request.order_number):
-        raise ConsignmentError(409, "a consignment already exists for this order")
+def _allocate_request(
+    session: Session, request: ConsignmentRequest
+) -> tuple[AllocationResult, list[Decimal], Warehouse | None]:
+    """Validate a request and compute its allocation, without persisting or
+    booking - the pure prefix create_consignment runs before it commits. Returns
+    the result plus the rounded weights and resolved warehouse the caller reuses
+    to persist and book. allocate_only wraps this for side-effect-free replay."""
     _validate_request(request)
     # Rounded once so the derived total always equals the sum of the stored
     # parcels (no drift a carrier would reject).
@@ -426,6 +424,28 @@ def create_consignment(
                 "reason": "forced by testing tools",
             }
         )
+    return result, weights, warehouse
+
+
+def allocate_only(session: Session, request: ConsignmentRequest) -> AllocationResult:
+    """The allocation NimbleShip would make for a request, computed without
+    persisting or booking. The side-effect-free entry point shadow-mode replay
+    diffs against the incumbent (ADR 0015), so it can never drift from the
+    allocation create_consignment really makes - both run _allocate_request."""
+    result, _, _ = _allocate_request(session, request)
+    return result
+
+
+def create_consignment(
+    session: Session,
+    request: ConsignmentRequest,
+    store: LabelStore,
+    http_client: httpx.Client,
+    uploaders: Mapping[str, FileUploader],
+) -> CreatedConsignment:
+    if order_exists(session, request.order_number):
+        raise ConsignmentError(409, "a consignment already exists for this order")
+    result, weights, warehouse = _allocate_request(session, request)
 
     selected = result.selected
     definition = (
@@ -496,7 +516,7 @@ def create_consignment(
                     "cost": str(result.selected_cost)
                     if result.selected_cost is not None
                     else None,
-                    "rulebook_version": rulebook.version,
+                    "rulebook_version": result.rulebook_version,
                     "forced": request.force_service is not None,
                 },
             )
