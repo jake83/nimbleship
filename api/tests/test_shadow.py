@@ -27,6 +27,7 @@ from nimbleship.shadow import (
     replay_all,
     replay_allocation,
     replay_paperwork,
+    replay_paperwork_all,
 )
 from nimbleship.uploaders import FileUploader
 
@@ -824,4 +825,51 @@ def test_an_sscc_carrier_replays_with_fed_sscc_minting_nothing(
     with app.state.session_factory() as session:
         assert session.execute(select(CarrierNumberSequence)).scalars().all() == []
         assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(CarrierTraffic)).scalars().all() == []
+
+
+def test_replay_paperwork_all_batches_and_isolates_a_bad_recording(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A batch of paperwork recordings - a match, a Parcels-String divergence, and a
+    # bad recording (order_number disagrees with its create payload) - reports all
+    # three: the bad one is isolated as a divergence, never aborting the run.
+    _seed_config(client)
+    good = _paperwork_recording(_INCUMBENT_PARCELS)
+    divergent = _paperwork_recording("95000254580-parcel-1:WRONG")
+    bad = replace(_paperwork_recording(_INCUMBENT_PARCELS), order_number="NOT-STAGED")
+
+    with app.state.session_factory() as session:
+        report = replay_paperwork_all(session, [good, divergent, bad])
+
+    assert len(report.diffs) == 3
+    assert report.matched == 1
+    assert len(report.divergences) == 2
+    [bad_diff] = [d for d in report.divergences if d.order_number == "NOT-STAGED"]
+    assert bad_diff.nimbleship.error is not None
+    assert "no staged consignment" in bad_diff.nimbleship.error
+
+
+def test_a_booking_recording_with_no_carrier_response_is_isolated(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A booking carrier is selected but the recording carries no carrier response to
+    # replay: it's isolated as a divergence, never crashing (which would abort a
+    # batch), unlike a local-render order that reaches no carrier call.
+    _publish_furdeco_econ(client)
+    recording = replace(
+        _furdeco_recording(_FURDECO_TRACKING, _FURDECO_PARCELS),
+        carrier_book_response=None,
+    )
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert not diff.matched
+    assert diff.nimbleship.error is not None
+    assert "no recorded response" in diff.nimbleship.error
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(LegacyConsignmentStaging)).scalars().all() == []
         assert session.execute(select(CarrierTraffic)).scalars().all() == []
