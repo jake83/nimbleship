@@ -11,12 +11,17 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from nimbleship.labels.store import LabelStore
-from nimbleship.models import Consignment, LegacyConsignmentStaging
+from nimbleship.models import (
+    CarrierNumberSequence,
+    Consignment,
+    LegacyConsignmentStaging,
+)
 from nimbleship.shadow import (
     AllocationOutcome,
     GoldenRecording,
     replay_all,
     replay_allocation,
+    replay_paperwork,
 )
 from nimbleship.uploaders import FileUploader
 
@@ -261,3 +266,190 @@ def test_both_declining_with_differing_error_text_is_a_match(
     assert diff.nimbleship == AllocationOutcome(allocated=False)  # clean decline
     assert diff.incumbent.error != diff.nimbleship.error
     assert diff.matched
+
+
+_INCUMBENT_PARCELS = (
+    "95000254580-parcel-1:95000254580-1,95000254580-parcel-2:95000254580-2"
+)
+
+
+def _paperwork_recording(incumbent_parcels: str | None) -> GoldenRecording:
+    return GoldenRecording(
+        order_number="95000254580",
+        create_consignments=_fixture("create_consignments_request.xml"),
+        incumbent_code=_INCUMBENT_CODE,
+        allocate_consignments=_allocate_body([_INCUMBENT_CODE], ["ECONOMY"]),
+        incumbent=AllocationOutcome(allocated=True, carrier="dropout"),
+        incumbent_parcels_string=incumbent_parcels,
+    )
+
+
+def test_a_matching_parcels_string_with_a_label_is_no_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A local-render (dropout) order: NimbleShip produces a real label and a
+    # Parcels String matching the incumbent's - no divergence.
+    _seed_config(client)
+    recording = _paperwork_recording(_INCUMBENT_PARCELS)
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.label_produced
+    assert diff.nimbleship.parcels_string == _INCUMBENT_PARCELS
+    assert diff.matched
+
+
+def test_a_differing_parcels_string_is_a_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    _seed_config(client)
+    recording = _paperwork_recording("95000254580-parcel-1:A-WRONG-BARCODE")
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.parcels_string == _INCUMBENT_PARCELS  # NimbleShip's real one
+    assert diff.nimbleship.label_produced
+    assert not diff.matched
+
+
+def test_paperwork_replay_leaves_no_trace(app: FastAPI, client: TestClient) -> None:
+    # In-memory label store + savepoint: no consignment or staging row survives,
+    # and nothing is written to the label store on disk.
+    _seed_config(client)
+    recording = _paperwork_recording(_INCUMBENT_PARCELS)
+
+    with app.state.session_factory() as session:
+        replay_paperwork(session, recording)
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(LegacyConsignmentStaging)).scalars().all() == []
+
+
+# A carrier that books via an SSCC mint (a separate committing session) plus an
+# http step - the paperwork slice must refuse it, never book it.
+_SSCC_DEFINITION = {
+    "carrier": "ssccarrier",
+    "name": "SSCC Carrier",
+    "auth": {"scheme": "none"},
+    "operations": {
+        "book": {
+            "allocate": [
+                {
+                    "kind": "sscc",
+                    "per": "parcel",
+                    "prefix": "config.sscc_prefix",
+                    "policy": "halt",
+                }
+            ],
+            "steps": [
+                {
+                    "name": "labels",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.labels_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"}
+                        ],
+                    },
+                    "response": {
+                        "format": "json",
+                        "success_when": {"path": "label_pdf"},
+                        "extract": [{"name": "label_pdf", "path": "label_pdf"}],
+                    },
+                }
+            ],
+            "label": {"source": "base64_pdf", "from_extract": "label_pdf"},
+        }
+    },
+}
+
+
+def _publish_sscc_econ_carrier(client: TestClient) -> None:
+    # Publish ssccarrier as the sole ECONOMY-group service so the fixture order's
+    # ECONOMY-filtered allocate selects it - the booking carrier the guard refuses.
+    client.put(
+        "/api/carriers/ssccarrier/config",
+        json={
+            "labels_url": "https://api.ssc.example/labels",
+            "sscc_prefix": "0012345678",
+        },
+    )
+    version = client.post(
+        "/api/carriers/ssccarrier/definitions/drafts",
+        json={"author": "jake", "definition": _SSCC_DEFINITION},
+    ).json()["version"]
+    published = client.post(
+        f"/api/carriers/ssccarrier/definitions/versions/{version}/publish"
+    )
+    assert published.status_code == 200, published.text
+    _seed_warehouse(client)
+    draft = {
+        "author": "jake",
+        "services": [
+            {
+                "code": "SS-STD",
+                "carrier": "ssccarrier",
+                "name": "SSCC Carrier Std",
+                "weight_min_kg": "0",
+                "weight_max_kg": "999",
+                "countries": ["GB"],
+                "cost": "5.00",
+                "tie_break_order": 1,
+                "service_groups": ["ECONOMY"],
+            }
+        ],
+    }
+    version = client.post("/api/rulebook/drafts", json=draft).json()["version"]
+    assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
+
+
+def test_a_booking_carrier_is_a_divergence_not_a_leak(
+    app: FastAPI, client: TestClient
+) -> None:
+    # Shadow replays real traffic, so an order can select any published carrier,
+    # not just dropout. One that books (SSCC mint on a separate committing session
+    # + a carrier call) would leak durable state the savepoint can't undo; the
+    # paperwork slice must refuse it and report a divergence, minting nothing.
+    _publish_sscc_econ_carrier(client)
+    recording = _paperwork_recording(_INCUMBENT_PARCELS)
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert not diff.matched
+    assert not diff.nimbleship.label_produced
+    assert diff.nimbleship.error is not None
+    assert "ssccarrier" in diff.nimbleship.error
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(CarrierNumberSequence)).scalars().all() == []
+        assert session.execute(select(Consignment)).scalars().all() == []
+
+
+def test_paperwork_no_staged_consignment_is_isolated(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A recording whose order_number disagrees with its create payload cannot find
+    # a staged code; it is flagged as a bad recording, not a crash - the paperwork
+    # mirror of the allocation slice's capture-glitch handling.
+    _seed_config(client)
+    bad = GoldenRecording(
+        order_number="NOT-THE-STAGED-ORDER",  # its payload stages 95000254580
+        create_consignments=_fixture("create_consignments_request.xml"),
+        incumbent_code=_INCUMBENT_CODE,
+        allocate_consignments=_allocate_body([_INCUMBENT_CODE], ["ECONOMY"]),
+        incumbent=AllocationOutcome(allocated=True, carrier="dropout"),
+        incumbent_parcels_string=_INCUMBENT_PARCELS,
+    )
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, bad)
+
+    assert not diff.matched
+    assert diff.nimbleship.error is not None
+    assert "no staged consignment" in diff.nimbleship.error

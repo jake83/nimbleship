@@ -431,7 +431,10 @@ def allocate_only(session: Session, request: ConsignmentRequest) -> AllocationRe
     """The allocation NimbleShip would make for a request, computed without
     persisting or booking. The side-effect-free entry point shadow-mode replay
     diffs against the incumbent (ADR 0015), so it can never drift from the
-    allocation create_consignment really makes - both run _allocate_request."""
+    allocation create_consignment really makes - both run _allocate_request.
+    Deliberately omits create_consignment's order_exists 409: that is a
+    duplicate-submission guard orthogonal to the allocation decision shadow diffs,
+    and a pre-existing row on the scratch copy must not change the verdict."""
     result, _, _ = _allocate_request(session, request)
     return result
 
