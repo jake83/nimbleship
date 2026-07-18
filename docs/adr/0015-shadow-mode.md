@@ -82,9 +82,9 @@ pitch.
   PDF: the incumbent and NimbleShip render different PDFs from the same data, so a
   byte match would false-diverge on every order; the shipping-critical data is
   the barcodes (the Parcels String).
-- Live-API carrier slice (rungs 1-2 built - Furdeco, base64_pdf byte-diff; rung 3
-  designed): extends the paperwork diff to booking carriers (Furdeco, Dachser, ...)
-  without a live carrier call.
+- Live-API carrier slice (built - Furdeco, base64_pdf byte-diff, and SSCC feeding):
+  extends the paperwork diff to booking carriers (Furdeco, Dachser, ...) without a
+  live carrier call.
   - **Replay the recorded carrier response through the real edge.** The golden
     recording carries the carrier's own book response; replay feeds it back
     through NimbleShip's real book-step execution via a mock transport, so the
@@ -113,13 +113,14 @@ pitch.
     for `local_render`, where the renderers differ), the Parcels String, and the
     tracking reference. A byte-perfect label proves only the `label_pdf` path; a
     wrong `tracking_reference` mapping is invisible to it.
-  - **Proving ladder:** Furdeco first (http-book, local-render, no SSCC - all the
-    architectural risk, none of the feature complications), then a synthetic
-    `base64_pdf`-no-SSCC rung to isolate the byte-diff, then Dachser (base64_pdf +
-    fed SSCCs). FedEx (`png_pages`) and PalletForce (`fetch_step`) are out of scope
-    until those label sources are implemented in the booking path at all - shadow
-    would flag them as divergences (NimbleShip faults where the incumbent
-    labelled), a real gap, but no match is possible until then.
+  - **Proving ladder (built):** Furdeco first (http-book, local-render, no SSCC -
+    all the architectural risk, none of the feature complications), then a synthetic
+    `base64_pdf`-no-SSCC rung to isolate the byte-diff, then the SSCC-carrier
+    (Dachser-shaped) rung (base64_pdf + fed SSCCs). FedEx (`png_pages`) and
+    PalletForce (`fetch_step`) remain out of scope until those label sources are
+    implemented in the booking path at all - shadow would flag them as divergences
+    (NimbleShip faults where the incumbent labelled), a real gap, but no match is
+    possible until then.
 - Deliberately deferred (grill just-in-time): the wire SOAP byte-match; Magento
   checkout diffs; the real-traffic capture mechanism (how the incumbent's pairs
   are logged); and any review UI beyond a batch report.

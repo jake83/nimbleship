@@ -393,11 +393,12 @@ def _replay_paperwork(
     unfeedable = _unfeedable_mint(session, code, recording)
     if unfeedable is not None:
         # See _unfeedable_mint: shadow feeds recorded SSCCs instead of minting, but
-        # this recording carries none, so it can't replay the carrier faithfully.
+        # this recording doesn't carry one per parcel, so it can't replay the
+        # carrier faithfully.
         return PaperworkOutcome(
             label_produced=False,
             error=f"carrier '{unfeedable}' mints client-side allocations (SSCC) but "
-            "the recording carries none to feed",
+            "the recording does not carry one SSCC per parcel to feed",
         )
     paperwork = paperwork_service.shadow_paperwork(
         session, code, store, http_client, uploaders, side_effects
@@ -417,19 +418,23 @@ def _unfeedable_mint(
     session: Session, code: str, recording: GoldenRecording
 ) -> str | None:
     """The selected carrier's name if its book operation mints client-side
-    allocations (SSCC) but the recording provides none to feed, else None. Shadow
-    feeds recorded SSCCs instead of minting (minting would commit on a separate
-    session the savepoint can't roll back and burn a number-range code); without
-    them it can't replay the carrier faithfully, so it refuses rather than mis-diff
-    (ADR 0015). A carrier call by itself is fine - its traffic goes to the in-memory
-    sink inside the savepoint - so http-book carriers replay."""
-    if recording.incumbent_sscc:
-        return None
+    allocations (SSCC) but the recording doesn't carry one SSCC per parcel to feed,
+    else None. Shadow feeds recorded SSCCs instead of minting (minting would commit
+    on a separate session the savepoint can't roll back and burn a number-range
+    code); a wrong count - including none - can't replay the carrier faithfully and
+    would silently fall back to the internal Parcel Barcode, so it refuses rather
+    than mis-diagnose the resulting mismatch as a product divergence (ADR 0015). A
+    carrier call by itself is fine - its traffic goes to the in-memory sink inside
+    the savepoint - so http-book carriers replay."""
     selected = paperwork_service.shadow_allocate(session, code).selected
     if selected is None:
         return None
     definition = active_definition(session, selected.carrier)
     book = definition.operations.get("book") if definition is not None else None
-    if book is not None and book.allocate:
+    if book is None or not book.allocate:
+        return None
+    if len(recording.incumbent_sscc) != paperwork_service.staged_parcel_count(
+        session, code
+    ):
         return selected.carrier
     return None

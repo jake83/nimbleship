@@ -5,6 +5,7 @@ legacy edge, side-effect-free, and NimbleShip's allocation is diffed against it.
 import base64
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -413,27 +414,33 @@ def _publish_sscc_econ_carrier(client: TestClient) -> None:
     assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
 
 
-def test_an_sscc_carrier_without_fed_sscc_is_refused_not_a_leak(
+def test_an_sscc_carrier_without_one_sscc_per_parcel_is_refused_not_a_leak(
     app: FastAPI, client: TestClient
 ) -> None:
-    # An SSCC carrier whose recording carries no SSCCs to feed can't be replayed
-    # faithfully: the slice refuses it (rather than mint, which would escape the
-    # savepoint) and leaves nothing behind.
+    # An SSCC carrier needs one recorded SSCC per parcel to replay (the fixture order
+    # has two). A recording with the wrong count - none, or too few - can't be fed
+    # faithfully; the slice refuses it (rather than mint, which would escape the
+    # savepoint, or silently fall back to internal barcodes and mis-diagnose the
+    # mismatch as a product divergence) and leaves nothing behind.
     _publish_sscc_econ_carrier(client)
-    recording = _paperwork_recording(_INCUMBENT_PARCELS)  # no incumbent_sscc
+    for sscc in ((), ("001234567800000019",)):  # empty, then one short of two
+        recording = replace(
+            _paperwork_recording(_INCUMBENT_PARCELS), incumbent_sscc=sscc
+        )
 
-    with app.state.session_factory() as session:
-        diff = replay_paperwork(session, recording)
+        with app.state.session_factory() as session:
+            diff = replay_paperwork(session, recording)
 
-    assert not diff.matched
-    assert not diff.nimbleship.label_produced
-    assert diff.nimbleship.error is not None
-    assert "ssccarrier" in diff.nimbleship.error
+        assert not diff.matched
+        assert not diff.nimbleship.label_produced
+        assert diff.nimbleship.error is not None
+        assert "ssccarrier" in diff.nimbleship.error
 
-    with app.state.session_factory() as session:
-        assert session.execute(select(CarrierNumberSequence)).scalars().all() == []
-        assert session.execute(select(Consignment)).scalars().all() == []
-        assert session.execute(select(CarrierTraffic)).scalars().all() == []
+        with app.state.session_factory() as session:
+            seqs = session.execute(select(CarrierNumberSequence)).scalars().all()
+            assert seqs == []
+            assert session.execute(select(Consignment)).scalars().all() == []
+            assert session.execute(select(CarrierTraffic)).scalars().all() == []
 
 
 def test_a_consignment_error_from_the_edge_is_a_divergence(
@@ -790,11 +797,9 @@ _FED_SSCC_PARCELS = (
 def test_an_sscc_carrier_replays_with_fed_sscc_minting_nothing(
     app: FastAPI, client: TestClient
 ) -> None:
-    # The recording feeds the incumbent's client-minted SSCCs, so replay never mints
-    # (no number-range code burned, no separate-session commit): the Parcels String
-    # uses the fed SSCCs and the base64_pdf label byte-diffs, all inside the
-    # rolled-back savepoint. CarrierNumberSequence staying empty proves nothing was
-    # minted.
+    # Fed SSCCs replace minting, so the Parcels String and base64_pdf label diff
+    # exactly; CarrierNumberSequence staying empty proves nothing was actually
+    # minted (minting commits on a separate session the savepoint can't undo).
     _publish_sscc_econ_carrier(client)
     label_b64 = base64.b64encode(_SSCC_LABEL_PDF).decode()
     recording = GoldenRecording(
