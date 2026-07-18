@@ -264,6 +264,19 @@ class PaperworkDiff:
         )
 
 
+@dataclass(frozen=True)
+class PaperworkReport:
+    diffs: tuple[PaperworkDiff, ...]
+
+    @property
+    def matched(self) -> int:
+        return sum(1 for diff in self.diffs if diff.matched)
+
+    @property
+    def divergences(self) -> tuple[PaperworkDiff, ...]:
+        return tuple(diff for diff in self.diffs if not diff.matched)
+
+
 def _savepoint_side_effects(recording: GoldenRecording) -> BookingSideEffects:
     """Shadow's booking side effects, all kept inside the rolled-back savepoint
     (ADR 0015): discard carrier traffic, don't commit a failure (its raised error
@@ -297,20 +310,24 @@ def _savepoint_side_effects(recording: GoldenRecording) -> BookingSideEffects:
     )
 
 
+class _MissingCarrierResponse(Exception):
+    """A booking order whose recording carries no carrier response to replay - a bad
+    recording, isolated as a divergence so it never aborts a batch (ADR 0015)."""
+
+
 def _carrier_responder(
     recording: GoldenRecording,
 ) -> Callable[[httpx.Request], httpx.Response]:
     """A mock transport that answers the book call with the carrier's recorded
     response, so NimbleShip's real book step runs without a live call. A
     local-render order never reaches it; a booking order without a recorded
-    response is a bad recording, faulted loudly rather than silently mis-diffed."""
+    response is a bad recording."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         response = recording.carrier_book_response
         if response is None:
-            raise AssertionError(
-                "shadow paperwork replay reached a carrier call with no recorded "
-                f"response for order '{recording.order_number}'"
+            raise _MissingCarrierResponse(
+                "the recording reached a carrier call with no recorded response"
             )
         return httpx.Response(response.status, text=response.body)
 
@@ -358,6 +375,8 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
             )
     except (ConsignmentError, SoapFault) as error:
         nimbleship = PaperworkOutcome(label_produced=False, error=str(error))
+    except _MissingCarrierResponse as error:
+        nimbleship = PaperworkOutcome(label_produced=False, error=str(error))
     except NoResultFound:
         nimbleship = PaperworkOutcome(
             label_produced=False,
@@ -372,6 +391,17 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
         recording.incumbent_tracking_reference,
         nimbleship,
         incumbent_label,
+    )
+
+
+def replay_paperwork_all(
+    session: Session, recordings: list[GoldenRecording]
+) -> PaperworkReport:
+    """Batch the paperwork diff over recordings into one report. Each replays in its
+    own rolled-back savepoint and isolates a bad recording as a divergence, so one
+    capture glitch never aborts the run (ADR 0015)."""
+    return PaperworkReport(
+        tuple(replay_paperwork(session, recording) for recording in recordings)
     )
 
 
