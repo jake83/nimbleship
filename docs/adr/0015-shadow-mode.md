@@ -55,7 +55,11 @@ pitch.
   SOAP (`createConsignments` + `allocateConsignments`) plus the incumbent's
   outcome. Replay drives those through the real legacy edge (so a divergence
   catches edge-translation bugs, not just allocation logic), runs `allocate_only`,
-  and diffs `(allocated?, carrier, service)` against the incumbent's. A wrong
+  and diffs `(allocated?, carrier, service)` against the incumbent's - only those
+  dimensions; an error message is diagnostic (WMS-native text vs ours, always
+  differing) and is not compared, or every mutual decline would read as a false
+  divergence. A NimbleShip fault is itself always a divergence, though: it is a
+  gap worth surfacing, even when the incumbent also declined. A wrong
   carrier is the outcome that actually falls over on cutover, and this proves the
   record -> replay -> diff -> report loop end to end.
 - **Grounded on real traffic, built synthetic-first.** Golden recordings are the

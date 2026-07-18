@@ -56,7 +56,21 @@ class AllocationDiff:
 
     @property
     def matched(self) -> bool:
-        return self.incumbent == self.nimbleship
+        # Only the decision dimensions are diffed (ADR 0015); error text is
+        # diagnostic (WMS-native vs ours, always differing), never compared. A
+        # NimbleShip fault is never a clean match - it is a gap worth surfacing,
+        # even against a declining incumbent.
+        if self.nimbleship.error is not None:
+            return False
+        return (
+            self.incumbent.allocated,
+            self.incumbent.carrier,
+            self.incumbent.service,
+        ) == (
+            self.nimbleship.allocated,
+            self.nimbleship.carrier,
+            self.nimbleship.service,
+        )
 
 
 @dataclass(frozen=True)

@@ -241,3 +241,23 @@ def test_a_mismatched_recording_is_isolated_not_a_batch_crash(
     assert not bad_diff.matched
     [good_diff] = [d for d in report.diffs if d.order_number == "95000254580"]
     assert good_diff.matched  # the valid recording still processed
+
+
+def test_both_declining_with_differing_error_text_is_a_match(
+    app: FastAPI, client: TestClient, tmp_path: Path
+) -> None:
+    # When both systems decline, differing diagnostic error text (WMS-native vs
+    # ours) must not read as a divergence - only the decision is diffed.
+    _seed_warehouse(client)
+    _publish_econ_rulebook(client, weight_min="100")  # no service fits -> declined
+    store, http_client, uploaders = _deps(tmp_path)
+    recording = _recording(
+        AllocationOutcome(allocated=False, error="incumbent: no eligible carrier")
+    )
+
+    with app.state.session_factory() as session:
+        diff = replay_allocation(session, recording, store, http_client, uploaders)
+
+    assert diff.nimbleship == AllocationOutcome(allocated=False)  # clean decline
+    assert diff.incumbent.error != diff.nimbleship.error
+    assert diff.matched
