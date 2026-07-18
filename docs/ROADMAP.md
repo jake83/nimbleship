@@ -226,7 +226,11 @@ Goal: the differentiators, each riding rails built earlier.
   own data. Far stronger here than on 3PL: the event timeline and evaluation
   traces are first-class, so "why did order X ship with Y / not ship at all /
   miss its manifest" is a structured read, not log archaeology. Linked from
-  the dashboard, not embedded in it.
+  the dashboard, not embedded in it. In-process read-only tool-use loop, single-
+  order diagnostics first (ADR 0016). Evals are owed before the trust threshold:
+  a golden-scenario regression suite (reusing the shadow-mode replay-diff shape)
+  gates any move to Teams or reliance by a non-operator; ships prompt-grounded
+  with a human in the loop until then.
 - 5b AI rules builder: conversational Q&A produces draft rule versions;
   the user dry-runs them against historical orders and publishes. **[G]**
   short session on the Q&A UX.
