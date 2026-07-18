@@ -257,6 +257,9 @@ export function VersionPage() {
           <p className="text-sm text-muted-foreground">
             By {detail.author} on {new Date(detail.created_at).toLocaleString()}
           </p>
+          {detail.description !== null && (
+            <p className="mt-1 text-sm">{detail.description}</p>
+          )}
         </div>
         <div className="flex gap-2">
           <Button nativeButton={false} variant="ghost" render={<Link to="/rulebook" />}>

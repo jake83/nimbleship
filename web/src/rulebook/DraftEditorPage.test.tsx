@@ -99,14 +99,20 @@ describe('DraftEditorPage', () => {
     await userEvent.clear(cost!)
     await userEvent.type(cost!, '5.00')
     await userEvent.type(screen.getByLabelText(/author/i), 'jake')
+    await userEvent.type(
+      screen.getByLabelText(/description/i),
+      'Add US shipping for Q4',
+    )
     await userEvent.click(screen.getByRole('button', { name: /save draft/i }))
 
     expect(await screen.findByText('version page probe')).toBeInTheDocument()
     const body = sentBody(mock, 'POST /api/rulebook/drafts') as {
       author: string
+      description: string
       services: Array<Record<string, unknown>>
     }
     expect(body.author).toBe('jake')
+    expect(body.description).toBe('Add US shipping for Q4')
     expect(body.services).toHaveLength(2)
     expect(body.services[0]).toMatchObject({
       code: 'DROPOUT-STD',

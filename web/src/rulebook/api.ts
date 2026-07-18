@@ -61,8 +61,9 @@ export function fetchVersion(version: number): Promise<VersionDetail> {
 export function createDraft(
   services: ServiceDeclaration[],
   author: string,
+  description?: string | null,
 ): Promise<VersionSummary> {
-  return post('/api/rulebook/drafts', { services, author })
+  return post('/api/rulebook/drafts', { services, author, description })
 }
 
 export function publishVersion(version: number): Promise<VersionSummary> {

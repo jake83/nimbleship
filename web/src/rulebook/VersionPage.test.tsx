@@ -58,6 +58,21 @@ afterEach(() => {
 })
 
 describe('VersionPage', () => {
+  it('shows the version description when present', async () => {
+    stubFetch({
+      'GET /api/rulebook/versions/2': {
+        body: versionDetail({ version: 2, description: 'Add US shipping for Q4' }),
+      },
+      'GET /api/rulebook/versions/1': { body: VERSION_1 },
+      'GET /api/rulebook/active': { body: { version: 1, services: [service()] } },
+    })
+    renderVersion(2)
+
+    expect(
+      await screen.findByText('Add US shipping for Q4'),
+    ).toBeInTheDocument()
+  })
+
   it('shows metadata, services and the diff against the previous version', async () => {
     stubFetch({
       'GET /api/rulebook/versions/2': { body: VERSION_2 },

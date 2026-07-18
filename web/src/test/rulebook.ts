@@ -32,6 +32,7 @@ export function versionDetail(
     version: 1,
     status: 'published',
     author: 'seed',
+    description: null,
     created_at: '2026-07-10T09:00:00Z',
     services: [service()],
     ...overrides,

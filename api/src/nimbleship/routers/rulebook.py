@@ -18,6 +18,7 @@ from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import (
     active_rulebook,
     create_draft,
+    description_of,
     get_version,
     list_versions,
     publish,
@@ -36,12 +37,15 @@ class DraftIn(BaseModel):
     services: list[ServiceDeclaration]
     # Placeholder identity pending the auth story; bounded to the column.
     author: str = Field(default="api", max_length=64)
+    # Optional rationale note (ADR 0017): why this version exists.
+    description: str | None = Field(default=None, max_length=280)
 
 
 class VersionOut(BaseModel):
     version: int
     status: str
     author: str
+    description: str | None = None
 
 
 class VersionDetailOut(VersionOut):
@@ -84,6 +88,7 @@ def versions(session: SessionDep) -> list[VersionDetailOut]:
             version=row.version,
             status=row.status,
             author=row.author,
+            description=description_of(row),
             created_at=row.created_at,
         )
         for row in list_versions(session)
@@ -93,12 +98,19 @@ def versions(session: SessionDep) -> list[VersionDetailOut]:
 @router.post("/drafts", status_code=201)
 def create_draft_version(payload: DraftIn, session: SessionDep) -> VersionOut:
     try:
-        row = create_draft(session, payload.services, payload.author)
+        row = create_draft(
+            session, payload.services, payload.author, payload.description
+        )
     except ValueError as error:
         # Covers pydantic's ValidationError (a ValueError subclass) and the
         # catalogue check in create_draft alike: both are authoring errors.
         raise HTTPException(422, str(error)) from error
-    return VersionOut(version=row.version, status=row.status, author=row.author)
+    return VersionOut(
+        version=row.version,
+        status=row.status,
+        author=row.author,
+        description=description_of(row),
+    )
 
 
 def _get_version_or_404(session: Session, version: int) -> RulebookVersion:
@@ -117,6 +129,7 @@ def version_content(version: int, session: SessionDep) -> VersionContentOut:
         version=row.version,
         status=row.status,
         author=row.author,
+        description=description_of(row),
         created_at=row.created_at,
         services=rulebook_for(row).services,
     )
@@ -129,7 +142,12 @@ def publish_version(version: int, session: SessionDep) -> VersionOut:
         publish(session, row)
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
-    return VersionOut(version=row.version, status=row.status, author=row.author)
+    return VersionOut(
+        version=row.version,
+        status=row.status,
+        author=row.author,
+        description=description_of(row),
+    )
 
 
 def _shipment_from(session: Session, consignment: Consignment) -> Shipment:
