@@ -60,9 +60,22 @@ _REQUIRED_FIELDS = [
 ]
 
 
+def _rulebook_error(services: list[ServiceDeclaration]) -> str | None:
+    """The reason `services` don't form a valid rulebook, or None. Enforces the
+    cross-service invariants a standalone ServiceDeclaration can't (unique code,
+    unique tie-break) - the same gate create_draft and dry_run apply, so an edit
+    can't leave the working copy in a state that only fails later, at save."""
+    try:
+        Rulebook(version=0, services=services)
+    except ValidationError as error:
+        return str(error)
+    return None
+
+
 def add_service(state: WorkingCopy, tool_input: dict[str, object]) -> dict[str, object]:
-    """Add a new service to the working copy. Rejects an invalid service or a
-    duplicate code without changing anything, so the model can correct and retry."""
+    """Add a new service to the working copy. Rejects an invalid service, or one
+    whose code or tie-break clashes with an existing service, without changing
+    anything, so the model can correct and retry."""
     service = tool_input.get("service")
     if not isinstance(service, dict):
         return {"error": "add_service needs a 'service' object"}
@@ -70,9 +83,11 @@ def add_service(state: WorkingCopy, tool_input: dict[str, object]) -> dict[str, 
         declaration = ServiceDeclaration.model_validate(service)
     except ValidationError as error:
         return {"error": f"invalid service: {error}"}
-    if state.find(declaration.code) is not None:
-        return {"error": f"a service with code '{declaration.code}' already exists"}
-    state.services.append(declaration)
+    candidate = [*state.services, declaration]
+    clash = _rulebook_error(candidate)
+    if clash is not None:
+        return {"error": clash}
+    state.services = candidate
     return {"added": declaration.code, "service_count": len(state.services)}
 
 
@@ -80,7 +95,8 @@ def update_service(
     state: WorkingCopy, tool_input: dict[str, object]
 ) -> dict[str, object]:
     """Change fields on an existing service, keeping the rest. Rejects an unknown
-    code or an edit that makes the service invalid, without changing anything."""
+    code, an edit that makes the service invalid, or a rename/tie-break change that
+    would clash with another service - without changing anything."""
     code = tool_input.get("code")
     changes = tool_input.get("changes")
     if not isinstance(code, str) or not isinstance(changes, dict):
@@ -93,7 +109,11 @@ def update_service(
         updated = ServiceDeclaration.model_validate(merged)
     except ValidationError as error:
         return {"error": f"invalid change: {error}"}
-    state.services = [updated if s.code == code else s for s in state.services]
+    candidate = [updated if s.code == code else s for s in state.services]
+    clash = _rulebook_error(candidate)
+    if clash is not None:
+        return {"error": clash}
+    state.services = candidate
     return {"updated": updated.code}
 
 

@@ -45,7 +45,17 @@ def test_add_service_appends_and_rejects_a_duplicate_code() -> None:
     assert len(state.services) == 1
     # A second add of the same code changes nothing and hands back an error to retry.
     result = add_service(state, {"service": _DROPOUT})
-    assert "already exists" in str(result["error"])
+    assert "duplicate service code" in str(result["error"])
+    assert len(state.services) == 1
+
+
+def test_add_service_rejects_a_clashing_tie_break() -> None:
+    # A new service with a distinct code but a tie-break already in use is rejected -
+    # the cross-service invariant a single ServiceDeclaration can't enforce.
+    state = _copy(_DROPOUT)
+    clash = {**_DROPOUT, "code": "OTHER"}  # tie_break_order 1, same as _DROPOUT
+    result = add_service(state, {"service": clash})
+    assert "duplicate tie-break order" in str(result["error"])
     assert len(state.services) == 1
 
 
@@ -75,6 +85,27 @@ def test_update_service_rejects_unknown_code_and_invalid_change() -> None:
     )
     assert "invalid change" in str(bad["error"])
     assert str(state.services[0].weight_min_kg) == "0"  # unchanged
+
+
+def test_update_service_rejects_a_rename_onto_another_code() -> None:
+    # Renaming one service's code onto another's would leave two same-coded services;
+    # the working copy the operator sees must not silently reach that state (it also
+    # makes a later remove-by-code delete both). Rejected, nothing changed.
+    other = {**_DROPOUT, "code": "OTHER", "tie_break_order": 2}
+    state = _copy(_DROPOUT, other)
+    result = update_service(
+        state, {"code": "OTHER", "changes": {"code": "DROPOUT-STD"}}
+    )
+    assert "duplicate service code" in str(result["error"])
+    assert [s.code for s in state.services] == ["DROPOUT-STD", "OTHER"]
+
+
+def test_update_service_rejects_a_clashing_tie_break() -> None:
+    other = {**_DROPOUT, "code": "OTHER", "tie_break_order": 2}
+    state = _copy(_DROPOUT, other)
+    result = update_service(state, {"code": "OTHER", "changes": {"tie_break_order": 1}})
+    assert "duplicate tie-break order" in str(result["error"])
+    assert [s.tie_break_order for s in state.services] == [1, 2]
 
 
 def test_remove_service_drops_by_code() -> None:
