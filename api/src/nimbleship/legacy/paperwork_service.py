@@ -24,10 +24,12 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from nimbleship.domain.allocation import AllocationResult
 from nimbleship.domain.consignments import (
     LABELLED_STATUSES,
     ConsignmentError,
     ConsignmentRequest,
+    allocate_only,
     create_consignment,
 )
 from nimbleship.domain.service_groups import known_service_group_codes
@@ -157,6 +159,18 @@ def _produce(
         ),
         labels_base64=base64.b64encode(pdf).decode("ascii"),
     )
+
+
+def shadow_allocate(session: Session, code: str) -> AllocationResult:
+    """The allocation createPaperworkForConsignments would make for a staged code,
+    computed without booking - shadow-mode replay (ADR 0015) diffs it against the
+    incumbent. Runs the same staged-data -> request path _produce does, stopping at
+    allocate_only, so it can never drift from the allocation paperwork really makes."""
+    row = _staged_row(session, code)
+    created = row.created_data or {}
+    accepted = _accepted_service_groups(created, row.allocation_data or {}, session)
+    request = _consignment_request(created, accepted)
+    return allocate_only(session, request)
 
 
 def _accepted_service_groups(
