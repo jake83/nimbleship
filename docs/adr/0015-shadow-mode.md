@@ -82,9 +82,44 @@ pitch.
   PDF: the incumbent and NimbleShip render different PDFs from the same data, so a
   byte match would false-diverge on every order; the shipping-critical data is
   the barcodes (the Parcels String).
-- Deliberately deferred (grill just-in-time): live-API carriers' labels (their
-  booking call must be mocked or recorded, so the paperwork slice replays
-  local-render carriers only - a recording whose order selects a booking carrier
-  is surfaced as a divergence, never booked); the wire SOAP byte-match; Magento
+- Live-API carrier slice (rung 1 built - Furdeco; rungs 2-3 designed): extends the
+  paperwork diff to booking carriers (Furdeco, Dachser, ...) without a live carrier
+  call.
+  - **Replay the recorded carrier response through the real edge.** The golden
+    recording carries the carrier's own book response; replay feeds it back
+    through NimbleShip's real book-step execution via a mock transport, so the
+    diff catches NimbleShip's own response-parsing, label-extraction, and
+    barcode-mapping bugs - not just the allocation. Recording only the incumbent's
+    final outcome would leave that translation layer undiffed.
+  - **Side-effect-free by construction, not by scratch-discard.** The booking path
+    deliberately commits per-step carrier traffic (and, for SSCC carriers, the
+    client-minted allocations) on separate sessions so they survive a crash - the
+    opposite of what replay needs. Rather than let those commit and discard a
+    scratch database (which makes safety a deployment discipline and mixes two
+    isolation models), the transaction-escaping writes become injected
+    collaborators defaulting to today's real committers, so shadow overrides them
+    with savepoint-contained ones and keeps the one rolled-back-savepoint isolation
+    model across every slice. Rung 1 injects the traffic recorder and the
+    failure persister (both booking commits); the SSCC source is designed the same
+    way and injected in the fed-SSCC rung (Dachser).
+  - **Recorded identifiers, uniformly.** Client-minted SSCCs (minted before the
+    call, so NimbleShip's would differ from the incumbent's) are fed from the
+    golden, exactly as carrier-returned barcodes are - the diff stays an exact
+    match and NimbleShip's deterministic mint (prefix, check digit, one-per-parcel)
+    stays covered by its own tests and publish gate, not re-verified by shadow.
+  - **Three independent diff dimensions**, each a separate extraction the WMS
+    consumes on its own: the label (byte-for-byte for `base64_pdf`, where both
+    sides decode the same carrier PDF, so a byte match is meaningful; a boolean
+    for `local_render`, where the renderers differ), the Parcels String, and the
+    tracking reference. A byte-perfect label proves only the `label_pdf` path; a
+    wrong `tracking_reference` mapping is invisible to it.
+  - **Proving ladder:** Furdeco first (http-book, local-render, no SSCC - all the
+    architectural risk, none of the feature complications), then a synthetic
+    `base64_pdf`-no-SSCC rung to isolate the byte-diff, then Dachser (base64_pdf +
+    fed SSCCs). FedEx (`png_pages`) and PalletForce (`fetch_step`) are out of scope
+    until those label sources are implemented in the booking path at all - shadow
+    would flag them as divergences (NimbleShip faults where the incumbent
+    labelled), a real gap, but no match is possible until then.
+- Deliberately deferred (grill just-in-time): the wire SOAP byte-match; Magento
   checkout diffs; the real-traffic capture mechanism (how the incumbent's pairs
   are logged); and any review UI beyond a batch report.

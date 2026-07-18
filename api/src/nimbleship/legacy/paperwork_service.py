@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from nimbleship.domain.allocation import AllocationResult
 from nimbleship.domain.consignments import (
     LABELLED_STATUSES,
+    BookingSideEffects,
     ConsignmentError,
     ConsignmentRequest,
     allocate_only,
@@ -122,6 +123,7 @@ def _produce(
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
     session: Session,
+    side_effects: BookingSideEffects | None = None,
 ) -> _Paperwork:
     created = row.created_data or {}
     accepted_groups = _accepted_service_groups(
@@ -129,7 +131,9 @@ def _produce(
     )
     request = _consignment_request(created, accepted_groups)
     try:
-        result = create_consignment(session, request, store, http_client, uploaders)
+        result = create_consignment(
+            session, request, store, http_client, uploaders, side_effects
+        )
     except ConsignmentError as error:
         raise soap.SoapFault(
             f"createPaperworkForConsignments: {request.order_number}: {error.detail}"
@@ -179,13 +183,22 @@ def shadow_paperwork(
     store: LabelStore,
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
+    side_effects: BookingSideEffects | None = None,
 ) -> "_Paperwork":
     """The paperwork createPaperworkForConsignments would produce for a staged code
-    - the label and Parcels String - run for shadow-mode diff (ADR 0015). Reuses
-    the exact _produce path, so it can't drift. Side-effect-free only with an
-    in-memory store and a no-carrier (local-render) order that never books; the
-    caller rolls back the session."""
-    return _produce(_staged_row(session, code), store, http_client, uploaders, session)
+    - the label, Parcels String, and tracking reference - run for shadow-mode diff
+    (ADR 0015). Reuses the exact _produce path, so it can't drift. Side-effect-free
+    only with an in-memory store, a mock carrier transport fed the recorded
+    response, and side_effects swapped for savepoint-contained ones; the caller
+    rolls back the session."""
+    return _produce(
+        _staged_row(session, code),
+        store,
+        http_client,
+        uploaders,
+        session,
+        side_effects,
+    )
 
 
 def _accepted_service_groups(
