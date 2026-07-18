@@ -20,19 +20,23 @@ from nimbleship.models import (
 
 
 def _order_known(session: Session, order_number: str) -> bool:
-    """Whether the order exists in the system at all - a consignment or any event.
-    Every tool reports it so the assistant can tell an unknown order (a typo) from a
-    known order that just has nothing at that stage yet, and never guess which
-    (ADR 0016 grounding)."""
-    consignment = session.execute(
-        select(Consignment.id).where(Consignment.order_number == order_number)
-    ).first()
-    if consignment is not None:
-        return True
-    event = session.execute(
-        select(OrderEvent.id).where(OrderEvent.order_number == order_number)
-    ).first()
-    return event is not None
+    """Whether the order exists in the system at all - a consignment, an event, or a
+    tracking row. Every tool reports it so the assistant can tell an unknown order (a
+    typo) from a known order that just has nothing at that stage yet, and never guess
+    which (ADR 0016 grounding). Tracking counts: a carrier webhook can post for an
+    order with no consignment yet, and that tool returns its events - order_known
+    must agree, not contradict them."""
+    for table in (
+        Consignment.order_number,
+        OrderEvent.order_number,
+        TrackingEvent.order_number,
+    ):
+        if (
+            session.execute(select(table).where(table == order_number)).first()
+            is not None
+        ):
+            return True
+    return False
 
 
 def order_timeline(session: Session, order_number: str) -> dict[str, object]:

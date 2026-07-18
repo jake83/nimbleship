@@ -20,6 +20,7 @@ from nimbleship.assistant.tools import (
     order_timeline,
     tracking,
 )
+from nimbleship.models import TrackingEvent
 
 _ORDER = "95000254580"
 _CONSIGNMENT = {
@@ -132,6 +133,29 @@ def test_tools_tell_a_known_pending_order_from_an_unknown_one(
         assert tracking(session, _ORDER)["order_known"] is True
         assert tracking(session, "NOT-A-REAL-ORDER")["order_known"] is False
         assert order_timeline(session, "NOT-A-REAL-ORDER")["order_known"] is False
+
+
+def test_order_known_counts_a_tracking_only_order(app: FastAPI) -> None:
+    # A carrier webhook can post tracking for an order with no consignment yet; that
+    # order is known, so order_known must agree with the events tracking() returns -
+    # not contradict them.
+    with app.state.session_factory() as session:
+        session.add(
+            TrackingEvent(
+                order_number="TRACK-ONLY",
+                source="voila",
+                external_id="E1",
+                raw_status="4",
+                status="in_transit",
+                raw={},
+            )
+        )
+        session.commit()
+
+    with app.state.session_factory() as session:
+        result = tracking(session, "TRACK-ONLY")
+        assert len(result["events"]) == 1  # type: ignore[arg-type]
+        assert result["order_known"] is True
 
 
 @dataclass
