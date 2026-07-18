@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # Shared secret for the Voila tracking webhook. Unset by default, so the
     # webhook rejects every post until an install configures it.
     voila_webhook_secret: str | None = None
+    # Anthropic API key for the AI assistant (ADR 0016). Unset by default, so the
+    # assistant reports "not configured" rather than erroring until an install
+    # provides one. The model is configurable; the default suits trace-reading.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-4-6"
 
 
 def get_settings() -> Settings:
