@@ -2,11 +2,11 @@
 LLM client is a dependency so it fails closed (503 when no key is configured) and
 so a test can inject a scripted fake. Read-only - the assistant only queries."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from nimbleship.assistant import LlmClient, answer, build_client
@@ -27,12 +27,14 @@ LlmDep = Annotated[LlmClient | None, Depends(get_llm_client)]
 
 
 class AssistantMessage(BaseModel):
-    role: str
-    content: str
+    # Only the two conversation roles - a stray role (e.g. "system") is a malformed
+    # request the boundary rejects (422), not a vendor outage misreported as 502.
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=10_000)
 
 
 class AssistantRequest(BaseModel):
-    messages: list[AssistantMessage]
+    messages: list[AssistantMessage] = Field(max_length=50)
 
 
 class AssistantReply(BaseModel):

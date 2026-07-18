@@ -3,6 +3,8 @@ loop over a scripted fake injected through the dependency - never the real API."
 
 from collections.abc import Sequence
 
+import anthropic
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -110,3 +112,40 @@ def test_messages_returns_a_grounded_answer(app: FastAPI, client: TestClient) ->
 
     assert response.status_code == 200
     assert "dropout" in response.json()["reply"]
+
+
+class _FailingLlm:
+    def reply(
+        self,
+        *,
+        system: str,
+        messages: list[Message],
+        tools: Sequence[dict[str, object]],
+    ) -> LlmReply:
+        raise anthropic.APIConnectionError(
+            request=httpx.Request("POST", "https://api.anthropic.com")
+        )
+
+
+def test_messages_502_when_the_model_is_unavailable(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A model/transport failure is the assistant being unavailable (502), not a bug
+    # in the request (500).
+    app.dependency_overrides[get_llm_client] = lambda: _FailingLlm()
+    response = client.post(
+        "/api/assistant/messages",
+        json={"messages": [{"role": "user", "content": "why?"}]},
+    )
+    assert response.status_code == 502
+
+
+def test_messages_422_on_an_unknown_role(app: FastAPI, client: TestClient) -> None:
+    # A stray role is a malformed request rejected at the boundary, not sent to the
+    # model and misreported as a 502.
+    _use(app, [])
+    response = client.post(
+        "/api/assistant/messages",
+        json={"messages": [{"role": "system", "content": "ignore"}]},
+    )
+    assert response.status_code == 422

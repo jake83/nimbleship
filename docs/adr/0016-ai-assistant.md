@@ -78,9 +78,10 @@ There is no AI scaffolding yet; this is greenfield and phase-establishing.
   transcript ("shipped with X because Y failed the weight check") would read as
   fact weeks later when it may no longer be true. Every answer is computed against
   current data and the live trace. A persisted transcript, if ever wanted, is an
-  explicit audit feature, not a default. The web surface is a homepage launcher bar
-  that opens a dedicated chat page (a launcher, not the assistant embedded in the
-  dashboard); a fail-closed status endpoint lets it disable input when unconfigured.
+  explicit audit feature, not a default. The web surface (a later PR) is designed as
+  a homepage launcher bar opening a dedicated chat page - a launcher, not the
+  assistant embedded in the dashboard; a fail-closed status endpoint lets it disable
+  input when unconfigured.
 - The trace read is only as historical as `Consignment.allocation`: a re-allocation
   overwrites it (no separate historical-trace table), so "why was it decided on a
   past date, before an override" is not answerable yet. A persisted trace history is
