@@ -244,9 +244,8 @@ def test_voila_events_carry_a_utc_aware_timestamp() -> None:
 
 
 def test_an_out_of_vocabulary_status_is_rejected_before_storage(app: FastAPI) -> None:
-    # A source adapter maps onto the closed canonical vocabulary (ADR 0014); a
-    # mapping typo producing an unknown status faults loudly (422) rather than
-    # persisting an out-of-vocabulary value nothing downstream expects.
+    # ADR 0014's canonical vocabulary is closed; a mapping typo must fault (422),
+    # never persist.
     from nimbleship.domain.tracking import ParsedTrackingEvent, TrackingError, ingest
 
     bad = ParsedTrackingEvent(
@@ -262,6 +261,31 @@ def test_an_out_of_vocabulary_status_is_rejected_before_storage(app: FastAPI) ->
     with app.state.session_factory() as session:
         with pytest.raises(TrackingError, match="canonical tracking status"):
             ingest(session, "voila", [bad])
+        assert session.execute(select(TrackingEvent)).scalars().all() == []
+
+
+def test_a_mixed_batch_with_one_bad_event_stores_nothing(app: FastAPI) -> None:
+    # The pre-pass validates every event before any insert, so one bad event in a
+    # delivery rejects the whole batch - no partial store, the same atomicity the
+    # length guard has.
+    from nimbleship.domain.tracking import ParsedTrackingEvent, TrackingError, ingest
+
+    def event(external_id: str, status: str) -> ParsedTrackingEvent:
+        return ParsedTrackingEvent(
+            order_number="ORD-1",
+            external_id=external_id,
+            raw_status="7",
+            status=status,
+            source_shipment_id=None,
+            tracking_code=None,
+            event_at=None,
+            raw={},
+        )
+
+    batch = [event("E1", "delivered"), event("E2", "bogus")]
+    with app.state.session_factory() as session:
+        with pytest.raises(TrackingError):
+            ingest(session, "voila", batch)
         assert session.execute(select(TrackingEvent)).scalars().all() == []
 
 

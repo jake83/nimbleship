@@ -55,13 +55,12 @@ def _reject_long(label: str, value: str | None, limit: int) -> None:
 
 def ingest(session: Session, source: str, events: list[ParsedTrackingEvent]) -> int:
     """Store new events, skipping duplicates via a per-event savepoint on the
-    (source, external_id) unique constraint - a redelivery, including a
-    concurrent race, resolves to a skip, never a 500. A pre-pass rejects
-    (TrackingError -> 422) any event whose fields overflow their column - a
-    Postgres VARCHAR overflow raises DataError, which that savepoint's
-    IntegrityError catch would miss - or whose canonical status is outside
-    TRACKING_STATUSES, so an adapter's mapping typo faults loudly instead of
-    persisting an out-of-vocabulary status."""
+    (source, external_id) unique constraint - a redelivery, including a concurrent
+    race, resolves to a skip, never a 500. A pre-pass rejects (TrackingError ->
+    422) any event whose fields overflow their column: a Postgres VARCHAR overflow
+    raises DataError, which that savepoint's IntegrityError catch would miss. It
+    also rejects a status outside TRACKING_STATUSES, so an adapter's mapping typo
+    faults loudly instead of persisting an out-of-vocabulary status."""
     for event in events:
         _reject_long("order number", event.order_number, ORDER_NUMBER_MAX)
         _reject_long("external id", event.external_id, TRACKING_ID_MAX)
