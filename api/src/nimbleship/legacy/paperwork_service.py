@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from nimbleship.domain.allocation import AllocationResult
 from nimbleship.domain.consignments import (
     LABELLED_STATUSES,
-    CarrierTrafficRecorder,
+    BookingSideEffects,
     ConsignmentError,
     ConsignmentRequest,
     allocate_only,
@@ -123,7 +123,7 @@ def _produce(
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
     session: Session,
-    record_traffic: CarrierTrafficRecorder | None = None,
+    side_effects: BookingSideEffects | None = None,
 ) -> _Paperwork:
     created = row.created_data or {}
     accepted_groups = _accepted_service_groups(
@@ -132,7 +132,7 @@ def _produce(
     request = _consignment_request(created, accepted_groups)
     try:
         result = create_consignment(
-            session, request, store, http_client, uploaders, record_traffic
+            session, request, store, http_client, uploaders, side_effects
         )
     except ConsignmentError as error:
         raise soap.SoapFault(
@@ -183,21 +183,21 @@ def shadow_paperwork(
     store: LabelStore,
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
-    record_traffic: CarrierTrafficRecorder | None = None,
+    side_effects: BookingSideEffects | None = None,
 ) -> "_Paperwork":
     """The paperwork createPaperworkForConsignments would produce for a staged code
     - the label, Parcels String, and tracking reference - run for shadow-mode diff
     (ADR 0015). Reuses the exact _produce path, so it can't drift. Side-effect-free
     only with an in-memory store, a mock carrier transport fed the recorded
-    response, and record_traffic swapped for an in-memory sink; the caller rolls
-    back the session."""
+    response, and side_effects swapped for savepoint-contained ones; the caller
+    rolls back the session."""
     return _produce(
         _staged_row(session, code),
         store,
         http_client,
         uploaders,
         session,
-        record_traffic,
+        side_effects,
     )
 
 

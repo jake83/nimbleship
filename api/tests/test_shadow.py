@@ -544,7 +544,11 @@ def _publish_furdeco_econ(client: TestClient) -> None:
     assert client.post(f"/api/rulebook/versions/{version}/publish").status_code == 200
 
 
-def _furdeco_recording(tracking: str | None, parcels: str | None) -> GoldenRecording:
+def _furdeco_recording(
+    tracking: str | None,
+    parcels: str | None,
+    response_body: str = _FURDECO_BOOK_RESPONSE,
+) -> GoldenRecording:
     return GoldenRecording(
         order_number="95000254580",
         create_consignments=_fixture("create_consignments_request.xml"),
@@ -553,9 +557,7 @@ def _furdeco_recording(tracking: str | None, parcels: str | None) -> GoldenRecor
         incumbent=AllocationOutcome(allocated=True, carrier="furdeco"),
         incumbent_parcels_string=parcels,
         incumbent_tracking_reference=tracking,
-        carrier_book_response=CarrierBookResponse(
-            status=200, body=_FURDECO_BOOK_RESPONSE
-        ),
+        carrier_book_response=CarrierBookResponse(status=200, body=response_body),
     )
 
 
@@ -596,3 +598,29 @@ def test_a_differing_tracking_reference_is_a_divergence(
     assert diff.nimbleship.tracking_reference == _FURDECO_TRACKING  # NimbleShip's real
     assert diff.nimbleship.parcels_string == _FURDECO_PARCELS
     assert not diff.matched
+
+
+def test_a_failed_book_response_is_a_divergence_not_a_leak(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A recorded response that fails the carrier's success_when (a declined order -
+    # normal real traffic) makes the book step fail. The failure's booking_failed
+    # audit must stay inside the savepoint: the replay surfaces a divergence and
+    # leaves nothing behind, never committing a Consignment row past the rollback.
+    _publish_furdeco_econ(client)
+    recording = _furdeco_recording(
+        _FURDECO_TRACKING,
+        _FURDECO_PARCELS,
+        response_body="<response><error>Postcode not covered</error></response>",
+    )
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert not diff.matched
+    assert not diff.nimbleship.label_produced
+    assert diff.nimbleship.error is not None
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(CarrierTraffic)).scalars().all() == []

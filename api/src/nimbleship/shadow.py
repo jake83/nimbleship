@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
 
-from nimbleship.domain.consignments import ConsignmentError
+from nimbleship.domain.consignments import BookingSideEffects, ConsignmentError
 from nimbleship.domain.definitions import active_definition
 from nimbleship.engine.execute import StepRecord
 from nimbleship.labels.store import LabelStore
@@ -241,9 +241,21 @@ class PaperworkDiff:
         )
 
 
-def _discard_traffic(carrier: str, order_number: str, step: StepRecord) -> None:
-    """Shadow's traffic sink: a booking replay records nothing, keeping the book
-    step's audit-trail commits out of the rolled-back savepoint (ADR 0015)."""
+def _savepoint_side_effects() -> BookingSideEffects:
+    """Shadow's booking side effects: discard carrier traffic and do not commit a
+    failure, so a booking replay - whether the book step succeeds or its recorded
+    response fails - stays inside the rolled-back savepoint instead of leaking past
+    it (ADR 0015). The raised error still becomes a divergence."""
+
+    def discard_traffic(carrier: str, order_number: str, step: StepRecord) -> None:
+        pass
+
+    def keep_in_savepoint() -> None:
+        pass
+
+    return BookingSideEffects(
+        record_traffic=discard_traffic, persist_failure=keep_in_savepoint
+    )
 
 
 def _carrier_responder(
@@ -278,7 +290,7 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
         transport = httpx.MockTransport(_carrier_responder(recording))
         with httpx.Client(transport=transport) as http_client:
             nimbleship = _replay_paperwork(
-                session, recording, store, http_client, _discard_traffic
+                session, recording, store, http_client, _savepoint_side_effects()
             )
     except (ConsignmentError, SoapFault) as error:
         nimbleship = PaperworkOutcome(label_produced=False, error=str(error))
@@ -303,7 +315,7 @@ def _replay_paperwork(
     recording: GoldenRecording,
     store: LabelStore,
     http_client: httpx.Client,
-    record_traffic: Callable[[str, str, StepRecord], None],
+    side_effects: BookingSideEffects,
 ) -> PaperworkOutcome:
     uploaders: Mapping[str, FileUploader] = {}
     consignment_service.handle(
@@ -325,7 +337,7 @@ def _replay_paperwork(
             "not yet replayed by the paperwork slice",
         )
     paperwork = paperwork_service.shadow_paperwork(
-        session, code, store, http_client, uploaders, record_traffic
+        session, code, store, http_client, uploaders, side_effects
     )
     label = (
         base64.b64decode(paperwork.labels_base64) if paperwork.labels_base64 else b""

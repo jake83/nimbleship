@@ -260,18 +260,31 @@ def _mint_parcel_allocations(
         mint_session.commit()
 
 
-# How a booking step's traffic is persisted: (carrier, order_number, record).
-# Injectable so shadow replay can swap the committing default for an in-memory
-# sink and stay inside its rolled-back savepoint (ADR 0015).
-type CarrierTrafficRecorder = Callable[[str, str, StepRecord], None]
+type TrafficRecorder = Callable[[str, str, StepRecord], None]
+type FailurePersister = Callable[[], None]
 
 
-def _committing_traffic_recorder(session: Session) -> CarrierTrafficRecorder:
-    """The default recorder: each step's traffic committed in its own transaction
-    the moment the call returns, so no later failure of the request can discard the
-    audit trail of a call that really reached the carrier (refuter, PR #30)."""
+@dataclass(frozen=True)
+class BookingSideEffects:
+    """The booking path's durability that escapes the caller's transaction: each
+    step's carrier traffic, and a booking/label failure's audit rows. Both must
+    survive the re-raise that unwinds the request before its normal commit, so
+    production commits them out of band. Injectable as one collaborator so shadow
+    replay keeps every such write inside its rolled-back savepoint - discarding
+    traffic, not committing failures - instead of leaking past it (ADR 0015)."""
 
-    def record(carrier: str, order_number: str, step: StepRecord) -> None:
+    record_traffic: TrafficRecorder
+    persist_failure: FailurePersister
+
+
+def _committing_side_effects(session: Session) -> BookingSideEffects:
+    """The production default. Traffic: each step committed in its own transaction
+    the moment the call returns, so no later failure can discard the audit trail of
+    a call that really reached the carrier (refuter, PR #30). Failure: the audit
+    rows flushed and committed so they survive the re-raise; a duplicate winning the
+    row surfaces as the success path's 409."""
+
+    def record_traffic(carrier: str, order_number: str, step: StepRecord) -> None:
         with Session(session.get_bind()) as traffic_session:
             traffic_session.add(
                 CarrierTraffic(
@@ -285,7 +298,18 @@ def _committing_traffic_recorder(session: Session) -> CarrierTrafficRecorder:
             )
             traffic_session.commit()
 
-    return record
+    def persist_failure() -> None:
+        try:
+            session.flush()
+            session.commit()
+        except IntegrityError as dup:
+            raise ConsignmentError(
+                409, "a consignment already exists for this order"
+            ) from dup
+
+    return BookingSideEffects(
+        record_traffic=record_traffic, persist_failure=persist_failure
+    )
 
 
 def _book_with_carrier(
@@ -295,15 +319,14 @@ def _book_with_carrier(
     warehouse: Warehouse | None,
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
-    record_traffic: CarrierTrafficRecorder,
+    side_effects: BookingSideEffects,
 ) -> dict[str, object]:
     """Execute the book operation's http steps, recording every step through
-    record_traffic (ADR 0009's golden corpus grows from real calls). On success the
-    extracted tracking reference and carrier barcodes land on the consignment;
-    on failure a booking_failed event is committed before the 502 - never a
-    silent success. The default recorder commits each step's traffic in its own
-    transaction (see _committing_traffic_recorder); shadow replay injects an
-    in-memory one."""
+    side_effects.record_traffic (ADR 0009's golden corpus grows from real calls). On
+    success the extracted tracking reference and carrier barcodes land on the
+    consignment; on failure a booking_failed event is persisted before the 502 -
+    never a silent success. The default side effects commit both out of band (see
+    _committing_side_effects); shadow replay injects savepoint-contained ones."""
     # Facts are gathered without autoflush: the request session must not hold an
     # open write transaction (its speculative consignment insert) while the
     # carrier is on the line - the default recorder's commits run on their own
@@ -318,7 +341,9 @@ def _book_with_carrier(
             facts["warehouse"] = warehouse_facts(warehouse)
 
     def record(step_record: StepRecord) -> None:
-        record_traffic(consignment.carrier or "", consignment.order_number, step_record)
+        side_effects.record_traffic(
+            consignment.carrier or "", consignment.order_number, step_record
+        )
 
     try:
         result = execute_operation(
@@ -339,19 +364,11 @@ def _book_with_carrier(
                 detail={"carrier": consignment.carrier, "error": str(error)},
             )
         )
-        # Commit explicitly: raising unwinds the caller before its normal commit,
+        # Persist explicitly: raising unwinds the caller before its normal commit,
         # and a failure's timeline must survive the 502 (the traffic already
-        # committed in its own transaction above).
-        try:
-            session.flush()
-            session.commit()
-        except IntegrityError as dup:
-            # A duplicate won the row while this one was on the carrier's line:
-            # surface the 409 (like the success path), not a 500 - the order is
-            # the winner's.
-            raise ConsignmentError(
-                409, "a consignment already exists for this order"
-            ) from dup
+        # committed in its own transaction above). A duplicate that won the row is
+        # surfaced as the success path's 409 by the default persister.
+        side_effects.persist_failure()
         raise ConsignmentError(502, str(error)) from error
 
     # The extraction names "tracking_reference" and "barcodes" are the contract
@@ -459,10 +476,13 @@ def create_consignment(
     store: LabelStore,
     http_client: httpx.Client,
     uploaders: Mapping[str, FileUploader],
-    record_traffic: CarrierTrafficRecorder | None = None,
+    side_effects: BookingSideEffects | None = None,
 ) -> CreatedConsignment:
     if order_exists(session, request.order_number):
         raise ConsignmentError(409, "a consignment already exists for this order")
+    effects = (
+        side_effects if side_effects is not None else _committing_side_effects(session)
+    )
     result, weights, warehouse = _allocate_request(session, request)
 
     selected = result.selected
@@ -577,9 +597,7 @@ def create_consignment(
                 warehouse,
                 http_client,
                 uploaders,
-                record_traffic
-                if record_traffic is not None
-                else _committing_traffic_recorder(session),
+                effects,
             )
         if label_spec.source == "base64_pdf":
             # The carrier returned the label as a base64 PDF in its book response;
@@ -604,16 +622,7 @@ def create_consignment(
                             detail={"carrier": selected.carrier},
                         )
                     )
-                    try:
-                        session.flush()
-                        session.commit()
-                    except IntegrityError as dup:
-                        # A duplicate won the row while this one was on the
-                        # carrier's line: surface the 409 (like the success path),
-                        # not a 500 - the order is the winner's.
-                        raise ConsignmentError(
-                            409, "a consignment already exists for this order"
-                        ) from dup
+                    effects.persist_failure()
                 raise
         else:
             pdf = render_labels(
