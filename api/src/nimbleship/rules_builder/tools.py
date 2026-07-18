@@ -60,15 +60,22 @@ _REQUIRED_FIELDS = [
 ]
 
 
-def _rulebook_error(services: list[ServiceDeclaration]) -> str | None:
-    """The reason `services` don't form a valid rulebook, or None. Enforces the
-    cross-service invariants a standalone ServiceDeclaration can't (unique code,
-    unique tie-break) - the same gate create_draft and dry_run apply, so an edit
-    can't leave the working copy in a state that only fails later, at save."""
-    try:
-        Rulebook(version=0, services=services)
-    except ValidationError as error:
-        return str(error)
+def working_copy_error(services: list[ServiceDeclaration]) -> str | None:
+    """The reason `services` can't be a working copy, or None: a duplicate code or
+    tie-break. These are the same cross-service invariants Rulebook enforces (a
+    standalone ServiceDeclaration can't), but an empty copy is allowed here - a
+    legal mid-edit state, where a saved rulebook (Rulebook's min_length) is not. The
+    single gate for both the client-supplied seed and every edit's result, so a
+    corrupt copy can never take effect and only fail later, at save."""
+    seen_codes: set[str] = set()
+    seen_orders: set[int] = set()
+    for service in services:
+        if service.code in seen_codes:
+            return f"duplicate service code: {service.code}"
+        if service.tie_break_order in seen_orders:
+            return f"duplicate tie-break order: {service.tie_break_order}"
+        seen_codes.add(service.code)
+        seen_orders.add(service.tie_break_order)
     return None
 
 
@@ -84,7 +91,7 @@ def add_service(state: WorkingCopy, tool_input: dict[str, object]) -> dict[str, 
     except ValidationError as error:
         return {"error": f"invalid service: {error}"}
     candidate = [*state.services, declaration]
-    clash = _rulebook_error(candidate)
+    clash = working_copy_error(candidate)
     if clash is not None:
         return {"error": clash}
     state.services = candidate
@@ -110,7 +117,7 @@ def update_service(
     except ValidationError as error:
         return {"error": f"invalid change: {error}"}
     candidate = [updated if s.code == code else s for s in state.services]
-    clash = _rulebook_error(candidate)
+    clash = working_copy_error(candidate)
     if clash is not None:
         return {"error": clash}
     state.services = candidate

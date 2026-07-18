@@ -91,6 +91,48 @@ def test_messages_edits_the_sent_working_copy_and_returns_it(
     assert body["services"] == []
 
 
+def test_messages_rejects_a_client_seed_that_breaks_an_invariant(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The working copy is client-supplied each turn; two same-coded services in the
+    # seed are a bad request (422), rejected before the model runs - not silently
+    # operated on (a later remove would delete both).
+    _use(app, [LlmReply(stop_reason="end_turn", text="unused", tool_uses=())])
+    response = client.post(
+        "/api/rulebook/builder/messages",
+        json={
+            "messages": [{"role": "user", "content": "go"}],
+            "services": [_DROPOUT, {**_DROPOUT, "tie_break_order": 2}],
+        },
+    )
+    assert response.status_code == 422
+    assert "duplicate service code" in response.text
+
+
+def test_messages_allows_an_empty_working_copy(
+    app: FastAPI, client: TestClient
+) -> None:
+    # Editing down to zero services is a legal mid-session state (a save is what
+    # min_length guards, not the working copy), so an empty seed is accepted.
+    _use(
+        app,
+        [
+            LlmReply(
+                stop_reason="tool_use",
+                text="",
+                tool_uses=(ToolUse("t1", "add_service", {"service": _DROPOUT}),),
+            ),
+            LlmReply(stop_reason="end_turn", text="Added.", tool_uses=()),
+        ],
+    )
+    response = client.post(
+        "/api/rulebook/builder/messages",
+        json={"messages": [{"role": "user", "content": "add one"}], "services": []},
+    )
+    assert response.status_code == 200
+    assert [s["code"] for s in response.json()["services"]] == ["DROPOUT-STD"]
+
+
 def test_messages_seeds_from_the_live_rulebook_when_no_copy_is_sent(
     app: FastAPI, client: TestClient
 ) -> None:

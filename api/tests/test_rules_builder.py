@@ -5,12 +5,13 @@ a draft through the rulebook rails)."""
 
 from collections.abc import Sequence
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nimbleship.assistant import LlmReply, ToolUse
 from nimbleship.domain.allocation import ServiceDeclaration
-from nimbleship.rules_builder import WorkingCopy, build
+from nimbleship.rules_builder import InvalidWorkingCopy, WorkingCopy, build
 from nimbleship.rules_builder.tools import (
     add_service,
     dry_run,
@@ -205,3 +206,20 @@ def test_build_applies_an_edit_and_returns_the_working_copy(app: FastAPI) -> Non
 
     assert "Added" in result.reply
     assert [s.code for s in result.services] == ["DROPOUT-STD"]
+
+
+def test_build_rejects_a_client_seed_that_breaks_an_invariant(app: FastAPI) -> None:
+    # The working copy rides the request each turn, so a caller (a stale tab, a
+    # buggy integration) can resend two same-coded services. The server validates
+    # the seed before any edit, rather than operating on a copy where a later remove
+    # would delete both.
+    duplicate = [
+        ServiceDeclaration.model_validate(_DROPOUT),
+        ServiceDeclaration.model_validate({**_DROPOUT, "tie_break_order": 2}),
+    ]
+    conversation: list[Message] = [{"role": "user", "content": "x"}]
+    with (
+        app.state.session_factory() as session,
+        pytest.raises(InvalidWorkingCopy, match="duplicate service code"),
+    ):
+        build(session, conversation, duplicate, llm=_FakeLlm([]))

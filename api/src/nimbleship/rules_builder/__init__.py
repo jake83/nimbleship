@@ -3,7 +3,7 @@ draft rulebook through granular edits to an in-memory working copy, dry-running 
 copy against historical orders. It never publishes - the operator commits the copy
 as a draft and publishes it through the existing rulebook rails."""
 
-from nimbleship.rules_builder.builder import BuildResult, build
+from nimbleship.rules_builder.builder import BuildResult, InvalidWorkingCopy, build
 from nimbleship.rules_builder.tools import WorkingCopy
 
-__all__ = ["BuildResult", "WorkingCopy", "build"]
+__all__ = ["BuildResult", "InvalidWorkingCopy", "WorkingCopy", "build"]

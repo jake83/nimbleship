@@ -16,7 +16,7 @@ from nimbleship.config import get_settings
 from nimbleship.db import get_session
 from nimbleship.domain.allocation import ServiceDeclaration
 from nimbleship.domain.rulebook import active_rulebook
-from nimbleship.rules_builder import build
+from nimbleship.rules_builder import InvalidWorkingCopy, build
 
 router = APIRouter(prefix="/rulebook/builder", tags=["rulebook"])
 
@@ -74,6 +74,10 @@ def builder_messages(
     ]
     try:
         result = build(session, conversation, services, llm=llm)
+    except InvalidWorkingCopy as error:
+        # A client-supplied working copy that already breaks an invariant: a bad
+        # request, not a builder outage - reject it before the model runs.
+        raise HTTPException(422, str(error)) from error
     except anthropic.APIError as error:
         raise HTTPException(502, "the rules builder is unavailable") from error
     return BuilderReply(reply=result.reply, services=result.services)
