@@ -37,7 +37,13 @@ export function ChatInput({
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
+          // isComposing: an IME's Enter confirms a candidate, it doesn't send -
+          // otherwise a half-composed message submits mid-composition.
+          if (
+            event.key === 'Enter' &&
+            !event.shiftKey &&
+            !event.nativeEvent.isComposing
+          ) {
             event.preventDefault()
             submit()
           }

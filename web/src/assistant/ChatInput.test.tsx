@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { ChatInput } from './ChatInput'
@@ -31,6 +31,17 @@ describe('ChatInput', () => {
     render(<ChatInput onSubmit={onSubmit} />)
 
     await userEvent.type(screen.getByLabelText(/message the assistant/i), '   {Enter}')
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit while an IME composition is active', () => {
+    const onSubmit = vi.fn()
+    render(<ChatInput onSubmit={onSubmit} />)
+
+    const input = screen.getByLabelText(/message the assistant/i)
+    fireEvent.change(input, { target: { value: 'composing' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
 
     expect(onSubmit).not.toHaveBeenCalled()
   })
