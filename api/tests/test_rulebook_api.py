@@ -94,6 +94,29 @@ def test_a_draft_description_round_trips(client: TestClient) -> None:
     )
 
 
+def test_a_blank_description_normalises_to_none(client: TestClient) -> None:
+    # A version is immutable, so a whitespace-only note would be a permanent empty
+    # line no edit could remove; the write path strips it to None instead of storing
+    # it (matters for a direct API caller that skips the web client's own trim).
+    client.get("/api/rulebook/active")
+    draft = {**DRAFT_WITH_US, "description": "   "}
+
+    created = client.post("/api/rulebook/drafts", json=draft)
+
+    assert created.status_code == 201
+    assert created.json()["description"] is None
+
+
+def test_overlong_description_is_rejected_not_a_server_error(
+    client: TestClient,
+) -> None:
+    draft = {**DRAFT_WITH_US, "description": "x" * 281}
+
+    response = client.post("/api/rulebook/drafts", json=draft)
+
+    assert response.status_code == 422
+
+
 def test_get_single_version_returns_metadata_and_services(
     client: TestClient,
 ) -> None:

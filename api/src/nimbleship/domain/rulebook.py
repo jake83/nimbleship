@@ -146,8 +146,12 @@ def create_draft(
     data: dict[str, object] = {
         "services": [s.model_dump(mode="json") for s in services]
     }
-    if description is not None:
-        data["description"] = description
+    # Normalise here, at the one write path, so a blank or whitespace note never
+    # persists: versions are immutable, so a stored "" would be a permanent empty
+    # line no edit could remove.
+    note = description.strip() if description is not None else ""
+    if note:
+        data["description"] = note
     row = RulebookVersion(status="draft", author=author, data=data)
     session.add(row)
     session.flush()
