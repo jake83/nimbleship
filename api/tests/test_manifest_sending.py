@@ -456,6 +456,57 @@ def test_the_job_runner_marks_a_deterministic_error_failed_not_stuck_pending(
         assert stages.count("manifest_failed") == 2
 
 
+def test_the_job_runner_marks_an_unexecutable_transport_failed_not_stuck_pending(
+    engine: Engine,
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A manifest step whose transport the engine cannot send (local_render is a
+    # label source, not a wire transport) raises NotImplementedError, not a
+    # ValueError - but it is the same deterministic, definition-level failure a
+    # retry cannot cure. Like the missing manifest operation, it must mark the
+    # Manifest failed on the final attempt, never leave it stuck 'pending'.
+    definition: dict[str, object] = {
+        "carrier": "brightpost",
+        "name": "Bright Post",
+        "auth": DEFINITION["auth"],
+        "operations": {
+            "manifest": {
+                "steps": [
+                    {
+                        "name": "render_only",
+                        "transport": "local_render",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.manifest_url",
+                            "content_type": "json",
+                            "mapping": [{"target": "date", "source": "manifest.date"}],
+                        },
+                    }
+                ]
+            }
+        },
+    }
+    manifest = _seed_manifest(session, definition)
+    session.commit()
+    monkeypatch.setattr(
+        "nimbleship.queue.carrier_http_client",
+        lambda: _client(lambda request: httpx.Response(200)),
+    )
+    assert MANIFEST_RETRY.max_attempts is not None
+
+    with pytest.raises(NotImplementedError, match="cannot execute"):
+        run_manifest_send(manifest.id, attempts=MANIFEST_RETRY.max_attempts)
+
+    with sessionmaker(bind=engine)() as fresh:
+        row = fresh.get(Manifest, manifest.id)
+        assert row is not None
+        assert row.status == "failed"
+        assert row.last_error is not None
+        stages = fresh.execute(select(OrderEvent.stage)).scalars().all()
+        assert stages.count("manifest_failed") == 2
+
+
 def test_the_job_runner_keeps_the_manifest_pending_while_retries_remain(
     engine: Engine,
     session: Session,

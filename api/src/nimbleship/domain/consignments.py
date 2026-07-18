@@ -307,7 +307,13 @@ def _book_with_carrier(
         result = execute_operation(
             definition, "book", facts, http_client, record, uploaders
         )
-    except CarrierCallError as error:
+    # NotImplementedError joins CarrierCallError: a step whose transport or
+    # content_type the engine cannot execute (e.g. a book step declaring the
+    # local_render label source as a transport) is a bad definition, a
+    # deterministic failure a retry cannot cure - not an uncaught 500 that would
+    # bury the booking_failed timeline this function promises. Same class the
+    # manifest send path treats identically.
+    except (CarrierCallError, NotImplementedError) as error:
         consignment.status = "booking_failed"
         session.add(
             OrderEvent(
