@@ -68,9 +68,11 @@ Two shaping questions:
 - Events order by **event_at** (the carrier's own time), falling back to
   `received_at` when a source omits it, so the read is a timeline.
 - `current_status` is the **highest-precedence canonical status among the events
-  at the latest instant** (`delivered`/`returned` > `exception` >
+  at the latest instant** (`delivered` > `returned` > `exception` >
   `out_for_delivery` > `in_transit` > `unknown`), so a delivery is not hidden by
-  a same-second exception rather than left to source payload order.
+  a same-second exception rather than left to source payload order. The
+  `delivered`/`returned` ordering only breaks a same-instant tie between two
+  mutually exclusive outcomes; it never co-occurs in practice.
 - The response exposes the canonical and raw status, source, tracking code, and
   both timestamps; the raw payload blob and the `(source, external_id)`
   idempotency key stay internal. No auth of its own (ADR 0002: the app trusts an
