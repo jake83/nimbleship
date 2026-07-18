@@ -394,9 +394,10 @@ def test_the_registry_backs_every_upload_transport() -> None:
 
 
 def test_a_local_render_step_transport_is_never_sent_to_the_wire() -> None:
-    # local_render is a label source; a step declaring it renders like an
-    # http request but must fail loudly rather than be HTTP-executed.
-    definition = CarrierDefinition.model_validate(
+    # local_render is a label source; a step declaring it as a transport is
+    # refused at authoring, but a stored (leniently loaded) one renders like an
+    # http request and must fail loudly rather than be HTTP-executed.
+    definition = CarrierDefinition.load(
         {
             "carrier": "dropout",
             "name": "Drop Out",

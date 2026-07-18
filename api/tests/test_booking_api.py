@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from nimbleship.http_client import get_http_client
-from nimbleship.models import CarrierTraffic, Consignment
+from nimbleship.models import CarrierDefinitionVersion, CarrierTraffic, Consignment
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "furdeco.definition.json"
 
@@ -501,6 +501,10 @@ def _publish_sscc_carrier(
         f"/api/carriers/ssccarrier/definitions/versions/{version}/publish"
     )
     assert published.status_code == 200, published.text
+    _publish_sscc_rulebook(client)
+
+
+def _publish_sscc_rulebook(client: TestClient) -> None:
     rulebook = {
         "author": "jake",
         "services": [
@@ -518,6 +522,33 @@ def _publish_sscc_carrier(
     }
     version = client.post("/api/rulebook/drafts", json=rulebook).json()["version"]
     client.post(f"/api/rulebook/versions/{version}/publish")
+
+
+def _seed_stored_sscc_definition(
+    client: TestClient, app: FastAPI, definition: Mapping[str, object]
+) -> None:
+    # Inject a definition the authoring gate now rejects, bypassing publish
+    # validation, so booking's lenient load still reaches it - modelling a
+    # definition stored before the gate tightened.
+    client.put(
+        "/api/carriers/ssccarrier/config",
+        json={
+            "labels_url": "https://api.ssc.example/labels",
+            "sscc_prefix": SSCC_PREFIX,
+        },
+    )
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="ssccarrier",
+                version=1,
+                status="published",
+                author="test",
+                data=dict(definition),
+            )
+        )
+        session.commit()
+    _publish_sscc_rulebook(client)
 
 
 def _sscc_answers(app: FastAPI) -> None:
@@ -572,15 +603,15 @@ def test_a_render_failure_at_booking_is_a_502_after_minting_not_an_uncaught_500(
 def test_an_unexecutable_transport_at_booking_is_502_not_an_uncaught_500(
     app: FastAPI, client: TestClient
 ) -> None:
-    # A book step can name a transport the engine cannot send - local_render is a
-    # label source, not a wire transport - and it clears both the source check
-    # and the publish render-gate (which renders but never sends), only raising
-    # NotImplementedError at booking, after SSCC minting has committed. Like a
-    # render failure, it must take the clean booking_failed + 502 path, not leak
-    # as an uncaught 500 that buries the spent-range audit trail.
+    # A book step naming a transport the engine cannot send (local_render is a
+    # label source, not a wire transport) is refused at authoring now, but a
+    # definition stored before that tightening still loads leniently and reaches
+    # send, raising NotImplementedError after SSCC minting has committed. It must
+    # take the clean booking_failed + 502 path there, not leak as an uncaught 500
+    # that buries the spent-range audit trail.
     bad = copy.deepcopy(SSCC_DEFINITION)
     bad["operations"]["book"]["steps"][0]["transport"] = "local_render"  # type: ignore[index]
-    _publish_sscc_carrier(client, definition=bad)
+    _seed_stored_sscc_definition(client, app, bad)
     _sscc_answers(app)
 
     response = client.post("/api/consignments", json=CONSIGNMENT)

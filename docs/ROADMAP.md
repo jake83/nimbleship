@@ -147,12 +147,11 @@ Goal: the spec language demonstrably expresses reality.
 
 Carried forward (manifests + job queue, PR #34):
 
-- Publish render-gate coverage for manifest operations: the gate renders
-  every shipment-context operation against recent consignments but skips
-  manifest operations, which render from a synthesized manifest, not one
-  shipment. Until covered, a broken manifest mapping publishes green and
-  first fails at trailer-close. (Also correct the `_render_gate` docstring,
-  which still claims every-operation coverage.)
+- Publish render-gate coverage for manifest operations (resolved): the gate
+  now renders a non-fan-out manifest operation once against a manifest
+  synthesized from the carrier's own recent consignments (a fan-out manifest
+  gates per shipment, like a book op), so a broken manifest mapping is caught
+  at publish, not at trailer-close. The `_render_gate` docstring is corrected.
 - Warehouse-local manifest date semantics: the manifest date is the UTC
   date of manifest creation, so a scan-out near local midnight declares the
   wrong day. Needs a Warehouse timezone (a domain decision), and covers the
@@ -180,11 +179,17 @@ Carried forward (ftp_upload + Fagans, PR #36):
   vocabulary in the first place - the "publishes then fails at trailer-close"
   gap is closed at build time. No publish-gate check was added: the closed,
   fully backed vocabulary leaves it nothing to catch.
-- Carrier-config completeness at save/publish: config is saved as an
-  unvalidated dict, so missing FTP credentials (or any carrier's required
-  config) only surface at first booking. Validate config against the
-  transports/sources the active definition references, at save or publish -
-  a system-wide onboarding gap, not ftp-specific.
+- Carrier-config completeness at save/publish (resolved): `missing_config_keys`
+  validates a definition's referenced `config.*` keys against the stored config
+  and refuses publish (reporting them at save) when any are missing, so missing
+  credentials surface at publish, not first booking.
+- Unexecutable non-upload transports/content_types (resolved): the schema
+  admitted `local_render` as a step transport and any content_type on http, yet
+  the engine sends only http and the upload transports and encodes only json or
+  form for http - so such a step rendered fine and first failed at send. The
+  manifest and booking paths now mark that failed rather than 500, but it should
+  never publish: `_transport_shape` refuses both at authoring (ADR 0009), skipped
+  on lenient load so a pre-existing stored definition is not stranded.
 
 ## Phase 4 - Legacy edge and shadow mode
 

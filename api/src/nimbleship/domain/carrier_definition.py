@@ -338,7 +338,7 @@ class Step(BaseModel):
     response: ResponseSpec | None = None
 
     @model_validator(mode="after")
-    def _transport_shape(self) -> "Step":
+    def _transport_shape(self, info: ValidationInfo) -> "Step":
         where = f"step '{self.name}'"
         if self.transport in UPLOAD_TRANSPORTS:
             # An upload renders a file to a named remote path and hears
@@ -372,6 +372,22 @@ class Step(BaseModel):
             # http-xml request body until a carrier needs one.
             if self.request.content_type == "xml":
                 raise ValueError(f"{where}: xml is an upload-only content_type")
+            # Authoring-policy (ADR 0009), relaxed on load so tightening never
+            # strands a live carrier: a stored violator instead fails cleanly at
+            # send, where the send path marks it failed rather than 500ing. The
+            # engine can only send an http request and the upload transports, and
+            # can only encode a json or form http body; anything else is a bad
+            # definition that renders fine but cannot be executed.
+            if not _is_lenient(info):
+                if self.transport == "local_render":
+                    raise ValueError(
+                        f"{where}: local_render is a label source, not a wire "
+                        "transport - the engine cannot send it"
+                    )
+                if self.request.content_type not in ("json", "form"):
+                    raise ValueError(
+                        f"{where}: an http step must be content_type json or form"
+                    )
         return self
 
 
