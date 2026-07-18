@@ -208,6 +208,15 @@ def _consignment_request(
     )
 
 
+def _fits_column(value: Decimal) -> Decimal | None:
+    """Degrade a derived dimension/girth whose decimal string would overflow the
+    DIMENSION_STR_MAX column to None (unknown, optimistic) rather than let it reach
+    Postgres as an uncaught StringDataRightTruncation. Girth is arithmetic (longest
+    + 2*(sum - longest)), so it overflows at a smaller input than the raw
+    max_dimension_cm, but an absurd WMS value can push either over."""
+    return value if len(str(value)) <= DIMENSION_STR_MAX else None
+
+
 def _max_dimension_cm(created: Mapping[str, object]) -> Decimal | None:
     """The consignment's largest single dimension. The WMS's consignment-level
     maxDimension is almost always the sentinel 0, so the real value is derived
@@ -226,7 +235,7 @@ def _max_dimension_cm(created: Mapping[str, object]) -> Decimal | None:
                 dimension = _positive_decimal(parcel.get(key))
                 if dimension is not None:
                     candidates.append(dimension)
-    return max(candidates) if candidates else None
+    return _fits_column(max(candidates)) if candidates else None
 
 
 def _max_girth_cm(created: Mapping[str, object]) -> Decimal | None:
@@ -234,9 +243,7 @@ def _max_girth_cm(created: Mapping[str, object]) -> Decimal | None:
     twice the other two (longest + 2*(sum - longest)), maxed across parcels. A
     missing or sentinel-zero dimension counts as 0 - an under-estimate that keeps
     the check optimistic (ADR 0007) rather than faulting - and None means no
-    parcel carried any usable dimension at all. Girth is arithmetic, so an
-    absurdly large dimension can produce a value too wide for the column; such a
-    value degrades to None rather than reaching Postgres as an uncaught error."""
+    parcel carried any usable dimension at all."""
     max_girth = Decimal(0)
     parcels = created.get("parcels")
     if isinstance(parcels, list):
@@ -250,9 +257,7 @@ def _max_girth_cm(created: Mapping[str, object]) -> Decimal | None:
             longest = max(dims)
             girth = longest + 2 * (sum(dims) - longest)
             max_girth = max(max_girth, girth)
-    if max_girth <= 0 or len(str(max_girth)) > DIMENSION_STR_MAX:
-        return None
-    return max_girth
+    return _fits_column(max_girth) if max_girth > 0 else None
 
 
 def _positive_decimal(value: object) -> Decimal | None:
