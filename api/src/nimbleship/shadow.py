@@ -373,9 +373,7 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
                 http_client,
                 _savepoint_side_effects(recording),
             )
-    except (ConsignmentError, SoapFault) as error:
-        nimbleship = PaperworkOutcome(label_produced=False, error=str(error))
-    except _MissingCarrierResponse as error:
+    except (ConsignmentError, SoapFault, _MissingCarrierResponse) as error:
         nimbleship = PaperworkOutcome(label_produced=False, error=str(error))
     except NoResultFound:
         nimbleship = PaperworkOutcome(
@@ -397,9 +395,8 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
 def replay_paperwork_all(
     session: Session, recordings: list[GoldenRecording]
 ) -> PaperworkReport:
-    """Batch the paperwork diff over recordings into one report. Each replays in its
-    own rolled-back savepoint and isolates a bad recording as a divergence, so one
-    capture glitch never aborts the run (ADR 0015)."""
+    """Batches replay_paperwork over recordings, so one bad recording never aborts
+    the run (ADR 0015)."""
     return PaperworkReport(
         tuple(replay_paperwork(session, recording) for recording in recordings)
     )

@@ -868,3 +868,8 @@ def test_a_booking_recording_with_no_carrier_response_is_isolated(
     assert not diff.matched
     assert diff.nimbleship.error is not None
     assert "no recorded response" in diff.nimbleship.error
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(LegacyConsignmentStaging)).scalars().all() == []
+        assert session.execute(select(CarrierTraffic)).scalars().all() == []
