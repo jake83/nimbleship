@@ -12,7 +12,6 @@ so nothing escapes the savepoint; SSCC-minting carriers are not yet replayed.
 """
 
 import base64
-import binascii
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -308,9 +307,11 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
             if recording.incumbent_label_base64
             else None
         )
-    except binascii.Error:
+    except ValueError:
         # A corrupt captured label is a bad recording, not a NimbleShip fault (cf.
         # the NoResultFound handling): surface it as a divergence, never a crash.
+        # ValueError covers both binascii.Error (bad padding/length) and the plain
+        # ValueError b64decode raises on non-ASCII input.
         return PaperworkDiff(
             recording.order_number,
             recording.incumbent_parcels_string,
