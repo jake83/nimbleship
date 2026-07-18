@@ -73,6 +73,11 @@ class GoldenRecording:
     # The carrier's recorded book response, for a booking-carrier paperwork diff;
     # None for a local-render order that never calls a carrier.
     carrier_book_response: CarrierBookResponse | None = None
+    # The incumbent's final label, base64. Set only for a carrier whose label is
+    # byte-comparable (base64_pdf: both sides decode the same carrier PDF); a
+    # local-render label differs per renderer, so leave it None and the diff falls
+    # back to checking a valid label was produced.
+    incumbent_label_base64: str | None = None
 
 
 @dataclass(frozen=True)
@@ -214,11 +219,12 @@ class _InMemoryLabelStore(LabelStore):
 
 @dataclass(frozen=True)
 class PaperworkOutcome:
-    """NimbleShip's paperwork result for a recording: whether it produced a valid
-    label, its Parcels String, its carrier tracking reference, or the error it
-    raised. Each is a separate output the WMS consumes on its own."""
+    """NimbleShip's paperwork result for a recording: its label bytes (and whether
+    that is a valid PDF), its Parcels String, its carrier tracking reference, or the
+    error it raised. Each is a separate output the WMS consumes on its own."""
 
     label_produced: bool
+    label: bytes | None = None
     parcels_string: str | None = None
     tracking_reference: str | None = None
     error: str | None = None
@@ -230,12 +236,23 @@ class PaperworkDiff:
     incumbent_parcels_string: str | None
     incumbent_tracking_reference: str | None
     nimbleship: PaperworkOutcome
+    # The incumbent's label bytes when byte-comparable (base64_pdf); None means the
+    # label diff falls back to "a valid label was produced" (local render).
+    incumbent_label: bytes | None = None
 
     @property
     def matched(self) -> bool:
+        if self.nimbleship.error is not None:
+            return False
+        if self.incumbent_label is not None:
+            # base64_pdf: both sides decode the same carrier PDF, so a byte match is
+            # meaningful and catches a wrong extract path or a mis-decode.
+            label_ok = self.nimbleship.label == self.incumbent_label
+        else:
+            # local render: the renderers differ, so only that a valid label exists.
+            label_ok = self.nimbleship.label_produced
         return (
-            self.nimbleship.error is None
-            and self.nimbleship.label_produced
+            label_ok
             and self.nimbleship.parcels_string == self.incumbent_parcels_string
             and self.nimbleship.tracking_reference == self.incumbent_tracking_reference
         )
@@ -302,11 +319,17 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
         )
     finally:
         savepoint.rollback()
+    incumbent_label = (
+        base64.b64decode(recording.incumbent_label_base64)
+        if recording.incumbent_label_base64
+        else None
+    )
     return PaperworkDiff(
         recording.order_number,
         recording.incumbent_parcels_string,
         recording.incumbent_tracking_reference,
         nimbleship,
+        incumbent_label,
     )
 
 
@@ -344,6 +367,7 @@ def _replay_paperwork(
     )
     return PaperworkOutcome(
         label_produced=label.startswith(b"%PDF"),
+        label=label or None,
         parcels_string=paperwork.parcels,
         tracking_reference=paperwork.tracking_reference,
     )
