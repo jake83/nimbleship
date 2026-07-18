@@ -215,9 +215,8 @@ def _mapping(value: object) -> Mapping[str, object] | None:
 
 
 def _scalar_str(value: object) -> str | None:
-    # An id or code the source sent as a scalar. A present-but-falsy 0 or "" is
-    # kept (it is a value, not absence); a non-scalar (list/object) or bool is
-    # malformed for these fields and collapses to None, not its Python repr.
+    # 0/"" are kept (real values the source sent); a bool or non-scalar would
+    # otherwise coerce to its repr, so it collapses to None instead.
     if isinstance(value, bool) or not isinstance(value, str | int | float):
         return None
     return str(value)

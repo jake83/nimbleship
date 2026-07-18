@@ -342,6 +342,30 @@ def test_a_non_scalar_shipment_id_or_tracking_code_collapses_to_none() -> None:
     assert event.tracking_code is None
 
 
+def test_a_boolean_shipment_id_collapses_to_none_not_true() -> None:
+    # bool is an int subclass, so without the explicit carve-out a JSON `true`
+    # would persist as "True"; it must collapse to None like any non-scalar.
+    from nimbleship.domain.tracking import parse_voila
+
+    [event] = parse_voila(
+        {
+            "tracking_update": {
+                "shipment_id": True,
+                "shipment": {"reference": "ORD-1"},
+                "parcels": [
+                    {
+                        "tracking_events": [
+                            {"status_code": 7, "update_id": "E1", "update_date": None}
+                        ]
+                    }
+                ],
+            }
+        }
+    )
+
+    assert event.source_shipment_id is None
+
+
 def test_reading_an_orders_tracking_orders_by_carrier_event_time(
     app: FastAPI, client: TestClient, voila_secret: str
 ) -> None:
