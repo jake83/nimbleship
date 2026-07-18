@@ -495,3 +495,28 @@ def test_current_status_prefers_the_terminal_status_on_a_same_instant_tie(
     body = client.get("/api/tracking/95000254580").json()
 
     assert body["current_status"] == "delivered"
+
+
+def test_current_status_normalises_a_naive_and_aware_timestamp_mix() -> None:
+    # A future adapter could yield a naive event_at alongside an aware one (Voila
+    # pins tz today); current_status must normalise, not raise comparing them.
+    from datetime import UTC, datetime
+
+    from nimbleship.domain.tracking import current_status
+
+    def event(status: str, when: datetime) -> TrackingEvent:
+        return TrackingEvent(
+            order_number="O",
+            source="s",
+            external_id=status,
+            raw_status="x",
+            status=status,
+            event_at=when,
+            received_at=when,
+            raw={},
+        )
+
+    aware = event("delivered", datetime(2026, 7, 18, 14, 0, tzinfo=UTC))
+    naive = event("in_transit", datetime(2026, 7, 18, 9, 0))  # no tzinfo
+
+    assert current_status([aware, naive]) == "delivered"

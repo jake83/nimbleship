@@ -35,7 +35,7 @@ TRACKING_STATUSES = frozenset(
 # an instant: the more-advanced status wins, so a delivery is never hidden by a
 # same-second exception. Ordering only - not a claim these states are mutually
 # reachable.
-_STATUS_PRECEDENCE = {
+_STATUS_PRECEDENCE: dict[str, int] = {
     "unknown": 0,
     "in_transit": 1,
     "out_for_delivery": 2,
@@ -43,6 +43,18 @@ _STATUS_PRECEDENCE = {
     "returned": 4,
     "delivered": 5,
 }
+# Every canonical status must have a precedence, or a new one would silently
+# resolve as unknown (0) - fail loudly at import instead.
+assert _STATUS_PRECEDENCE.keys() == TRACKING_STATUSES
+
+
+def _instant(event: TrackingEvent) -> datetime:
+    # The event's time for ordering: event_at, or received_at when the source
+    # omitted it. A naive value (a SQLite round-trip, or a future adapter that
+    # forgets to pin tz the way _voila_event_at does) is read as UTC, so a
+    # naive/aware mix never raises when compared.
+    moment = event.event_at or event.received_at
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 def current_status(events: Sequence[TrackingEvent]) -> str | None:
@@ -51,10 +63,8 @@ def current_status(events: Sequence[TrackingEvent]) -> str | None:
     status. None when there are no events."""
     if not events:
         return None
-    latest = max((event.event_at or event.received_at) for event in events)
-    tied = [
-        event for event in events if (event.event_at or event.received_at) == latest
-    ]
+    latest = max(_instant(event) for event in events)
+    tied = [event for event in events if _instant(event) == latest]
     return max(tied, key=lambda event: _STATUS_PRECEDENCE.get(event.status, 0)).status
 
 

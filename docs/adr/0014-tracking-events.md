@@ -52,8 +52,26 @@ Two shaping questions:
 - A new source is an adapter plus a status map, not a schema or endpoint change.
 - The per-source status map is configuration, not a hard contract: refining a
   code's canonical bucket is a data change, reviewable, not a migration.
-- Deliberately deferred (grill just-in-time): the read/query API and the
-  tracking UX; whether a status change also appends a summary to the OrderEvent
-  timeline; dedup subtleties beyond the idempotency key (an event redelivered
-  with changed data is currently a skip); and matching each source's real
-  webhook auth scheme at shadow mode (a shared secret stands in for now).
+- Deliberately deferred (grill just-in-time): the tracking UX (the read API is
+  now delivered - see below); whether a status change also appends a summary to
+  the OrderEvent timeline; dedup subtleties beyond the idempotency key (an event
+  redelivered with changed data is currently a skip); and matching each source's
+  real webhook auth scheme at shadow mode (a shared secret stands in for now).
+
+## Read API (amended 2026-07-18)
+
+`GET /api/tracking/{order_number}` returns the order's events plus a derived
+`current_status`. The just-in-time calls:
+
+- An **untracked order is 200 with an empty list**, not 404: tracking arrives
+  asynchronously and the store has no order registry to call an order unknown.
+- Events order by **event_at** (the carrier's own time), falling back to
+  `received_at` when a source omits it, so the read is a timeline.
+- `current_status` is the **highest-precedence canonical status among the events
+  at the latest instant** (`delivered`/`returned` > `exception` >
+  `out_for_delivery` > `in_transit` > `unknown`), so a delivery is not hidden by
+  a same-second exception rather than left to source payload order.
+- The response exposes the canonical and raw status, source, tracking code, and
+  both timestamps; the raw payload blob and the `(source, external_id)`
+  idempotency key stay internal. No auth of its own (ADR 0002: the app trusts an
+  already-authorised request), matching the other read endpoints.
