@@ -225,9 +225,7 @@ def _consignment_request(
 def _fits_column(value: Decimal) -> Decimal | None:
     """Degrade a derived dimension/girth whose decimal string would overflow the
     DIMENSION_STR_MAX column to None (unknown, optimistic) rather than let it reach
-    Postgres as an uncaught StringDataRightTruncation. Girth is arithmetic (longest
-    + 2*(sum - longest)), so it overflows at a smaller input than the raw
-    max_dimension_cm, but an absurd WMS value can push either over."""
+    Postgres as an uncaught StringDataRightTruncation."""
     return value if len(str(value)) <= DIMENSION_STR_MAX else None
 
 
