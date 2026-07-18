@@ -177,6 +177,14 @@ def shadow_allocate(session: Session, code: str) -> AllocationResult:
     return allocate_only(session, request)
 
 
+def staged_parcel_count(session: Session, code: str) -> int:
+    """The number of parcels a staged order carries. Shadow replay checks a
+    recording feeds one SSCC per parcel before replaying an SSCC carrier, so a
+    short recording is refused rather than mis-diagnosed (ADR 0015)."""
+    parcels = (_staged_row(session, code).created_data or {}).get("parcels")
+    return len(parcels) if isinstance(parcels, list) else 0
+
+
 def shadow_paperwork(
     session: Session,
     code: str,

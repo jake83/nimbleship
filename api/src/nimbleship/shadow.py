@@ -7,8 +7,9 @@ outcome; replay drives it through the edge in a rolled-back savepoint, so nothin
 survives. Two slices: `replay_allocation` diffs the allocation decision (stops at
 allocate_only, before booking); `replay_paperwork` goes further and diffs the
 label, Parcels String, and tracking reference. A booking carrier's real book step
-runs against the recorded carrier response, with traffic sent to an in-memory sink
-so nothing escapes the savepoint; SSCC-minting carriers are not yet replayed.
+runs against the recorded carrier response, with traffic sent to an in-memory sink,
+failures uncommitted, and any client-minted SSCCs fed from the recording - so
+nothing escapes the savepoint.
 """
 
 import base64
@@ -20,13 +21,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
 
+from nimbleship.domain.carrier_definition import AllocationSpec
 from nimbleship.domain.consignments import BookingSideEffects, ConsignmentError
 from nimbleship.domain.definitions import active_definition
 from nimbleship.engine.execute import StepRecord
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import allocation_service, consignment_service, paperwork_service
 from nimbleship.legacy.soap import SoapFault
-from nimbleship.models import LegacyConsignmentStaging
+from nimbleship.models import Consignment, LegacyConsignmentStaging
 from nimbleship.uploaders import FileUploader
 
 
@@ -78,6 +80,10 @@ class GoldenRecording:
     # local-render label differs per renderer, so leave it None and the diff falls
     # back to checking a valid label was produced.
     incumbent_label_base64: str | None = None
+    # The incumbent's client-minted SSCCs, one per parcel in print order. Fed into
+    # replay for an SSCC carrier instead of minting new ones, so the diff is exact
+    # and no number-range code is burned; empty for a non-minting carrier.
+    incumbent_sscc: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -258,11 +264,11 @@ class PaperworkDiff:
         )
 
 
-def _savepoint_side_effects() -> BookingSideEffects:
-    """Shadow's booking side effects: discard carrier traffic and do not commit a
-    failure, so a booking replay - whether the book step succeeds or its recorded
-    response fails - stays inside the rolled-back savepoint instead of leaking past
-    it (ADR 0015). The raised error still becomes a divergence."""
+def _savepoint_side_effects(recording: GoldenRecording) -> BookingSideEffects:
+    """Shadow's booking side effects, all kept inside the rolled-back savepoint
+    (ADR 0015): discard carrier traffic, don't commit a failure (its raised error
+    still becomes a divergence), and feed the recorded SSCCs rather than mint new
+    ones - so a minting carrier replays without a separate-session commit."""
 
     def discard_traffic(carrier: str, order_number: str, step: StepRecord) -> None:
         pass
@@ -270,8 +276,24 @@ def _savepoint_side_effects() -> BookingSideEffects:
     def keep_in_savepoint() -> None:
         pass
 
+    def feed_sscc(
+        session: Session,
+        consignment: Consignment,
+        specs: list[AllocationSpec],
+        config: dict[str, object],
+    ) -> None:
+        # strict=True enforces _unfeedable_mint's one-SSCC-per-parcel invariant at
+        # the point it's consumed: a drift faults loudly, never silently reverting
+        # to the internal Parcel Barcode this feeding exists to replace.
+        for parcel, sscc in zip(
+            consignment.parcels, recording.incumbent_sscc, strict=True
+        ):
+            parcel.carrier_barcode = sscc
+
     return BookingSideEffects(
-        record_traffic=discard_traffic, persist_failure=keep_in_savepoint
+        record_traffic=discard_traffic,
+        persist_failure=keep_in_savepoint,
+        mint_allocations=feed_sscc,
     )
 
 
@@ -299,8 +321,8 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
     """Replay create+allocate+paperwork through the real edge and diff NimbleShip's
     label, Parcels String, and tracking reference against the incumbent's. A booking
     carrier's real book step runs against the recorded response; side-effect-free
-    via an in-memory label store, an in-memory traffic sink, and a rolled-back
-    savepoint (ADR 0015). SSCC-minting carriers are not yet replayed."""
+    via an in-memory label store, an in-memory traffic sink, recorded SSCCs fed in
+    place of minting, and a rolled-back savepoint (ADR 0015)."""
     try:
         incumbent_label = (
             base64.b64decode(recording.incumbent_label_base64)
@@ -328,7 +350,11 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
         transport = httpx.MockTransport(_carrier_responder(recording))
         with httpx.Client(transport=transport) as http_client:
             nimbleship = _replay_paperwork(
-                session, recording, store, http_client, _savepoint_side_effects()
+                session,
+                recording,
+                store,
+                http_client,
+                _savepoint_side_effects(recording),
             )
     except (ConsignmentError, SoapFault) as error:
         nimbleship = PaperworkOutcome(label_produced=False, error=str(error))
@@ -365,15 +391,15 @@ def _replay_paperwork(
         recording.incumbent_code.encode(), code.encode()
     )
     allocation_service.handle(allocate, session)
-    external = _mints_outside_savepoint(session, code)
-    if external is not None:
-        # See _mints_outside_savepoint: the SSCC mint commits on a separate session
-        # the rolled-back savepoint can't undo, and the slice does not yet feed
-        # recorded SSCCs, so refuse rather than leak.
+    unfeedable = _unfeedable_mint(session, code, recording)
+    if unfeedable is not None:
+        # See _unfeedable_mint: shadow feeds recorded SSCCs instead of minting, but
+        # this recording doesn't carry one per parcel, so it can't replay the
+        # carrier faithfully.
         return PaperworkOutcome(
             label_produced=False,
-            error=f"carrier '{external}' mints client-side allocations (SSCC), "
-            "not yet replayed by the paperwork slice",
+            error=f"carrier '{unfeedable}' mints client-side allocations (SSCC) but "
+            "the recording does not carry one SSCC per parcel to feed",
         )
     paperwork = paperwork_service.shadow_paperwork(
         session, code, store, http_client, uploaders, side_effects
@@ -389,18 +415,23 @@ def _replay_paperwork(
     )
 
 
-def _mints_outside_savepoint(session: Session, code: str) -> str | None:
-    """The selected carrier's name if its book operation mints client-side
-    allocations (SSCC), else None. Minting commits on a separate session the outer
-    savepoint can't roll back, and the paperwork slice does not yet feed recorded
-    SSCCs, so it refuses such a carrier rather than leak (ADR 0015). A carrier call
-    by itself is fine - its traffic goes to shadow's in-memory sink, inside the
-    savepoint - so http-book carriers replay."""
+def _unfeedable_mint(
+    session: Session, code: str, recording: GoldenRecording
+) -> str | None:
+    """The selected carrier's name if its book operation mints SSCCs but the
+    recording doesn't carry one per parcel to feed, else None. A wrong count would
+    silently fall back to the internal Parcel Barcode, so it refuses rather than
+    mis-diagnose that as a product divergence (ADR 0015); a carrier call alone is
+    fine (its traffic goes to the in-memory sink), so http-book carriers replay."""
     selected = paperwork_service.shadow_allocate(session, code).selected
     if selected is None:
         return None
     definition = active_definition(session, selected.carrier)
     book = definition.operations.get("book") if definition is not None else None
-    if book is not None and book.allocate:
+    if book is None or not book.allocate:
+        return None
+    if len(recording.incumbent_sscc) != paperwork_service.staged_parcel_count(
+        session, code
+    ):
         return selected.carrier
     return None
