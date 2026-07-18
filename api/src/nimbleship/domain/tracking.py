@@ -4,7 +4,7 @@ its payload and normalises its raw status codes onto the canonical vocabulary;
 ingestion is idempotent on (source, external_id) so a redelivered webhook is a
 no-op. A raw code with no mapping lands as "unknown", never silently dropped."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -30,6 +30,32 @@ TRACKING_STATUSES = frozenset(
         "unknown",
     }
 )
+
+# Precedence for resolving an order's current status when its latest events share
+# an instant: the more-advanced status wins, so a delivery is never hidden by a
+# same-second exception. Ordering only - not a claim these states are mutually
+# reachable.
+_STATUS_PRECEDENCE = {
+    "unknown": 0,
+    "in_transit": 1,
+    "out_for_delivery": 2,
+    "exception": 3,
+    "returned": 4,
+    "delivered": 5,
+}
+
+
+def current_status(events: Sequence[TrackingEvent]) -> str | None:
+    """The order's current status: among the events at the latest instant (event_at,
+    or received_at when the source omitted it), the highest-precedence canonical
+    status. None when there are no events."""
+    if not events:
+        return None
+    latest = max((event.event_at or event.received_at) for event in events)
+    tied = [
+        event for event in events if (event.event_at or event.received_at) == latest
+    ]
+    return max(tied, key=lambda event: _STATUS_PRECEDENCE.get(event.status, 0)).status
 
 
 class TrackingError(Exception):

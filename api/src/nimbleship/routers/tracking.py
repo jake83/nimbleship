@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
-from nimbleship.domain.tracking import SOURCE_ADAPTERS, TrackingError, ingest
+from nimbleship.domain.tracking import (
+    SOURCE_ADAPTERS,
+    TrackingError,
+    current_status,
+    ingest,
+)
 from nimbleship.models import TrackingEvent
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
@@ -79,10 +84,8 @@ class OrderTrackingOut(BaseModel):
 
 @router.get("/{order_number}")
 def order_tracking(order_number: str, session: SessionDep) -> OrderTrackingOut:
-    # Ordered by when the carrier says each event happened (event_at), falling
-    # back to ingestion time when the source omits it, so the read is a timeline.
-    # An untracked order is a normal empty read, not a 404: tracking arrives
-    # asynchronously and the store has no order registry to reject against.
+    # Orders by event_at (falling back to received_at) for a real timeline; an
+    # untracked order is 200/empty, not 404 - there's no order registry to check.
     events = (
         session.execute(
             select(TrackingEvent)
@@ -108,6 +111,8 @@ def order_tracking(order_number: str, session: SessionDep) -> OrderTrackingOut:
     ]
     return OrderTrackingOut(
         order_number=order_number,
-        current_status=out[-1].status if out else None,
+        # Not simply the last event's status: on an event_at tie the more-advanced
+        # status wins, so a delivery is not hidden by a same-instant exception.
+        current_status=current_status(events),
         events=out,
     )

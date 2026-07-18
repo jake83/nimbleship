@@ -421,3 +421,77 @@ def test_an_event_without_a_carrier_timestamp_is_still_returned(
     [event] = body["events"]
     assert event["event_at"] is None
     assert event["received_at"] is not None
+
+
+def test_reading_an_order_merges_events_across_sources(
+    app: FastAPI, client: TestClient
+) -> None:
+    # ADR 0014: one order can be tracked by several sources. The read merges them
+    # into one event_at-ordered timeline, with current_status from the latest
+    # event overall - not partitioned by source.
+    from datetime import UTC, datetime
+
+    with app.state.session_factory() as session:
+        session.add_all(
+            [
+                TrackingEvent(
+                    order_number="MULTI-1",
+                    source="voila",
+                    external_id="V1",
+                    raw_status="7",
+                    status="delivered",
+                    event_at=datetime(2026, 7, 18, 14, 30, tzinfo=UTC),
+                    raw={},
+                ),
+                TrackingEvent(
+                    order_number="MULTI-1",
+                    source="othercarrier",
+                    external_id="O1",
+                    raw_status="MOVING",
+                    status="in_transit",
+                    event_at=datetime(2026, 7, 18, 9, 0, tzinfo=UTC),
+                    raw={},
+                ),
+            ]
+        )
+        session.commit()
+
+    body = client.get("/api/tracking/MULTI-1").json()
+
+    assert [(e["source"], e["status"]) for e in body["events"]] == [
+        ("othercarrier", "in_transit"),
+        ("voila", "delivered"),
+    ]
+    assert body["current_status"] == "delivered"
+
+
+def test_current_status_prefers_the_terminal_status_on_a_same_instant_tie(
+    app: FastAPI, client: TestClient, voila_secret: str
+) -> None:
+    # Two events at the same instant: delivered is listed FIRST, exception second,
+    # so "last event wins" would report exception. current_status must instead
+    # prefer the more-advanced status - a delivery is not hidden by a same-second
+    # exception.
+    payload = _voila_payload(
+        events=[
+            {
+                "status_code": 7,
+                "update_id": "DEL",
+                "update_date": "2026-07-18T09:00:00",
+            },
+            {
+                "status_code": 8,
+                "update_id": "EXC",
+                "update_date": "2026-07-18T09:00:00",
+            },
+        ]
+    )
+    client.post(
+        "/api/tracking/webhooks/voila",
+        json=payload,
+        headers={"X-Webhook-Secret": voila_secret},
+    )
+
+    body = client.get("/api/tracking/95000254580").json()
+
+    assert body["current_status"] == "delivered"
