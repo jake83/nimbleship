@@ -756,3 +756,19 @@ def test_a_differing_base64_pdf_label_is_a_divergence(
     assert diff.nimbleship.parcels_string == _INCUMBENT_PARCELS
     assert diff.nimbleship.tracking_reference == _LABELCARRIER_TRACKING
     assert not diff.matched  # ... but its bytes differ from the incumbent's
+
+
+def test_a_malformed_incumbent_label_is_a_divergence_not_a_crash(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A corrupt captured incumbent label (not valid base64) is a bad recording: the
+    # replay must surface a divergence, not raise binascii.Error out of the harness.
+    _publish_labelcarrier_econ(client)
+    recording = _labelcarrier_recording("not-valid-base64!!!")
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert not diff.matched
+    assert diff.nimbleship.error is not None
+    assert "not valid base64" in diff.nimbleship.error

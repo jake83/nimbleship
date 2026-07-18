@@ -12,6 +12,7 @@ so nothing escapes the savepoint; SSCC-minting carriers are not yet replayed.
 """
 
 import base64
+import binascii
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -301,6 +302,25 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
     carrier's real book step runs against the recorded response; side-effect-free
     via an in-memory label store, an in-memory traffic sink, and a rolled-back
     savepoint (ADR 0015). SSCC-minting carriers are not yet replayed."""
+    try:
+        incumbent_label = (
+            base64.b64decode(recording.incumbent_label_base64)
+            if recording.incumbent_label_base64
+            else None
+        )
+    except binascii.Error:
+        # A corrupt captured label is a bad recording, not a NimbleShip fault (cf.
+        # the NoResultFound handling): surface it as a divergence, never a crash.
+        return PaperworkDiff(
+            recording.order_number,
+            recording.incumbent_parcels_string,
+            recording.incumbent_tracking_reference,
+            PaperworkOutcome(
+                label_produced=False,
+                error="the recording's incumbent label is not valid base64",
+            ),
+            None,
+        )
     store = _InMemoryLabelStore()
     savepoint = session.begin_nested()
     try:
@@ -319,11 +339,6 @@ def replay_paperwork(session: Session, recording: GoldenRecording) -> PaperworkD
         )
     finally:
         savepoint.rollback()
-    incumbent_label = (
-        base64.b64decode(recording.incumbent_label_base64)
-        if recording.incumbent_label_base64
-        else None
-    )
     return PaperworkDiff(
         recording.order_number,
         recording.incumbent_parcels_string,
