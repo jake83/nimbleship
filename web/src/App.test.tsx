@@ -12,6 +12,9 @@ afterEach(() => {
 
 describe('App', () => {
   it('renders the NimbleShip heading', () => {
+    stubFetch({
+      'GET /api/assistant/status': { body: { configured: false } },
+    })
     render(
       <MemoryRouter>
         <App />
@@ -25,6 +28,7 @@ describe('App', () => {
 
   it('navigates to the Rulebook section', async () => {
     stubFetch({
+      'GET /api/assistant/status': { body: { configured: false } },
       'GET /api/rulebook/versions': {
         body: [
           {
