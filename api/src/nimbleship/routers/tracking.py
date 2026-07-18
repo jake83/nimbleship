@@ -4,14 +4,23 @@ source's webhook secret is configured - never open by omission, like the legacy
 edge."""
 
 import secrets
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
-from nimbleship.domain.tracking import SOURCE_ADAPTERS, TrackingError, ingest
+from nimbleship.domain.tracking import (
+    SOURCE_ADAPTERS,
+    TrackingError,
+    current_status,
+    ingest,
+)
+from nimbleship.models import TrackingEvent
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
 
@@ -53,3 +62,57 @@ def receive_tracking_webhook(
     except TrackingError as error:
         raise HTTPException(422, str(error)) from error
     return {"events_stored": stored}
+
+
+class TrackingEventOut(BaseModel):
+    source: str
+    status: str
+    raw_status: str
+    tracking_code: str | None
+    # When the carrier says it happened; None if the source omitted it.
+    event_at: datetime | None
+    # When this system ingested it - always present, the ordering fallback.
+    received_at: datetime
+
+
+class OrderTrackingOut(BaseModel):
+    order_number: str
+    # The canonical status of the most recent event, or None if untracked.
+    current_status: str | None
+    events: list[TrackingEventOut]
+
+
+@router.get("/{order_number}")
+def order_tracking(order_number: str, session: SessionDep) -> OrderTrackingOut:
+    # Orders by event_at (falling back to received_at) for a real timeline; an
+    # untracked order is 200/empty, not 404 - there's no order registry to check.
+    events = (
+        session.execute(
+            select(TrackingEvent)
+            .where(TrackingEvent.order_number == order_number)
+            .order_by(
+                func.coalesce(TrackingEvent.event_at, TrackingEvent.received_at),
+                TrackingEvent.id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out = [
+        TrackingEventOut(
+            source=event.source,
+            status=event.status,
+            raw_status=event.raw_status,
+            tracking_code=event.tracking_code,
+            event_at=event.event_at,
+            received_at=event.received_at,
+        )
+        for event in events
+    ]
+    return OrderTrackingOut(
+        order_number=order_number,
+        # Not simply the last event's status: on an event_at tie the more-advanced
+        # status wins, so a delivery is not hidden by a same-instant exception.
+        current_status=current_status(events),
+        events=out,
+    )
