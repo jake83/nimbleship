@@ -289,3 +289,30 @@ def test_a_present_but_falsy_shipment_id_or_tracking_code_is_kept() -> None:
 
     assert event.source_shipment_id == "0"
     assert event.tracking_code == ""
+
+
+def test_a_non_scalar_shipment_id_or_tracking_code_collapses_to_none() -> None:
+    # A malformed payload sending an object/array where a scalar id belongs must
+    # not persist its Python repr ("[]"/"{}"); it is treated as absent, the same
+    # silent-garbage class the status vocabulary guard closes for status.
+    from nimbleship.domain.tracking import parse_voila
+
+    [event] = parse_voila(
+        {
+            "tracking_update": {
+                "shipment_id": [],
+                "shipment": {"reference": "ORD-1"},
+                "parcels": [
+                    {
+                        "tracking_code": {},
+                        "tracking_events": [
+                            {"status_code": 7, "update_id": "E1", "update_date": None}
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert event.source_shipment_id is None
+    assert event.tracking_code is None

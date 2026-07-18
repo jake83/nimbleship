@@ -166,12 +166,8 @@ def parse_voila(payload: Mapping[str, object]) -> list[ParsedTrackingEvent]:
                     external_id=str(update_id),
                     raw_status=raw_status,
                     status=_VOILA_STATUS.get(raw_status, "unknown"),
-                    source_shipment_id=(
-                        str(shipment_id) if shipment_id is not None else None
-                    ),
-                    tracking_code=(
-                        str(tracking_code) if tracking_code is not None else None
-                    ),
+                    source_shipment_id=_scalar_str(shipment_id),
+                    tracking_code=_scalar_str(tracking_code),
                     event_at=_voila_event_at(event_map.get("update_date")),
                     raw=dict(event_map),
                 )
@@ -181,6 +177,15 @@ def parse_voila(payload: Mapping[str, object]) -> list[ParsedTrackingEvent]:
 
 def _mapping(value: object) -> Mapping[str, object] | None:
     return value if isinstance(value, Mapping) else None
+
+
+def _scalar_str(value: object) -> str | None:
+    # An id or code the source sent as a scalar. A present-but-falsy 0 or "" is
+    # kept (it is a value, not absence); a non-scalar (list/object) or bool is
+    # malformed for these fields and collapses to None, not its Python repr.
+    if isinstance(value, bool) or not isinstance(value, str | int | float):
+        return None
+    return str(value)
 
 
 # The source-adapter seam: a webhook for a source dispatches to its parser. New
