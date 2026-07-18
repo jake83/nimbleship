@@ -173,6 +173,21 @@ def shadow_allocate(session: Session, code: str) -> AllocationResult:
     return allocate_only(session, request)
 
 
+def shadow_paperwork(
+    session: Session,
+    code: str,
+    store: LabelStore,
+    http_client: httpx.Client,
+    uploaders: Mapping[str, FileUploader],
+) -> "_Paperwork":
+    """The paperwork createPaperworkForConsignments would produce for a staged code
+    - the label and Parcels String - run for shadow-mode diff (ADR 0015). Reuses
+    the exact _produce path, so it can't drift. Side-effect-free only with an
+    in-memory store and a no-carrier (local-render) order that never books; the
+    caller rolls back the session."""
+    return _produce(_staged_row(session, code), store, http_client, uploaders, session)
+
+
 def _accepted_service_groups(
     created: dict[str, object], allocation: dict[str, object], session: Session
 ) -> list[str]:

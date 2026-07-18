@@ -17,6 +17,7 @@ from nimbleship.shadow import (
     GoldenRecording,
     replay_all,
     replay_allocation,
+    replay_paperwork,
 )
 from nimbleship.uploaders import FileUploader
 
@@ -261,3 +262,63 @@ def test_both_declining_with_differing_error_text_is_a_match(
     assert diff.nimbleship == AllocationOutcome(allocated=False)  # clean decline
     assert diff.incumbent.error != diff.nimbleship.error
     assert diff.matched
+
+
+_INCUMBENT_PARCELS = (
+    "95000254580-parcel-1:95000254580-1,95000254580-parcel-2:95000254580-2"
+)
+
+
+def _paperwork_recording(incumbent_parcels: str | None) -> GoldenRecording:
+    return GoldenRecording(
+        order_number="95000254580",
+        create_consignments=_fixture("create_consignments_request.xml"),
+        incumbent_code=_INCUMBENT_CODE,
+        allocate_consignments=_allocate_body([_INCUMBENT_CODE], ["ECONOMY"]),
+        incumbent=AllocationOutcome(allocated=True, carrier="dropout"),
+        incumbent_parcels_string=incumbent_parcels,
+    )
+
+
+def test_a_matching_parcels_string_with_a_label_is_no_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A local-render (dropout) order: NimbleShip produces a real label and a
+    # Parcels String matching the incumbent's - no divergence.
+    _seed_config(client)
+    recording = _paperwork_recording(_INCUMBENT_PARCELS)
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.label_produced
+    assert diff.nimbleship.parcels_string == _INCUMBENT_PARCELS
+    assert diff.matched
+
+
+def test_a_differing_parcels_string_is_a_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    _seed_config(client)
+    recording = _paperwork_recording("95000254580-parcel-1:A-WRONG-BARCODE")
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert diff.nimbleship.parcels_string == _INCUMBENT_PARCELS  # NimbleShip's real one
+    assert diff.nimbleship.label_produced
+    assert not diff.matched
+
+
+def test_paperwork_replay_leaves_no_trace(app: FastAPI, client: TestClient) -> None:
+    # In-memory label store + savepoint: no consignment or staging row survives,
+    # and nothing is written to the label store on disk.
+    _seed_config(client)
+    recording = _paperwork_recording(_INCUMBENT_PARCELS)
+
+    with app.state.session_factory() as session:
+        replay_paperwork(session, recording)
+
+    with app.state.session_factory() as session:
+        assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(LegacyConsignmentStaging)).scalars().all() == []

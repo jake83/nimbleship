@@ -75,7 +75,15 @@ pitch.
   the later label/Parcels String/paperwork slices without a reshape.
 - Divergences are surfaced, not auto-failed: the report categorises them for
   review, because some are the successor being deliberately correct.
-- Deliberately deferred (grill just-in-time): the label / Parcels String /
-  paperwork diff slices; wire SOAP byte-match; Magento checkout diffs; the
+- Parcels String + label slice (added): `replay_paperwork` extends the loop for
+  a local-render carrier (dropout) that makes no carrier call - producing the
+  label into an in-memory store, so nothing writes to disk - and diffs the
+  Parcels String and that a valid label was produced. It does not byte-diff the
+  PDF: the incumbent and NimbleShip render different PDFs from the same data, so a
+  byte match would false-diverge on every order; the shipping-critical data is
+  the barcodes (the Parcels String).
+- Deliberately deferred (grill just-in-time): live-API carriers' labels (their
+  booking call must be mocked or recorded); the wire SOAP byte-match; Magento
+  checkout diffs; the
   real-traffic capture mechanism (how the incumbent's pairs are logged); and any
   review UI beyond a batch report.
