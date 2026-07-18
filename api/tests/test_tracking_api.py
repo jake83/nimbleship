@@ -241,3 +241,102 @@ def test_voila_events_carry_a_utc_aware_timestamp() -> None:
     )
 
     assert event.event_at == datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
+
+
+def test_an_out_of_vocabulary_status_is_rejected_before_storage(app: FastAPI) -> None:
+    # ADR 0014's canonical vocabulary is closed; a mapping typo must fault (422),
+    # never persist.
+    from nimbleship.domain.tracking import ParsedTrackingEvent, TrackingError, ingest
+
+    bad = ParsedTrackingEvent(
+        order_number="ORD-1",
+        external_id="E1",
+        raw_status="4",
+        status="in_transitt",  # a typo: not a member of TRACKING_STATUSES
+        source_shipment_id=None,
+        tracking_code=None,
+        event_at=None,
+        raw={},
+    )
+    with app.state.session_factory() as session:
+        with pytest.raises(TrackingError, match="canonical tracking status"):
+            ingest(session, "voila", [bad])
+        assert session.execute(select(TrackingEvent)).scalars().all() == []
+
+
+def test_a_mixed_batch_with_one_bad_event_stores_nothing(app: FastAPI) -> None:
+    # The pre-pass validates every event before any insert, so one bad event in a
+    # delivery rejects the whole batch - no partial store, the same atomicity the
+    # length guard has.
+    from nimbleship.domain.tracking import ParsedTrackingEvent, TrackingError, ingest
+
+    def event(external_id: str, status: str) -> ParsedTrackingEvent:
+        return ParsedTrackingEvent(
+            order_number="ORD-1",
+            external_id=external_id,
+            raw_status="7",
+            status=status,
+            source_shipment_id=None,
+            tracking_code=None,
+            event_at=None,
+            raw={},
+        )
+
+    batch = [event("E1", "delivered"), event("E2", "bogus")]
+    with app.state.session_factory() as session:
+        with pytest.raises(TrackingError):
+            ingest(session, "voila", batch)
+        assert session.execute(select(TrackingEvent)).scalars().all() == []
+
+
+def test_a_present_but_falsy_shipment_id_or_tracking_code_is_kept() -> None:
+    # 0 and "" are values the source sent, not absence: coercing them to None
+    # would silently drop a real id. Only a genuinely missing key is None.
+    from nimbleship.domain.tracking import parse_voila
+
+    [event] = parse_voila(
+        {
+            "tracking_update": {
+                "shipment_id": 0,
+                "shipment": {"reference": "ORD-1"},
+                "parcels": [
+                    {
+                        "tracking_code": "",
+                        "tracking_events": [
+                            {"status_code": 7, "update_id": "E1", "update_date": None}
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert event.source_shipment_id == "0"
+    assert event.tracking_code == ""
+
+
+def test_a_non_scalar_shipment_id_or_tracking_code_collapses_to_none() -> None:
+    # A malformed payload sending an object/array where a scalar id belongs must
+    # not persist its Python repr ("[]"/"{}"); it is treated as absent, the same
+    # silent-garbage class the status vocabulary guard closes for status.
+    from nimbleship.domain.tracking import parse_voila
+
+    [event] = parse_voila(
+        {
+            "tracking_update": {
+                "shipment_id": [],
+                "shipment": {"reference": "ORD-1"},
+                "parcels": [
+                    {
+                        "tracking_code": {},
+                        "tracking_events": [
+                            {"status_code": 7, "update_id": "E1", "update_date": None}
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert event.source_shipment_id is None
+    assert event.tracking_code is None
