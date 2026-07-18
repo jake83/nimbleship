@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -58,5 +58,28 @@ describe('App', () => {
     expect(
       await screen.findByRole('link', { name: /version 1/i }),
     ).toBeInTheDocument()
+  })
+
+  it('launches an assistant question from the homepage', async () => {
+    stubFetch({
+      'GET /api/assistant/status': { body: { configured: true } },
+      'POST /api/assistant/messages': { body: { reply: 'It shipped with dropout.' } },
+    })
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>,
+    )
+
+    const input = await screen.findByLabelText(/message the assistant/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'why did 123 ship?{Enter}')
+
+    // Navigated to the assistant page and the question was answered end to end.
+    expect(
+      await screen.findByRole('heading', { name: /assistant/i }),
+    ).toBeInTheDocument()
+    expect(await screen.findByText(/it shipped with dropout/i)).toBeInTheDocument()
+    expect(screen.getByText('why did 123 ship?')).toBeInTheDocument()
   })
 })

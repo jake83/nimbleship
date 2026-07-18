@@ -37,4 +37,24 @@ describe('assistant api', () => {
       sendAssistantMessages([{ role: 'user', content: 'x' }]),
     ).rejects.toMatchObject({ status: 503, message: 'the assistant is not configured' })
   })
+
+  it('surfaces the first message of a 422 validation error', async () => {
+    stubFetch({
+      'POST /api/assistant/messages': {
+        body: {
+          detail: [
+            { loc: ['body', 'messages'], msg: 'List should have at most 50 items' },
+          ],
+        },
+        status: 422,
+      },
+    })
+
+    await expect(
+      sendAssistantMessages([{ role: 'user', content: 'x' }]),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: 'List should have at most 50 items',
+    })
+  })
 })

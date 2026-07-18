@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { cn } from '@/lib/utils'
 
@@ -23,6 +23,7 @@ function readInitial(state: unknown): string | null {
  * posts the whole conversation and nothing is stored (ADR 0016). */
 export function AssistantPage() {
   const location = useLocation()
+  const navigate = useNavigate()
   const initial = readInitial(location.state)
   const [messages, setMessages] = useState<AssistantMessage[]>([])
   const [pending, setPending] = useState(false)
@@ -68,8 +69,12 @@ export function AssistantPage() {
   useEffect(() => {
     if (configured !== true || started.current || initial === null) return
     started.current = true
+    // Consume the launcher question once: clear it from history state so a browser
+    // back/forward to this entry (which restores state verbatim) can't silently
+    // re-send it as a new turn.
+    navigate(location.pathname, { replace: true, state: null })
     void runTurn(initial, [])
-  }, [configured, initial, runTurn])
+  }, [configured, initial, runTurn, navigate, location.pathname])
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">

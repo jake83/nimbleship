@@ -16,19 +16,32 @@ export class AssistantError extends Error {
   }
 }
 
+/** FastAPI's `detail` is a plain string for our HTTPExceptions, but an array of
+ * {loc, msg, ...} for a 422 validation error - surface the first message either way. */
+function detailMessage(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first: unknown = detail[0]
+    if (
+      typeof first === 'object' &&
+      first !== null &&
+      'msg' in first &&
+      typeof first.msg === 'string'
+    ) {
+      return first.msg
+    }
+  }
+  return null
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)
   if (!response.ok) {
     let message = `request failed (${response.status})`
     try {
       const body: unknown = await response.json()
-      if (
-        typeof body === 'object' &&
-        body !== null &&
-        'detail' in body &&
-        typeof body.detail === 'string'
-      ) {
-        message = body.detail
+      if (typeof body === 'object' && body !== null && 'detail' in body) {
+        message = detailMessage(body.detail) ?? message
       }
     } catch {
       // Non-JSON error body; keep the generic message.
