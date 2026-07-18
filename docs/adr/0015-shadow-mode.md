@@ -83,7 +83,8 @@ pitch.
   byte match would false-diverge on every order; the shipping-critical data is
   the barcodes (the Parcels String).
 - Deliberately deferred (grill just-in-time): live-API carriers' labels (their
-  booking call must be mocked or recorded); the wire SOAP byte-match; Magento
-  checkout diffs; the
-  real-traffic capture mechanism (how the incumbent's pairs are logged); and any
-  review UI beyond a batch report.
+  booking call must be mocked or recorded, so the paperwork slice replays
+  local-render carriers only - a recording whose order selects a booking carrier
+  is surfaced as a divergence, never booked); the wire SOAP byte-match; Magento
+  checkout diffs; the real-traffic capture mechanism (how the incumbent's pairs
+  are logged); and any review UI beyond a batch report.

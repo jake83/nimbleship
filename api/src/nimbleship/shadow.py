@@ -20,6 +20,7 @@ from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
 
 from nimbleship.domain.consignments import ConsignmentError
+from nimbleship.domain.definitions import active_definition
 from nimbleship.labels.store import LabelStore
 from nimbleship.legacy import allocation_service, consignment_service, paperwork_service
 from nimbleship.legacy.soap import SoapFault
@@ -210,8 +211,6 @@ class PaperworkDiff:
 
     @property
     def matched(self) -> bool:
-        # A divergence if NimbleShip failed to produce a label, or its Parcels
-        # String differs from the incumbent's.
         return (
             self.nimbleship.error is None
             and self.nimbleship.label_produced
@@ -263,6 +262,18 @@ def _replay_paperwork(
         recording.incumbent_code.encode(), code.encode()
     )
     allocation_service.handle(allocate, session)
+    external = _books_outside_savepoint(session, code)
+    if external is not None:
+        # NimbleShip selected a carrier whose booking escapes the savepoint - it
+        # mints allocations on a separate committing session, or calls the carrier
+        # - so replaying paperwork through it would leak durable state (an SSCC
+        # burn) the rollback can't undo. The paperwork slice replays local-render
+        # carriers only (ADR 0015); surface the mismatch as a divergence.
+        return PaperworkOutcome(
+            label_produced=False,
+            error=f"carrier '{external}' books via a carrier call or an allocation "
+            "mint; the paperwork slice replays local-render carriers only",
+        )
     paperwork = paperwork_service.shadow_paperwork(
         session, code, store, http_client, uploaders
     )
@@ -273,3 +284,18 @@ def _replay_paperwork(
         label_produced=label.startswith(b"%PDF"),
         parcels_string=paperwork.parcels,
     )
+
+
+def _books_outside_savepoint(session: Session, code: str) -> str | None:
+    """The selected carrier's name if booking it would escape the savepoint (it
+    mints allocations on a separate committing session, or calls the carrier),
+    else None. Only such a carrier makes replay_paperwork's side-effect-free
+    promise false, so the paperwork slice refuses it rather than book (ADR 0015)."""
+    selected = paperwork_service.shadow_allocate(session, code).selected
+    if selected is None:
+        return None
+    definition = active_definition(session, selected.carrier)
+    book = definition.operations.get("book") if definition is not None else None
+    if book is not None and (book.allocate or book.steps):
+        return selected.carrier
+    return None
