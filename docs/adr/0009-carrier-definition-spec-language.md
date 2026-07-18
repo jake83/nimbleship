@@ -119,9 +119,12 @@ by the booking flow's error handling (a render `ValueError` is routed to a
 race - both clean):
 
 - **Skippable on load** - authoring-policy rules whose stored violator fails
-  *cleanly* at render: the csv scalar-column rule (the renderer refuses a list
-  column), and source/target resolution (an unresolvable fact raises at render,
-  now caught). Re-enforcing these on load buys nothing but stranding.
+  *cleanly* at render or send: the csv scalar-column rule (the renderer refuses
+  a list column), source/target resolution (an unresolvable fact raises at
+  render, now caught), and the unexecutable-transport rules (a `local_render`
+  step transport or a non-json/form http content_type raises
+  `NotImplementedError` at send, routed to `booking_failed`/`manifest_failed`).
+  Re-enforcing these on load buys nothing but stranding.
 - **Strict on load** - two classes. Rules whose violation is an *unsafe side
   effect*, not a clean failure: an SSCC that does not halt would mint a
   wrapping range and reissue live codes; a fan-out on a non-upload transport

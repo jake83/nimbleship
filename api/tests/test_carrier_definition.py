@@ -1416,6 +1416,73 @@ def test_xml_is_an_upload_only_content_type() -> None:
         CarrierDefinition.model_validate(bad)
 
 
+def test_local_render_is_not_a_wire_transport() -> None:
+    # local_render is a label source, not a transport the engine can send; a step
+    # declaring it as its transport is refused at authoring. Load accepts it (ADR
+    # 0009 lenient): a stored violator fails cleanly at send, not by failing to
+    # load - the same skip the csv-policy rule takes.
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "local_render",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "o", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+    with pytest.raises(ValidationError, match="not a wire transport"):
+        CarrierDefinition.model_validate(bad)
+    assert CarrierDefinition.load(bad).carrier == "furdeco"
+
+
+def test_an_http_step_must_be_json_or_form() -> None:
+    # The engine encodes only json and form for an http body; csv (or any other
+    # content_type) on http is unexecutable, so it is refused at authoring. Load
+    # accepts it: a stored violator fails cleanly at send.
+    bad = {
+        "carrier": "furdeco",
+        "name": "Furdeco",
+        "auth": {"scheme": "none"},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.base_url",
+                            "content_type": "csv",
+                            "mapping": [
+                                {"target": "o", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+                "label": {"source": "local_render"},
+            }
+        },
+    }
+    with pytest.raises(ValidationError, match="json or form"):
+        CarrierDefinition.model_validate(bad)
+    assert CarrierDefinition.load(bad).carrier == "furdeco"
+
+
 # Authoring vs load (ADR 0009): drafting, and the publish gate via
 # definition_for, run every rule (model_validate); the booking runtime read,
 # CarrierDefinition.load, skips the authoring-policy rules whose only failure
