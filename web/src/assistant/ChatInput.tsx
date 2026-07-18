@@ -10,6 +10,7 @@ interface ChatInputProps {
   pending?: boolean
   placeholder?: string
   autoFocus?: boolean
+  ariaLabel?: string
 }
 
 /** The assistant's input: a textarea that grows with content up to ~8 lines then
@@ -21,6 +22,7 @@ export function ChatInput({
   pending = false,
   placeholder = 'Ask why an order shipped the way it did…',
   autoFocus = false,
+  ariaLabel = 'Message the assistant',
 }: ChatInputProps) {
   const [text, setText] = useState('')
   const canSend = text.trim().length > 0 && !disabled && !pending
@@ -52,7 +54,7 @@ export function ChatInput({
         placeholder={placeholder}
         autoFocus={autoFocus}
         rows={1}
-        aria-label="Message the assistant"
+        aria-label={ariaLabel}
         className="max-h-52 resize-none overflow-y-auto pr-12"
       />
       <Button

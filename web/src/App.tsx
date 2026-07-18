@@ -13,6 +13,7 @@ import { AssistantPage } from '@/assistant/AssistantPage'
 import { ChatInput } from '@/assistant/ChatInput'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { BuilderPage } from '@/rulebook/BuilderPage'
 import { DraftEditorPage } from '@/rulebook/DraftEditorPage'
 import { VersionPage } from '@/rulebook/VersionPage'
 import { VersionsPage } from '@/rulebook/VersionsPage'
@@ -111,6 +112,7 @@ function App() {
         <Route index element={<Home />} />
         <Route path="/assistant" element={<AssistantPage />} />
         <Route path="/rulebook" element={<VersionsPage />} />
+        <Route path="/rulebook/builder" element={<BuilderPage />} />
         <Route path="/rulebook/versions/:version" element={<VersionPage />} />
         <Route path="/rulebook/drafts/new" element={<DraftEditorPage />} />
       </Route>
