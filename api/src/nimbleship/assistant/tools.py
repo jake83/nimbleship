@@ -19,6 +19,22 @@ from nimbleship.models import (
 )
 
 
+def _order_known(session: Session, order_number: str) -> bool:
+    """Whether the order exists in the system at all - a consignment or any event.
+    Every tool reports it so the assistant can tell an unknown order (a typo) from a
+    known order that just has nothing at that stage yet, and never guess which
+    (ADR 0016 grounding)."""
+    consignment = session.execute(
+        select(Consignment.id).where(Consignment.order_number == order_number)
+    ).first()
+    if consignment is not None:
+        return True
+    event = session.execute(
+        select(OrderEvent.id).where(OrderEvent.order_number == order_number)
+    ).first()
+    return event is not None
+
+
 def order_timeline(session: Session, order_number: str) -> dict[str, object]:
     """The append-only order event timeline: what happened to the order, in order."""
     events = (
@@ -32,6 +48,7 @@ def order_timeline(session: Session, order_number: str) -> dict[str, object]:
     )
     return {
         "order_number": order_number,
+        "order_known": _order_known(session, order_number),
         "events": [
             {"stage": e.stage, "at": e.created_at.isoformat(), "detail": e.detail}
             for e in events
@@ -47,12 +64,17 @@ def allocation_trace(session: Session, order_number: str) -> dict[str, object]:
         select(Consignment).where(Consignment.order_number == order_number)
     ).scalar_one_or_none()
     if consignment is None or consignment.allocation is None:
-        return {"order_number": order_number, "found": False}
+        return {
+            "order_number": order_number,
+            "found": False,
+            "order_known": _order_known(session, order_number),
+        }
     result = AllocationResult.model_validate(consignment.allocation)
     selected = result.selected
     return {
         "order_number": order_number,
         "found": True,
+        "order_known": True,
         "rulebook_version": result.rulebook_version,
         "reason": result.reason,
         "selected": None
@@ -88,6 +110,7 @@ def tracking(session: Session, order_number: str) -> dict[str, object]:
     )
     return {
         "order_number": order_number,
+        "order_known": _order_known(session, order_number),
         "current_status": current_status(events),
         "events": [
             {
@@ -107,20 +130,24 @@ def manifest_status(session: Session, order_number: str) -> dict[str, object]:
         select(Consignment).where(Consignment.order_number == order_number)
     ).scalar_one_or_none()
     if consignment is None:
-        return {"order_number": order_number, "found": False}
-    # A consignment is on at most one manifest: the dispatch lifecycle never
-    # re-manifests (a failed manifest is parked for a human, ADR 0013), so
-    # scalar_one_or_none is exact. Revisit if a re-manifest path is ever added.
+        return {
+            "order_number": order_number,
+            "found": False,
+            "order_known": _order_known(session, order_number),
+        }
+    # A consignment is on at most one manifest (ADR 0013: a failed send parks for a
+    # human, never re-manifests), so scalar_one_or_none is exact.
     manifest = session.execute(
         select(Manifest)
         .join(ManifestConsignment, ManifestConsignment.manifest_id == Manifest.id)
         .where(ManifestConsignment.consignment_id == consignment.id)
     ).scalar_one_or_none()
     if manifest is None:
-        return {"order_number": order_number, "found": False}
+        return {"order_number": order_number, "found": False, "order_known": True}
     return {
         "order_number": order_number,
         "found": True,
+        "order_known": True,
         "carrier": manifest.carrier,
         "warehouse": manifest.warehouse,
         "status": manifest.status,

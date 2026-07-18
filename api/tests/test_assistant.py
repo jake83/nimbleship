@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nimbleship.assistant import LlmReply, ToolUse, answer, build_client
+from nimbleship.assistant import (
+    AnthropicClient,
+    LlmReply,
+    ToolUse,
+    answer,
+    build_client,
+)
 from nimbleship.assistant.tools import (
     allocation_trace,
     manifest_status,
@@ -107,6 +113,25 @@ def test_tracking_and_manifest_are_empty_for_a_fresh_order(
     with app.state.session_factory() as session:
         assert tracking(session, _ORDER)["current_status"] is None
         assert manifest_status(session, _ORDER)["found"] is False
+
+
+def test_tools_tell_a_known_pending_order_from_an_unknown_one(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A real order that hasn't manifested yet and a mistyped order number both have
+    # no manifest, but order_known distinguishes them, so the assistant can say "no
+    # such order" instead of guessing (ADR 0016 grounding).
+    _publish_two_service_rulebook(client)
+    client.post("/api/consignments", json=_CONSIGNMENT)
+
+    with app.state.session_factory() as session:
+        pending = manifest_status(session, _ORDER)
+        unknown = manifest_status(session, "NOT-A-REAL-ORDER")
+        assert pending["found"] is False and pending["order_known"] is True
+        assert unknown["found"] is False and unknown["order_known"] is False
+        assert tracking(session, _ORDER)["order_known"] is True
+        assert tracking(session, "NOT-A-REAL-ORDER")["order_known"] is False
+        assert order_timeline(session, "NOT-A-REAL-ORDER")["order_known"] is False
 
 
 @dataclass
@@ -217,8 +242,10 @@ def test_a_tool_use_stop_with_no_calls_is_terminal(
     assert result == "nothing to add"
 
 
-def test_build_client_is_none_without_a_key() -> None:
+def test_build_client_is_none_without_a_key_and_a_client_with_one() -> None:
     # Fail-closed (ADR 0016): no key means no client, so the caller reports
-    # "not configured" rather than the module erroring.
+    # "not configured" rather than the module erroring. A key builds a real client
+    # (its constructor makes no network call).
     assert build_client(None, "claude-sonnet-4-6") is None
     assert build_client("", "claude-sonnet-4-6") is None
+    assert isinstance(build_client("a-key", "claude-sonnet-4-6"), AnthropicClient)

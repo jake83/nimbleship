@@ -13,9 +13,7 @@ from nimbleship.assistant.llm import LlmClient, LlmReply
 from nimbleship.assistant.prompts import SYSTEM_PROMPT
 from nimbleship.assistant.tools import TOOL_SCHEMAS, run_tool
 
-# The loop stops the model from calling tools forever. A single-order diagnosis
-# needs only a few reads; past this the answer is returned as-is or the ceiling
-# message stands in, never an unbounded spend.
+# Bounds spend: a single-order diagnosis needs only a few tool reads.
 MAX_TURNS = 8
 
 Message = dict[str, object]
