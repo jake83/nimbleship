@@ -24,9 +24,7 @@ POSTCODE_MAX = 32
 COUNTRY_CODE_MAX = 3
 PARCEL_WEIGHT_MAX = 16
 # Column width for the derived max_dimension_cm / max_girth_cm decimal strings.
-# Girth is arithmetic (longest + 2*(sum - longest)), so it can outgrow this at a
-# large-but-in-column input; a derived value that would overflow degrades to None
-# rather than reaching Postgres as an uncaught StringDataRightTruncation.
+# A derived value too wide for it degrades to None (paperwork_service._fits_column).
 DIMENSION_STR_MAX = 16
 # Tracking Event caps for source-supplied fields. The columns below and
 # domain.tracking's length guard both reference these, so a payload too long

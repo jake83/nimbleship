@@ -66,3 +66,13 @@ def test_non_finite_dimensions_are_absent_not_a_crash() -> None:
 
     # Only the finite 1e0 (=1) survives.
     assert _max_dimension_cm(created) == Decimal("1")
+
+
+def test_a_dimension_too_wide_for_the_column_degrades_to_none() -> None:
+    # An absurd WMS dimension whose string overflows the column degrades to None
+    # (unknown) rather than reaching Postgres as an uncaught StringDataRightTruncation
+    # - the same guard girth already has.
+    created = {"parcels": [{"height_cm": "999999999999999999", "width_cm": "1"}]}
+
+    # 18 digits, wider than the 16-char column.
+    assert _max_dimension_cm(created) is None
