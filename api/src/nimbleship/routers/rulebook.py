@@ -1,20 +1,13 @@
 from datetime import datetime
-from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from nimbleship.db import get_session
-from nimbleship.domain.allocation import (
-    Rulebook,
-    ServiceDeclaration,
-    Shipment,
-    allocate,
-)
-from nimbleship.domain.geography import resolve_shipping_areas
+from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
+from nimbleship.domain.dry_run import dry_run_rulebook
 from nimbleship.domain.rulebook import (
     active_rulebook,
     create_draft,
@@ -24,7 +17,7 @@ from nimbleship.domain.rulebook import (
     publish,
     rulebook_for,
 )
-from nimbleship.models import Consignment, RulebookVersion
+from nimbleship.models import RulebookVersion
 
 router = APIRouter(prefix="/rulebook", tags=["rulebook"])
 
@@ -150,40 +143,6 @@ def publish_version(version: int, session: SessionDep) -> VersionOut:
     )
 
 
-def _shipment_from(session: Session, consignment: Consignment) -> Shipment:
-    """Rebuild the dispatch-time facts. Areas are re-resolved from the
-    stored postcode: replaying without them would evaluate area checks
-    optimistically and misreport outcomes the live run rejected.
-
-    Resolution uses TODAY's geography tables by design - a replay answers
-    "what would this version do now", so a divergence can reflect area
-    definition drift as well as rulebook drift."""
-    return Shipment(
-        order_number=consignment.order_number,
-        destination_country=consignment.destination_country,
-        total_weight_kg=sum(
-            (Decimal(p.weight_kg) for p in consignment.parcels), Decimal("0")
-        ),
-        parcel_count=len(consignment.parcels),
-        proposition=consignment.proposition,
-        accepted_service_groups=consignment.accepted_service_groups,
-        max_dimension_cm=(
-            Decimal(consignment.max_dimension_cm)
-            if consignment.max_dimension_cm is not None
-            else None
-        ),
-        max_girth_cm=(
-            Decimal(consignment.max_girth_cm)
-            if consignment.max_girth_cm is not None
-            else None
-        ),
-        shipping_areas=resolve_shipping_areas(
-            session, consignment.postcode, consignment.destination_country
-        ),
-        warehouse=consignment.warehouse,
-    )
-
-
 @router.post("/versions/{version}/dry-run")
 def dry_run(version: int, payload: DryRunIn, session: SessionDep) -> DryRunOut:
     """Replay historical consignments through a rulebook version and report
@@ -191,34 +150,18 @@ def dry_run(version: int, payload: DryRunIn, session: SessionDep) -> DryRunOut:
     allocate() is a pure function."""
     row = _get_version_or_404(session, version)
     rulebook = rulebook_for(row)
-
-    query = (
-        select(Consignment)
-        .options(selectinload(Consignment.parcels))
-        .order_by(Consignment.id.desc())
-    )
-    if payload.order_numbers is not None:
-        query = query.where(Consignment.order_number.in_(payload.order_numbers))
-    else:
-        query = query.limit(payload.limit)
-    consignments = list(session.execute(query).scalars())
-
-    results = []
-    for consignment in consignments:
-        outcome = allocate(rulebook, _shipment_from(session, consignment))
-        draft_service = outcome.selected.code if outcome.selected else None
-        results.append(
-            DryRunResultOut(
-                order_number=consignment.order_number,
-                current_service=consignment.service,
-                draft_service=draft_service,
-                changed=draft_service != consignment.service,
-            )
-        )
-
+    report = dry_run_rulebook(session, rulebook, payload.order_numbers, payload.limit)
     return DryRunOut(
         rulebook_version=rulebook.version,
-        total=len(results),
-        changed=sum(1 for r in results if r.changed),
-        results=results,
+        total=report.total,
+        changed=report.changed,
+        results=[
+            DryRunResultOut(
+                order_number=result.order_number,
+                current_service=result.current_service,
+                draft_service=result.draft_service,
+                changed=result.changed,
+            )
+            for result in report.results
+        ],
     )
