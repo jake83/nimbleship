@@ -13,6 +13,7 @@ from sqlalchemy import select
 from nimbleship.labels.store import LabelStore
 from nimbleship.models import (
     CarrierNumberSequence,
+    CarrierTraffic,
     Consignment,
     LegacyConsignmentStaging,
 )
@@ -411,10 +412,8 @@ def _publish_sscc_econ_carrier(client: TestClient) -> None:
 def test_a_booking_carrier_is_a_divergence_not_a_leak(
     app: FastAPI, client: TestClient
 ) -> None:
-    # Shadow replays real traffic, so an order can select any published carrier,
-    # not just dropout. One that books (SSCC mint on a separate committing session
-    # + a carrier call) would leak durable state the savepoint can't undo; the
-    # paperwork slice must refuse it and report a divergence, minting nothing.
+    # A booking carrier (SSCC mint + carrier call) selected by a replayed order:
+    # the slice must refuse it and mint nothing, since those escape the savepoint.
     _publish_sscc_econ_carrier(client)
     recording = _paperwork_recording(_INCUMBENT_PARCELS)
 
@@ -429,6 +428,37 @@ def test_a_booking_carrier_is_a_divergence_not_a_leak(
     with app.state.session_factory() as session:
         assert session.execute(select(CarrierNumberSequence)).scalars().all() == []
         assert session.execute(select(Consignment)).scalars().all() == []
+        assert session.execute(select(CarrierTraffic)).scalars().all() == []
+
+
+def test_a_consignment_error_from_the_edge_is_a_divergence(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A consignment already exists for the order, so the replay's create_consignment
+    # raises the 409 the edge wraps as a SoapFault; replay_paperwork must isolate it
+    # as a divergence, pinning its ConsignmentError/SoapFault branch.
+    _seed_config(client)
+    created = client.post(
+        "/api/consignments",
+        json={
+            "order_number": "95000254580",
+            "recipient_name": "John Doe",
+            "address_lines": ["10 Downing Street", "London"],
+            "postcode": "SW1A 2AA",
+            "destination_country": "GB",
+            "parcels": [{"weight_kg": "4.2"}, {"weight_kg": "3.1"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    recording = _paperwork_recording(_INCUMBENT_PARCELS)
+
+    with app.state.session_factory() as session:
+        diff = replay_paperwork(session, recording)
+
+    assert not diff.matched
+    assert not diff.nimbleship.label_produced
+    assert diff.nimbleship.error is not None
+    assert "already exists" in diff.nimbleship.error
 
 
 def test_paperwork_no_staged_consignment_is_isolated(

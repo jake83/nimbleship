@@ -264,15 +264,14 @@ def _replay_paperwork(
     allocation_service.handle(allocate, session)
     external = _books_outside_savepoint(session, code)
     if external is not None:
-        # NimbleShip selected a carrier whose booking escapes the savepoint - it
-        # mints allocations on a separate committing session, or calls the carrier
-        # - so replaying paperwork through it would leak durable state (an SSCC
-        # burn) the rollback can't undo. The paperwork slice replays local-render
-        # carriers only (ADR 0015); surface the mismatch as a divergence.
+        # See _books_outside_savepoint: refuse rather than book, so nothing leaks.
+        # The message states the structural fact (not a local-render carrier), not
+        # that booking was reached - an unsupported label source would fault first.
         return PaperworkOutcome(
             label_produced=False,
-            error=f"carrier '{external}' books via a carrier call or an allocation "
-            "mint; the paperwork slice replays local-render carriers only",
+            error=f"carrier '{external}' is not a local-render carrier (its book "
+            "operation declares an allocation mint or a carrier call); the "
+            "paperwork slice replays local-render carriers only",
         )
     paperwork = paperwork_service.shadow_paperwork(
         session, code, store, http_client, uploaders
@@ -287,10 +286,11 @@ def _replay_paperwork(
 
 
 def _books_outside_savepoint(session: Session, code: str) -> str | None:
-    """The selected carrier's name if booking it would escape the savepoint (it
-    mints allocations on a separate committing session, or calls the carrier),
-    else None. Only such a carrier makes replay_paperwork's side-effect-free
-    promise false, so the paperwork slice refuses it rather than book (ADR 0015)."""
+    """The selected carrier's name if its book operation declares an allocation
+    mint or a carrier call, else None. Both run on a separate committing session
+    that the outer savepoint can't roll back (an SSCC burn survives), so such a
+    carrier makes replay_paperwork's side-effect-free promise false and the
+    paperwork slice refuses it rather than book (ADR 0015)."""
     selected = paperwork_service.shadow_allocate(session, code).selected
     if selected is None:
         return None
