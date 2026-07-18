@@ -264,9 +264,9 @@ def _replay_paperwork(
     allocation_service.handle(allocate, session)
     external = _books_outside_savepoint(session, code)
     if external is not None:
-        # See _books_outside_savepoint: refuse rather than book, so nothing leaks.
-        # The message states the structural fact (not a local-render carrier), not
-        # that booking was reached - an unsupported label source would fault first.
+        # The message states the structural fact (not local-render), not that
+        # booking was reached: an unsupported label source would fault first (see
+        # _books_outside_savepoint).
         return PaperworkOutcome(
             label_produced=False,
             error=f"carrier '{external}' is not a local-render carrier (its book "
