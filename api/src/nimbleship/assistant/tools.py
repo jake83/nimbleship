@@ -20,12 +20,10 @@ from nimbleship.models import (
 
 
 def _order_known(session: Session, order_number: str) -> bool:
-    """Whether the order exists in the system at all - a consignment, an event, or a
-    tracking row. Every tool reports it so the assistant can tell an unknown order (a
-    typo) from a known order that just has nothing at that stage yet, and never guess
-    which (ADR 0016 grounding). Tracking counts: a carrier webhook can post for an
-    order with no consignment yet, and that tool returns its events - order_known
-    must agree, not contradict them."""
+    """Whether the order exists at all (a consignment, event, or tracking row) - lets
+    tools tell "unknown order" from "known, nothing at this stage yet" instead of
+    guessing (ADR 0016). Tracking counts: a webhook can post before any consignment
+    exists, so this must agree with what tracking() returns."""
     for table in (
         Consignment.order_number,
         OrderEvent.order_number,
@@ -67,7 +65,7 @@ def allocation_trace(session: Session, order_number: str) -> dict[str, object]:
     consignment = session.execute(
         select(Consignment).where(Consignment.order_number == order_number)
     ).scalar_one_or_none()
-    if consignment is None or consignment.allocation is None:
+    if consignment is None:
         return {
             "order_number": order_number,
             "found": False,
@@ -185,8 +183,7 @@ def _schema(name: str, description: str) -> dict[str, object]:
     }
 
 
-# The Anthropic tool definitions, one per read tool. Every tool is scoped to a
-# single order number the model takes from the operator's question.
+# Each tool is scoped to one order number, taken from the operator's question.
 TOOL_SCHEMAS: Sequence[dict[str, object]] = (
     _schema("order_timeline", order_timeline.__doc__ or ""),
     _schema("allocation_trace", allocation_trace.__doc__ or ""),

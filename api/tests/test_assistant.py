@@ -18,6 +18,7 @@ from nimbleship.assistant.tools import (
     allocation_trace,
     manifest_status,
     order_timeline,
+    run_tool,
     tracking,
 )
 from nimbleship.models import TrackingEvent
@@ -156,6 +157,23 @@ def test_order_known_counts_a_tracking_only_order(app: FastAPI) -> None:
         result = tracking(session, "TRACK-ONLY")
         assert len(result["events"]) == 1  # type: ignore[arg-type]
         assert result["order_known"] is True
+
+
+def test_run_tool_returns_an_error_dict_for_a_bad_call(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A hallucinated tool name or a missing order number is handed back to the model
+    # as an error, never raised - the loop must not crash on a malformed model call.
+    with app.state.session_factory() as session:
+        assert "unknown tool" in str(
+            run_tool(session, "no_such_tool", {"order_number": _ORDER})["error"]
+        )
+        assert "order_number is required" in str(
+            run_tool(session, "order_timeline", {})["error"]
+        )
+        assert "order_number is required" in str(
+            run_tool(session, "order_timeline", {"order_number": ""})["error"]
+        )
 
 
 @dataclass

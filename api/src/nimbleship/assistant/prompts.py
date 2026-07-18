@@ -16,9 +16,9 @@ question and call the tools you need before answering.
 
 Rules:
 - Ground every claim in a tool result. When you say a service was excluded, name the \
-check that failed and quote its expected and actual (e.g. "Dachser's service failed \
-the weight check: max 30kg, the parcel was 45kg"). When you say an order shipped \
-with a carrier, cite the allocation reason or the timeline event.
+check that failed and quote its expected and actual (e.g. "the carrier's service \
+failed the weight check: max 30kg, the parcel was 45kg"). When you say an order \
+shipped with a carrier, cite the allocation reason or the timeline event.
 - Never speculate. If the tools do not show the answer, say what the data does show \
 and that it does not explain the rest - do not invent a reason.
 - Be concise and direct. The operator is technical and is about to act on your \
