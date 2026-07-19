@@ -10,18 +10,21 @@ const VERSIONS = [
     version: 1,
     status: 'published',
     author: 'seed',
+    description: null,
     created_at: '2026-07-10T09:00:00Z',
   },
   {
     version: 2,
     status: 'published',
     author: 'jake',
+    description: 'Add US shipping for the Q4 launch',
     created_at: '2026-07-11T09:00:00Z',
   },
   {
     version: 3,
     status: 'draft',
     author: 'jake',
+    description: null,
     created_at: '2026-07-12T09:00:00Z',
   },
 ]
@@ -56,6 +59,18 @@ describe('VersionsPage', () => {
 
     const detailLink = within(rows[1]!).getByRole('link', { name: /version 3/i })
     expect(detailLink).toHaveAttribute('href', '/rulebook/versions/3')
+  })
+
+  it('shows each version rationale note in the history list', async () => {
+    stubFetch({
+      'GET /api/rulebook/versions': { body: VERSIONS },
+      'GET /api/rulebook/active': { body: { version: 2, services: [service()] } },
+    })
+    renderPage()
+
+    // The note an operator reads when scanning history, not just on the detail page.
+    const rows = await screen.findAllByRole('row')
+    expect(rows[2]).toHaveTextContent('Add US shipping for the Q4 launch')
   })
 
   it('offers a new draft started from the live version', async () => {

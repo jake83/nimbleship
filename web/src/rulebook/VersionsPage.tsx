@@ -68,12 +68,21 @@ export function VersionsPage() {
           </p>
         </div>
         {liveVersion !== null && (
-          <Button
-            nativeButton={false}
-            render={<Link to={`/rulebook/drafts/new?from=${liveVersion}`} />}
-          >
-            New draft
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              nativeButton={false}
+              variant="outline"
+              render={<Link to="/rulebook/builder" />}
+            >
+              Build with AI
+            </Button>
+            <Button
+              nativeButton={false}
+              render={<Link to={`/rulebook/drafts/new?from=${liveVersion}`} />}
+            >
+              New draft
+            </Button>
+          </div>
         )}
       </div>
 
@@ -89,6 +98,7 @@ export function VersionsPage() {
                 <TableHead>Version</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Author</TableHead>
+                <TableHead>Note</TableHead>
                 <TableHead>Created</TableHead>
               </TableRow>
             </TableHeader>
@@ -110,6 +120,18 @@ export function VersionsPage() {
                     />
                   </TableCell>
                   <TableCell>{version.author}</TableCell>
+                  <TableCell className="max-w-xs">
+                    {version.description !== null ? (
+                      <span
+                        className="block truncate text-muted-foreground"
+                        title={version.description}
+                      >
+                        {version.description}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     {new Date(version.created_at).toLocaleString()}
                   </TableCell>
