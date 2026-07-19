@@ -7,6 +7,8 @@ operator commits it as a draft through the definition rails."""
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from sqlalchemy.orm import Session
+
 from nimbleship.assistant.llm import LlmClient
 from nimbleship.assistant.loop import Message, run_tool_use_loop
 from nimbleship.carrier_builder.prompts import BUILDER_SYSTEM_PROMPT, EXHAUSTED_REPLY
@@ -31,13 +33,16 @@ class BuildResult:
 
 
 def build(
+    session: Session,
     conversation: Sequence[Message],
     definition: dict[str, object],
     *,
     llm: LlmClient,
 ) -> BuildResult:
     """Run one builder turn against the working `definition` and return the reply plus
-    the edited copy. The copy is mutated in memory only; nothing is persisted.
+    the edited copy. The copy is mutated in memory only; the one durable side effect a
+    turn may have is raising a Handoff blocker via `session`, which must outlive the
+    conversation for the engineer to resolve.
 
     Bulk document ingestion (the onboarding packet) is deferred to a follow-up: it must
     route credentials to Carrier Config and keep them out of the model (ADR 0018), so a
@@ -48,7 +53,7 @@ def build(
         system=BUILDER_SYSTEM_PROMPT,
         tools=TOOL_SCHEMAS,
         run_tool=lambda name, tool_input: run_carrier_builder_tool(
-            state, name, tool_input
+            session, state, name, tool_input
         ),
         llm=llm,
         max_turns=MAX_TURNS,

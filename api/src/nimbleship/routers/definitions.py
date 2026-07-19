@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from nimbleship.carrier_builder.handoff import open_blockers
 from nimbleship.db import get_session
 from nimbleship.domain.carrier_definition import (
     FACT_ROOTS,
@@ -277,6 +278,15 @@ def publish_version(carrier: str, version: int, session: SessionDep) -> VersionO
     if row is None:
         raise HTTPException(404, "no such definition version")
     definition = definition_for(row)
+    # An open Handoff blocker means an engineer still owes this carrier a plugin or a
+    # decision (ADR 0018) - the definition may validate yet not express what the
+    # carrier actually needs, so publishing would look complete while shipping the gap.
+    blocked = open_blockers(session, carrier)
+    if blocked:
+        titles = ", ".join(blocker.title for blocker in blocked)
+        raise HTTPException(
+            409, f"publish refused: open engineer handoff blockers: {titles}"
+        )
     # Ahead of the render gate: it names every missing key at once and holds
     # even with no history, which the render gate passes trivially.
     missing = missing_config_keys(definition, carrier_config(session, carrier))

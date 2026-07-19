@@ -443,3 +443,28 @@ class TrackingEvent(Base):
     )
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     raw: Mapped[dict[str, object]] = mapped_column(JSON)
+
+
+class HandoffBlocker(Base):
+    """A Handoff row (CONTEXT.md, ADR 0018): a technical gap parked for the engineer.
+    The invariants and lifecycle live in carrier_builder/handoff.py."""
+
+    __tablename__ = "handoff_blockers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    carrier: Mapped[str] = mapped_column(String(64), index=True)
+    # "needs_plugin" (bounded code the engine lacks) or "needs_decision" (an answer
+    # the docs do not give).
+    kind: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(255))
+    # What is needed and what was already tried - the engineer's brief.
+    detail: Mapped[str] = mapped_column(Text)
+    # For needs_plugin: the plugin name the definition will reference once built.
+    plugin_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    # The engineer's answer (a decision, or "shipped in vX") recorded at resolution.
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

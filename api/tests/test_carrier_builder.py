@@ -5,11 +5,21 @@ draft through the definition rails)."""
 
 from collections.abc import Sequence
 
+import pytest
+from fastapi import FastAPI
+
 from nimbleship.assistant import LlmReply, ToolUse
 from nimbleship.carrier_builder import WorkingDefinition, build
+from nimbleship.carrier_builder.handoff import (
+    blockers_for,
+    raise_blocker,
+    resolve_blocker,
+)
 from nimbleship.carrier_builder.tools import (
     check,
+    list_blockers_tool,
     put_operation,
+    raise_blocker_tool,
     remove_operation,
     run_carrier_builder_tool,
     set_auth,
@@ -156,10 +166,91 @@ def test_a_malformed_operations_seed_is_normalised_not_crashed() -> None:
     assert list(state.operations()) == ["book"]
 
 
-def test_run_tool_reports_an_unknown_tool() -> None:
-    assert "unknown tool" in str(
-        run_carrier_builder_tool(WorkingDefinition(), "no_such_tool", {})["error"]
-    )
+def test_run_tool_reports_an_unknown_tool(app: FastAPI) -> None:
+    with app.state.session_factory() as session:
+        assert "unknown tool" in str(
+            run_carrier_builder_tool(session, WorkingDefinition(), "no_such_tool", {})[
+                "error"
+            ]
+        )
+
+
+def test_raise_and_resolve_a_blocker(app: FastAPI) -> None:
+    with app.state.session_factory() as session:
+        blocker = raise_blocker(
+            session,
+            "acme",
+            "needs_decision",
+            "Live or test endpoint?",
+            "Docs list two.",
+        )
+        assert blocker.status == "open"
+        resolved = resolve_blocker(session, blocker.id, "Use the live endpoint.")
+        assert resolved.status == "resolved"
+        assert resolved.resolution == "Use the live endpoint."
+        assert resolved.resolved_at is not None
+        # Resolving twice would silently overwrite the recorded answer - refused.
+        with pytest.raises(ValueError, match="already resolved"):
+            resolve_blocker(session, blocker.id, "Different answer.")
+
+
+def test_raise_blocker_rejects_an_unknown_kind(app: FastAPI) -> None:
+    with (
+        app.state.session_factory() as session,
+        pytest.raises(ValueError, match="unknown blocker kind"),
+    ):
+        raise_blocker(session, "acme", "needs_coffee", "t", "d")
+
+
+def test_raise_blocker_enforces_its_invariants_at_the_domain(app: FastAPI) -> None:
+    # Enforced where the row is built, not just in the tool wrapper: a needs_plugin
+    # blocker names its plugin, and over-column-length values are refused here rather
+    # than passing SQLite silently and 500ing on Postgres at flush.
+    with app.state.session_factory() as session:
+        with pytest.raises(ValueError, match="must name the plugin"):
+            raise_blocker(session, "acme", "needs_plugin", "t", "d")
+        with pytest.raises(ValueError, match="carrier must be"):
+            raise_blocker(session, "c" * 65, "needs_decision", "t", "d")
+        with pytest.raises(ValueError, match="title must be"):
+            raise_blocker(session, "acme", "needs_decision", "x" * 256, "d")
+        with pytest.raises(ValueError, match="plugin_name must be"):
+            raise_blocker(
+                session, "acme", "needs_plugin", "t", "d", plugin_name="p" * 65
+            )
+
+
+def test_raise_blocker_tool_requires_identity_and_plugin_name(app: FastAPI) -> None:
+    with app.state.session_factory() as session:
+        # No carrier identity yet: the blocker would be unkeyed - refused.
+        no_identity = raise_blocker_tool(
+            session,
+            WorkingDefinition(),
+            {"kind": "needs_decision", "title": "t", "detail": "d"},
+        )
+        assert "set the carrier identity" in str(no_identity["error"])
+        # needs_plugin must name the plugin the definition will reference.
+        state = WorkingDefinition(data={"carrier": "acme", "name": "Acme"})
+        unnamed = raise_blocker_tool(
+            session, state, {"kind": "needs_plugin", "title": "t", "detail": "d"}
+        )
+        assert "must name the plugin" in str(unnamed["error"])
+
+
+def test_list_blockers_tool_surfaces_the_engineers_resolution(app: FastAPI) -> None:
+    state = WorkingDefinition(data={"carrier": "acme", "name": "Acme"})
+    with app.state.session_factory() as session:
+        raised = raise_blocker_tool(
+            session,
+            state,
+            {"kind": "needs_decision", "title": "Which endpoint?", "detail": "Two."},
+        )
+        resolve_blocker(session, int(str(raised["blocker_id"])), "Use live.")
+        listed = list_blockers_tool(session, state, {})
+
+    blockers = listed["blockers"]
+    assert isinstance(blockers, list)
+    assert blockers[0]["status"] == "resolved"
+    assert blockers[0]["resolution"] == "Use live."
 
 
 class _FakeLlm:
@@ -178,7 +269,7 @@ class _FakeLlm:
         return self._replies.pop(0)
 
 
-def test_build_assembles_a_definition_from_the_conversation() -> None:
+def test_build_assembles_a_definition_from_the_conversation(app: FastAPI) -> None:
     # The model sets identity/auth/operation, then replies; the loop applies each edit
     # and hands back the working copy for the operator to review.
     llm = _FakeLlm(
@@ -200,8 +291,58 @@ def test_build_assembles_a_definition_from_the_conversation() -> None:
         ]
     )
 
-    result = build([{"role": "user", "content": "onboard acme"}], {}, llm=llm)
+    with app.state.session_factory() as session:
+        result = build(
+            session, [{"role": "user", "content": "onboard acme"}], {}, llm=llm
+        )
 
     assert "Drafted" in result.reply
     assert result.definition["carrier"] == "acme"
     assert "book" in result.definition["operations"]  # type: ignore[operator]
+
+
+def test_build_can_raise_a_durable_blocker_and_keep_building(app: FastAPI) -> None:
+    # The model parks a technical gap for the engineer and continues with the rest;
+    # the blocker outlives the conversation (a plugin ships days later).
+    llm = _FakeLlm(
+        [
+            LlmReply(
+                stop_reason="tool_use",
+                text="",
+                tool_uses=(
+                    ToolUse("t1", "set_identity", {"carrier": "acme", "name": "Acme"}),
+                    ToolUse(
+                        "t2",
+                        "raise_blocker",
+                        {
+                            "kind": "needs_plugin",
+                            "title": "HMAC request signing",
+                            "detail": "Requests need an HMAC signature; no plugin.",
+                            "plugin_name": "acme_hmac",
+                        },
+                    ),
+                    ToolUse(
+                        "t3", "put_operation", {"name": "book", "operation": _OPERATION}
+                    ),
+                ),
+            ),
+            LlmReply(
+                stop_reason="end_turn",
+                text="Parked the signing for engineering; drafted the rest.",
+                tool_uses=(),
+            ),
+        ]
+    )
+
+    with app.state.session_factory() as session:
+        result = build(
+            session, [{"role": "user", "content": "onboard acme"}], {}, llm=llm
+        )
+        session.commit()
+
+    assert "book" in result.definition["operations"]  # type: ignore[operator]
+    with app.state.session_factory() as session:
+        [blocker] = blockers_for(session, "acme")
+        assert blocker.kind == "needs_plugin"
+        assert blocker.plugin_name == "acme_hmac"
+        assert blocker.status == "open"

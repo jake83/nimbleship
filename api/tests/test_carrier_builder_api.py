@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nimbleship.assistant import LlmReply, ToolUse
+from nimbleship.carrier_builder.handoff import raise_blocker
 from nimbleship.routers.carrier_builder import get_llm_client
 
 Message = dict[str, object]
@@ -126,6 +127,112 @@ def test_check_reports_a_complete_definition_valid(client: TestClient) -> None:
     )
     assert response.status_code == 200
     assert response.json() == {"valid": True, "errors": []}
+
+
+def test_blockers_lifecycle_via_the_engineer_endpoints(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A blocker raised during a build is durable and carrier-keyed; the engineer
+    # lists it, resolves it with an answer, and a second resolve is refused (it
+    # would silently overwrite the recorded answer).
+    with app.state.session_factory() as session:
+        blocker = raise_blocker(
+            session, "acme", "needs_plugin", "HMAC signing", "No plugin.", "acme_hmac"
+        )
+        session.commit()
+        blocker_id = blocker.id
+
+    listed = client.get("/api/carrier-builder/blockers", params={"carrier": "acme"})
+    assert listed.status_code == 200
+    [entry] = listed.json()
+    assert entry["kind"] == "needs_plugin"
+    assert entry["plugin_name"] == "acme_hmac"
+    assert entry["status"] == "open"
+
+    resolved = client.post(
+        f"/api/carrier-builder/blockers/{blocker_id}/resolve",
+        json={"resolution": "Shipped as acme_hmac in v1.42."},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "resolved"
+    assert resolved.json()["resolution"] == "Shipped as acme_hmac in v1.42."
+
+    again = client.post(
+        f"/api/carrier-builder/blockers/{blocker_id}/resolve",
+        json={"resolution": "different"},
+    )
+    assert again.status_code == 409
+    assert (
+        client.post(
+            "/api/carrier-builder/blockers/99999/resolve",
+            json={"resolution": "x"},
+        ).status_code
+        == 404
+    )
+
+
+_PUBLISHABLE_DEFINITION = {
+    "carrier": "testcarrier",
+    "name": "Test Carrier",
+    "auth": {"scheme": "query_key", "param": "key", "secret": "config.api_key"},
+    "operations": {
+        "book": {
+            "steps": [
+                {
+                    "name": "save",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.base_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"}
+                        ],
+                    },
+                }
+            ],
+        }
+    },
+}
+
+
+def test_an_open_blocker_refuses_publish_until_resolved(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The publish gate is the handoff gate (ADR 0018): a definition may validate yet
+    # not express what the carrier needs while an engineer owes it a plugin or a
+    # decision. Resolution reopens the way.
+    client.put(
+        "/api/carriers/testcarrier/config",
+        json={"api_key": "K-1", "base_url": "https://api.test.example"},
+    )
+    created = client.post(
+        "/api/carriers/testcarrier/definitions/drafts",
+        json={"author": "jake", "definition": _PUBLISHABLE_DEFINITION},
+    )
+    assert created.status_code == 201
+    with app.state.session_factory() as session:
+        blocker = raise_blocker(
+            session,
+            "testcarrier",
+            "needs_decision",
+            "Which endpoint?",
+            "Docs list two.",
+        )
+        session.commit()
+        blocker_id = blocker.id
+
+    refused = client.post("/api/carriers/testcarrier/definitions/versions/1/publish")
+    assert refused.status_code == 409
+    assert "handoff blockers" in refused.text
+    assert "Which endpoint?" in refused.text
+
+    client.post(
+        f"/api/carrier-builder/blockers/{blocker_id}/resolve",
+        json={"resolution": "Use live."},
+    )
+    published = client.post("/api/carriers/testcarrier/definitions/versions/1/publish")
+    assert published.status_code == 200
 
 
 class _FailingLlm:
