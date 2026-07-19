@@ -98,6 +98,36 @@ def test_messages_edits_the_working_definition_and_returns_it(
     assert "book" in body["definition"]["operations"]
 
 
+def test_check_reports_an_incomplete_definition_as_200_with_errors(
+    client: TestClient,
+) -> None:
+    # Incompleteness is the expected mid-build state, not a bad request - and no API
+    # key is needed (pure validation, no model).
+    response = client.post(
+        "/api/carrier-builder/check",
+        json={"definition": {"carrier": "acme", "name": "Acme"}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert any("auth" in problem for problem in body["errors"])
+    assert any("operations" in problem for problem in body["errors"])
+
+
+def test_check_reports_a_complete_definition_valid(client: TestClient) -> None:
+    definition = {
+        "carrier": "acme",
+        "name": "Acme",
+        "auth": {"scheme": "none"},
+        "operations": {"book": _OPERATION},
+    }
+    response = client.post(
+        "/api/carrier-builder/check", json={"definition": definition}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "errors": []}
+
+
 class _FailingLlm:
     def reply(
         self,

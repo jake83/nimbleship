@@ -252,6 +252,45 @@ describe('BuilderPage', () => {
     })
   })
 
+  it('disables save while a turn is in flight', async () => {
+    // Saving mid-turn would persist the pre-turn working copy while confirming
+    // success - the copy on screen is about to be superseded.
+    let resolveTurn: (value: Response) => void = () => {}
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const key = `${init?.method ?? 'GET'} ${String(input)}`
+        if (key === 'GET /api/rulebook/builder/status')
+          return json({ configured: true })
+        if (key === 'GET /api/rulebook/active') return json(ACTIVE)
+        if (key === 'POST /api/rulebook/builder/messages')
+          return new Promise<Response>((resolve) => {
+            resolveTurn = resolve
+          })
+        throw new Error(`unmocked fetch: ${key}`)
+      }),
+    )
+    renderPage()
+
+    await screen.findByText('DROPOUT-STD')
+    await userEvent.type(screen.getByLabelText('Author'), 'jake')
+    expect(screen.getByRole('button', { name: /save as draft/i })).toBeEnabled()
+
+    const input = screen.getByLabelText(/message the rules builder/i)
+    await userEvent.type(input, 'change something{Enter}')
+    expect(screen.getByRole('button', { name: /save as draft/i })).toBeDisabled()
+
+    resolveTurn(json({ reply: 'Done.', services: ACTIVE.services }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /save as draft/i })).toBeEnabled(),
+    )
+  })
+
   it('disables save until an author is given', async () => {
     stubFetch({
       'GET /api/rulebook/builder/status': { body: { configured: true } },

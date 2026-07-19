@@ -39,6 +39,10 @@ def set_identity(
     name = tool_input.get("name")
     if not isinstance(carrier, str) or not isinstance(name, str):
         return {"error": "set_identity needs 'carrier' and 'name' strings"}
+    # A blank identity would pass whole-definition validation (no min_length) but is
+    # meaningless as a rails key and unsaveable in the surface - reject it here.
+    if not carrier.strip() or not name.strip():
+        return {"error": "carrier and name must not be blank"}
     state.data["carrier"] = carrier
     state.data["name"] = name
     return {"carrier": carrier, "name": name}
