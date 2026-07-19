@@ -296,6 +296,15 @@ def test_suggest_rationale_is_none_and_calls_nothing_when_unchanged() -> None:
     assert suggest_rationale(active, list(active), llm=_FakeLlm([])) is None
 
 
+def test_suggest_rationale_rejects_an_invalid_working_copy() -> None:
+    # An invalid draft would collapse in the code-keyed diff (describing a copy never
+    # sent), so it is rejected like the edit and dry-run paths - before any model call.
+    active = [ServiceDeclaration.model_validate(_DROPOUT)]
+    clash = ServiceDeclaration.model_validate({**_DROPOUT, "code": "OTHER"})
+    with pytest.raises(InvalidWorkingCopy, match="duplicate tie-break order"):
+        suggest_rationale(active, [active[0], clash], llm=_FakeLlm([]))
+
+
 def test_build_applies_an_edit_and_returns_the_working_copy(app: FastAPI) -> None:
     # The model adds a service, then replies; the loop applies the edit to the working
     # copy and hands it back for the operator to review and commit.

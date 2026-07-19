@@ -288,6 +288,38 @@ def test_rationale_503_when_not_configured(client: TestClient) -> None:
     assert response.status_code == 503
 
 
+def test_rationale_rejects_an_invalid_working_copy_like_its_siblings(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A malformed working copy is a 422 here too, not a 200 rationale for a copy that
+    # /messages and /dry-run would both reject.
+    _use(app, [LlmReply(stop_reason="end_turn", text="unused", tool_uses=())])
+    clash = {**_DROPOUT, "code": "OTHER"}  # same tie_break_order as _DROPOUT
+    response = client.post(
+        "/api/rulebook/builder/rationale", json={"services": [_DROPOUT, clash]}
+    )
+    assert response.status_code == 422
+
+
+def test_rationale_502_when_the_model_is_unavailable(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A model failure while phrasing the rationale is a 502, like /messages - the
+    # change is real (a new service), so the endpoint reaches the model.
+    version = client.post(
+        "/api/rulebook/drafts", json={"author": "j", "services": [_DROPOUT]}
+    ).json()["version"]
+    client.post(f"/api/rulebook/versions/{version}/publish")
+    app.dependency_overrides[get_llm_client] = lambda: _FailingLlm()
+    cheaper = {**_DROPOUT, "code": "CHEAP", "cost": "1.00", "tie_break_order": 2}
+
+    response = client.post(
+        "/api/rulebook/builder/rationale", json={"services": [_DROPOUT, cheaper]}
+    )
+
+    assert response.status_code == 502
+
+
 def test_dry_run_over_the_cap_is_rejected(client: TestClient) -> None:
     too_many = [{**_DROPOUT, "code": f"S{i}", "tie_break_order": i} for i in range(501)]
     response = client.post("/api/rulebook/builder/dry-run", json={"services": too_many})

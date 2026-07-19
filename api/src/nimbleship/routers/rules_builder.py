@@ -152,6 +152,8 @@ def builder_rationale(
     active = active_rulebook(session).services
     try:
         rationale = suggest_rationale(active, request.services, llm=llm)
+    except InvalidWorkingCopy as error:
+        raise HTTPException(422, str(error)) from error
     except anthropic.APIError as error:
         raise HTTPException(502, "the rules builder is unavailable") from error
     return BuilderRationaleOut(rationale=rationale)

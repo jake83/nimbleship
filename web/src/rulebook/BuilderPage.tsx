@@ -123,6 +123,9 @@ export function BuilderPage() {
   // Once the operator types their own description, stop auto-filling the AI's
   // suggestion over it. A ref so the async suggestion callback reads the live value.
   const descriptionEdited = useRef(false)
+  // A rationale is a second model round-trip fired per turn; two can be in flight at
+  // once, so a stale one must not clobber a newer turn's - only the latest applies.
+  const suggestionSeq = useRef(0)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [dryRun, setDryRun] = useState<BuilderDryRunOutcome | null>(null)
@@ -188,10 +191,16 @@ export function BuilderPage() {
   )
 
   async function suggestDescription(current: ServiceDeclaration[]) {
+    const seq = ++suggestionSeq.current
     try {
       const { rationale } = await suggestRationale(current)
-      // Re-check: the operator may have started typing while this was in flight.
-      if (rationale !== null && !descriptionEdited.current) {
+      // Apply only if still the latest suggestion (not superseded by a newer turn)
+      // and the operator hasn't started typing their own.
+      if (
+        rationale !== null &&
+        seq === suggestionSeq.current &&
+        !descriptionEdited.current
+      ) {
         setDescription(rationale)
       }
     } catch {
@@ -395,9 +404,11 @@ export function BuilderPage() {
                     setDescription(event.target.value)
                   }}
                 />
-                <p className="text-xs text-muted-foreground">
-                  The builder suggests this from your changes; edit it before saving.
-                </p>
+                {configured === true && (
+                  <p className="text-xs text-muted-foreground">
+                    The builder suggests this from your changes; edit it before saving.
+                  </p>
+                )}
               </div>
               {saveError !== null && (
                 <p className="text-sm text-destructive" role="alert">

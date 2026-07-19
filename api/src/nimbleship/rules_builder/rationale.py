@@ -8,6 +8,8 @@ from collections.abc import Sequence
 
 from nimbleship.assistant.llm import LlmClient
 from nimbleship.domain.allocation import ServiceDeclaration
+from nimbleship.rules_builder.builder import InvalidWorkingCopy
+from nimbleship.rules_builder.tools import working_copy_error
 
 RATIONALE_PROMPT = """\
 You write a single-line change note for a carrier rulebook version, read by \
@@ -28,6 +30,14 @@ def _service_summary(service: ServiceDeclaration) -> str:
         bits.append(f"propositions {', '.join(service.propositions)}")
     if service.service_groups:
         bits.append(f"groups {', '.join(service.service_groups)}")
+    if service.areas_served is not None:
+        bits.append(f"areas served {', '.join(service.areas_served) or 'none'}")
+    if service.areas_blocked:
+        bits.append(f"areas blocked {', '.join(service.areas_blocked)}")
+    if service.max_dimension_cm is not None:
+        bits.append(f"max dimension {service.max_dimension_cm}cm")
+    if service.max_girth_cm is not None:
+        bits.append(f"max girth {service.max_girth_cm}cm")
     return ", ".join(bits)
 
 
@@ -78,7 +88,13 @@ def suggest_rationale(
     llm: LlmClient,
 ) -> str | None:
     """A one-line rationale for how the working copy `draft` changes the live rulebook
-    `active`, or None if nothing changed. The model phrases the computed diff."""
+    `active`, or None if nothing changed. The model phrases the computed diff. Rejects
+    a `draft` that breaks a cross-service invariant (the same gate the edit and dry-run
+    paths apply): a duplicate code would collapse in the code-keyed diff and describe a
+    copy that was never sent."""
+    problem = working_copy_error(list(draft))
+    if problem is not None:
+        raise InvalidWorkingCopy(problem)
     change = _describe_change(active, draft)
     if change is None:
         return None

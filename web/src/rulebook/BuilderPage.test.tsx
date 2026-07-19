@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -128,6 +128,54 @@ describe('BuilderPage', () => {
         'Added FR-NEXT for France.',
       ),
     )
+  })
+
+  it('a stale rationale from an earlier turn does not overwrite a newer one', async () => {
+    // Two turns' rationale calls can be in flight at once. If turn 1's resolves after
+    // turn 2's, it must not clobber turn 2's correct suggestion.
+    const rationaleResolvers: ((body: unknown) => void)[] = []
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    let turn = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const key = `${init?.method ?? 'GET'} ${String(input)}`
+        if (key === 'GET /api/rulebook/builder/status')
+          return json({ configured: true })
+        if (key === 'GET /api/rulebook/active') return json(ACTIVE)
+        if (key === 'POST /api/rulebook/builder/messages') {
+          turn += 1
+          const added = service({ code: `S${turn}`, tie_break_order: turn + 1 })
+          return json({ reply: `turn ${turn}`, services: [...ACTIVE.services, added] })
+        }
+        if (key === 'POST /api/rulebook/builder/rationale')
+          return new Promise<Response>((resolve) => {
+            rationaleResolvers.push((body) => resolve(json(body)))
+          })
+        throw new Error(`unmocked fetch: ${key}`)
+      }),
+    )
+    renderPage()
+
+    const input = await screen.findByLabelText(/message the rules builder/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'turn one{Enter}')
+    await screen.findByText('turn 1')
+    await waitFor(() => expect(rationaleResolvers).toHaveLength(1))
+    await userEvent.type(input, 'turn two{Enter}')
+    await screen.findByText('turn 2')
+    await waitFor(() => expect(rationaleResolvers).toHaveLength(2))
+
+    // Turn 2's rationale lands first and wins; then turn 1's stale one lands.
+    await act(async () => rationaleResolvers[1]!({ rationale: 'turn 2 note' }))
+    const description = screen.getByLabelText(/description/i)
+    expect(description).toHaveValue('turn 2 note')
+    await act(async () => rationaleResolvers[0]!({ rationale: 'turn 1 note' }))
+    expect(description).toHaveValue('turn 2 note')
   })
 
   it('does not overwrite a description the operator has typed', async () => {
