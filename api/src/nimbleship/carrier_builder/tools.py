@@ -1,21 +1,14 @@
 """The carrier builder's tools (ADR 0018): granular edits to an in-memory working
-copy of a CarrierDefinition being assembled from an onboarding packet. Like the rules
-builder, these mutate the working copy only in memory; nothing is saved. The copy is a
-partial definition dict, validated as a whole CarrierDefinition only at check/save -
-mid-build it is legitimately incomplete."""
+copy of a CarrierDefinition being assembled turn by turn. Like the rules builder,
+these mutate the working copy only in memory; nothing is saved. The copy is a partial
+definition dict, validated as a whole CarrierDefinition only at check/save - mid-build
+it is legitimately incomplete."""
 
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from nimbleship.domain.carrier_definition import (
-    Auth,
-    CarrierDefinition,
-    MappingEntry,
-    Operation,
-    RequestSpec,
-    Step,
-)
+from nimbleship.domain.carrier_definition import Auth, CarrierDefinition, Operation
 
 _AUTH_ADAPTER: TypeAdapter[Auth] = TypeAdapter(Auth)
 
@@ -68,43 +61,24 @@ def set_auth(
     return {"auth_scheme": auth.get("scheme")}
 
 
-def _unknown_field(data: dict[str, object], model: type[BaseModel]) -> str | None:
-    allowed = set(model.model_fields)
-    allowed |= {f.alias for f in model.model_fields.values() if f.alias is not None}
-    return next((key for key in data if key not in allowed), None)
-
-
-def _first_misspelt_field(operation: dict[str, object]) -> str | None:
-    """The first operation/step/request/mapping key no model field claims, or None.
-    pydantic ignores an unknown key, so a mistyped optional field (`alloacte` for
-    `allocate`, `fanout` for `fan_out`) would silently drop what the operator asked for
-    while check() still reports the definition valid - reject it, as the rules builder
-    does for its own edits."""
-    unknown = _unknown_field(operation, Operation)
-    if unknown is not None:
-        return unknown
-    steps = operation.get("steps")
-    if not isinstance(steps, list):
-        return None
-    for step in steps:
-        if not isinstance(step, dict):
-            continue
-        unknown = _unknown_field(step, Step)
-        if unknown is not None:
-            return unknown
-        request = step.get("request")
-        if not isinstance(request, dict):
-            continue
-        unknown = _unknown_field(request, RequestSpec)
-        if unknown is not None:
-            return unknown
-        mapping = request.get("mapping")
-        if isinstance(mapping, list):
-            for entry in mapping:
-                if isinstance(entry, dict):
-                    unknown = _unknown_field(entry, MappingEntry)
-                    if unknown is not None:
-                        return unknown
+def _dropped_key(provided: object, kept: object) -> str | None:
+    """The first key in `provided` that `kept` doesn't have, comparing recursively, or
+    None. `kept` is the validated operation re-dumped with only its set fields, so a key
+    pydantic ignored (a misspelt field, at any depth) is exactly one that didn't
+    survive - which would otherwise silently drop what the operator asked for while
+    check() still reports the definition valid."""
+    if isinstance(provided, dict) and isinstance(kept, dict):
+        for key, value in provided.items():
+            if key not in kept:
+                return str(key)
+            deeper = _dropped_key(value, kept[key])
+            if deeper is not None:
+                return deeper
+    elif isinstance(provided, list) and isinstance(kept, list):
+        for item, kept_item in zip(provided, kept, strict=False):
+            deeper = _dropped_key(item, kept_item)
+            if deeper is not None:
+                return deeper
     return None
 
 
@@ -112,19 +86,21 @@ def put_operation(
     state: WorkingDefinition, tool_input: dict[str, object]
 ) -> dict[str, object]:
     """Add or replace one named operation (book, manifest, ...) with its steps. Rejects
-    a malformed operation without changing anything. Cross-operation rules (e.g. fan_out
-    only on a manifest) are checked by `check`, which validates the whole definition."""
+    a malformed operation, or one carrying a misspelt field, without changing anything.
+    Cross-operation rules (e.g. fan_out only on a manifest) are checked by `check`,
+    which validates the whole definition."""
     name = tool_input.get("name")
     operation = tool_input.get("operation")
     if not isinstance(name, str) or not isinstance(operation, dict):
         return {"error": "put_operation needs a 'name' and an 'operation' object"}
-    misspelt = _first_misspelt_field(operation)
-    if misspelt is not None:
-        return {"error": f"unknown field '{misspelt}' - check the spelling"}
     try:
-        Operation.model_validate(operation)
+        validated = Operation.model_validate(operation)
     except ValidationError as error:
         return {"error": f"invalid operation '{name}': {error}"}
+    kept = validated.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    dropped = _dropped_key(operation, kept)
+    if dropped is not None:
+        return {"error": f"unknown field '{dropped}' - check the spelling"}
     state.operations()[name] = operation
     return {"operation": name}
 

@@ -1,7 +1,8 @@
 """The carrier builder's system prompt (ADR 0018). It fixes the builder's job -
-turning an onboarding packet into a draft CarrierDefinition through granular edits -
-and the hard rules: it never publishes, it grounds field values in the packet rather
-than inventing them, and it asks the operator only plain-language questions."""
+turning a conversation with an operator into a draft CarrierDefinition through granular
+edits - and the hard rules: it never publishes, it grounds field values in what the
+operator provides rather than inventing them, and it keeps credentials out of the
+definition (a config.* reference, never a literal)."""
 
 BUILDER_SYSTEM_PROMPT = """\
 You are NimbleShip's carrier integration builder. From a conversation with an \

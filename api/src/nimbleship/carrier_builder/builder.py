@@ -1,9 +1,8 @@
 """The carrier builder orchestrator (ADR 0018): the tool-use loop over the
-working-definition edit tools. Given the onboarding packet, a conversation, and the
-working copy so far, it lets the model edit the copy from the packet and returns its
-reply plus the resulting copy. The working copy is not saved here - it rides each
-request (like the rules builder's), and the operator commits it as a draft through the
-definition rails."""
+working-definition edit tools. Given a conversation and the working copy so far, it
+lets the model edit the copy and returns its reply plus the resulting copy. The working
+copy is not saved here - it rides each request (like the rules builder's), and the
+operator commits it as a draft through the definition rails."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass

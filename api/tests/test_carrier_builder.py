@@ -91,6 +91,35 @@ def test_put_operation_rejects_a_misspelt_field_instead_of_dropping_it() -> None
     assert state.operations() == {}
 
 
+def test_put_operation_rejects_a_deeply_nested_misspelt_field() -> None:
+    # The guard reaches any depth: a typo inside a mapping entry's transform is dropped
+    # by pydantic too, and must be rejected, not just a top-level operation key.
+    state = WorkingDefinition()
+    operation = {
+        "steps": [
+            {
+                "name": "book",
+                "transport": "http",
+                "request": {
+                    "method": "POST",
+                    "url": "config.url",
+                    "content_type": "json",
+                    "mapping": [
+                        {
+                            "target": "order",
+                            "source": "shipment.order_number",
+                            "transform": {"name": "uppercase", "bogus": 1},
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+    result = put_operation(state, {"name": "book", "operation": operation})
+    assert "unknown field 'bogus'" in str(result["error"])
+    assert state.operations() == {}
+
+
 def test_remove_operation_drops_by_name() -> None:
     state = _complete()
     assert remove_operation(state, {"name": "book"})["removed"] == "book"

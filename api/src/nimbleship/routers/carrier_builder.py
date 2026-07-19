@@ -1,8 +1,8 @@
-"""The carrier builder edge (ADR 0018): an onboarding packet plus a conversation and
-the working definition in, the builder's reply and the edited working copy out. The
-LLM client is a dependency so it fails closed (503 when no key is configured) and a
-test can inject a scripted fake. The builder never publishes - it hands the working
-copy back for the operator to commit as a draft through the definition rails."""
+"""The carrier builder edge (ADR 0018): a conversation and the working definition in,
+the builder's reply and the edited working copy out. The LLM client is a dependency so
+it fails closed (503 when no key is configured) and a test can inject a scripted fake.
+The builder never publishes - it hands the working copy back for the operator to commit
+as a draft through the definition rails."""
 
 from typing import Annotated, Literal
 
