@@ -62,7 +62,7 @@ describe('CarrierBuilderPage', () => {
 
     expect(await screen.findByText(/drafted the booking call/i)).toBeInTheDocument()
     expect(screen.getByText(/Acme \(acme\)/)).toBeInTheDocument()
-    expect(screen.getByText('Operation: book')).toBeInTheDocument()
+    expect(screen.getByText('Book')).toBeInTheDocument()
     expect(
       await screen.findByText(/complete and ready to save/i),
     ).toBeInTheDocument()
@@ -143,6 +143,50 @@ describe('CarrierBuilderPage', () => {
     await userEvent.type(screen.getByLabelText('Author'), 'jake')
     // Author present, but the definition is incomplete: save stays disabled.
     expect(screen.getByRole('button', { name: /save as draft/i })).toBeDisabled()
+  })
+
+  it('shows N/A for a capability the builder pruned, and rides it back', async () => {
+    const mock = stubFetch({
+      'GET /api/carrier-builder/status': { body: { configured: true } },
+      'POST /api/carrier-builder/messages': {
+        body: {
+          reply: 'They have no manifest.',
+          definition: DRAFTED,
+          not_applicable: { manifest: 'no end-of-day process' },
+        },
+      },
+      'POST /api/carrier-builder/check': { body: { valid: true, errors: [] } },
+    })
+    renderPage()
+
+    // The frame is engine-bounded: label and manifest sit on the board before
+    // anything is drafted, so an absent capability is visible, not just missing.
+    expect(screen.getByText('Manifest')).toBeInTheDocument()
+    expect(screen.getByText('Label')).toBeInTheDocument()
+
+    const input = await screen.findByLabelText(/message the carrier builder/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'onboard acme{Enter}')
+    await screen.findByText(/they have no manifest/i)
+
+    expect(screen.getByText('N/A')).toBeInTheDocument()
+    expect(screen.getByText(/no end-of-day process/)).toBeInTheDocument()
+
+    // The next turn sends the marks back with the working copy (sentBody returns
+    // the first matching call, so read the last one by hand).
+    await userEvent.type(input, 'thanks{Enter}')
+    await waitFor(() => {
+      const calls = mock.mock.calls.filter(
+        ([request, init]) =>
+          `${init?.method ?? 'GET'} ${String(request)}` ===
+          'POST /api/carrier-builder/messages',
+      )
+      expect(calls.length).toBe(2)
+      const body = JSON.parse(String(calls[1]?.[1]?.body)) as {
+        not_applicable: Record<string, string>
+      }
+      expect(body.not_applicable).toEqual({ manifest: 'no end-of-day process' })
+    })
   })
 
   it('sends the pasted documentation packet with each turn', async () => {

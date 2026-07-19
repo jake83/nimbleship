@@ -26,7 +26,7 @@ import {
   type WorkingDefinition,
 } from '@/carrier-builder/api'
 
-type RowState = 'drafted' | 'not started'
+type RowState = 'drafted' | 'not started' | 'N/A'
 
 interface BoardRow {
   label: string
@@ -38,10 +38,24 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null
 }
 
-/** The operator's view of the draft (ADR 0018): capability rows, never definition
- * guts. Rows are the pieces a working integration needs; state is derived from what
- * the AI has assembled so far, and `check` supplies the remaining-work signal. */
-function boardRows(definition: WorkingDefinition): BoardRow[] {
+function hasLabelSpec(operations: Record<string, unknown>): boolean {
+  return Object.values(operations).some(
+    (operation) =>
+      typeof operation === 'object' &&
+      operation !== null &&
+      Boolean((operation as Record<string, unknown>).label),
+  )
+}
+
+/** The operator's view of the draft (ADR 0018): capability rows on an engine-bounded
+ * frame (book, label, manifest), never definition guts. State is derived from what
+ * the AI has assembled so far; a capability the docs show the carrier doesn't offer
+ * is N/A with its reason, not forever-missing. `check` supplies the remaining-work
+ * signal. */
+function boardRows(
+  definition: WorkingDefinition,
+  notApplicable: Record<string, string>,
+): BoardRow[] {
   const carrier = asString(definition.carrier)
   const name = asString(definition.name)
   const auth = definition.auth as Record<string, unknown> | undefined
@@ -49,6 +63,13 @@ function boardRows(definition: WorkingDefinition): BoardRow[] {
     typeof definition.operations === 'object' && definition.operations !== null
       ? (definition.operations as Record<string, unknown>)
       : {}
+  const capability = (label: string, key: string, drafted: boolean): BoardRow => {
+    const reason = notApplicable[key]
+    if (reason !== undefined && !drafted) {
+      return { label, state: 'N/A', detail: reason }
+    }
+    return { label, state: drafted ? 'drafted' : 'not started', detail: null }
+  }
   const rows: BoardRow[] = [
     {
       label: 'Carrier identity',
@@ -60,12 +81,14 @@ function boardRows(definition: WorkingDefinition): BoardRow[] {
       state: auth !== undefined ? 'drafted' : 'not started',
       detail: auth !== undefined ? String(auth.scheme ?? '') : null,
     },
+    capability('Book', 'book', 'book' in operations),
+    capability('Label', 'label', hasLabelSpec(operations)),
+    capability('Manifest', 'manifest', 'manifest' in operations),
   ]
-  const operationNames = Object.keys(operations)
-  if (operationNames.length === 0) {
-    rows.push({ label: 'Operations', state: 'not started', detail: null })
-  } else {
-    for (const operation of operationNames.sort()) {
+  // A definition can carry operations beyond the frame; show them so a drafted one
+  // is never invisible on the board.
+  for (const operation of Object.keys(operations).sort()) {
+    if (operation !== 'book' && operation !== 'manifest') {
       rows.push({ label: `Operation: ${operation}`, state: 'drafted', detail: null })
     }
   }
@@ -78,6 +101,7 @@ function boardRows(definition: WorkingDefinition): BoardRow[] {
 export function CarrierBuilderPage() {
   const [messages, setMessages] = useState<BuilderMessage[]>([])
   const [definition, setDefinition] = useState<WorkingDefinition>({})
+  const [notApplicable, setNotApplicable] = useState<Record<string, string>>({})
   const [checkOutcome, setCheckOutcome] = useState<CheckOutcome | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -124,9 +148,15 @@ export function CarrierBuilderPage() {
     setMessages(withUser)
     setPending(true)
     try {
-      const turn = await sendBuilderMessages(withUser, definition, packet)
+      const turn = await sendBuilderMessages(
+        withUser,
+        definition,
+        packet,
+        notApplicable,
+      )
       setMessages([...withUser, { role: 'assistant', content: turn.reply }])
       setDefinition(turn.definition)
+      setNotApplicable(turn.not_applicable ?? {})
       setSaved(null) // the copy moved on; a prior save no longer describes it
       try {
         setCheckOutcome(await checkDefinition(turn.definition))
@@ -211,7 +241,7 @@ export function CarrierBuilderPage() {
     }
   }
 
-  const rows = boardRows(definition)
+  const rows = boardRows(definition, notApplicable)
 
   return (
     <div className="flex flex-col gap-4">
@@ -394,7 +424,13 @@ export function CarrierBuilderPage() {
               {rows.map((row) => (
                 <li key={row.label} className="flex items-center gap-2 text-sm">
                   <Badge
-                    variant={row.state === 'drafted' ? 'default' : 'outline'}
+                    variant={
+                      row.state === 'drafted'
+                        ? 'default'
+                        : row.state === 'N/A'
+                          ? 'secondary'
+                          : 'outline'
+                    }
                   >
                     {row.state}
                   </Badge>
