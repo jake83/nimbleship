@@ -30,12 +30,19 @@ class BuilderMessage(BaseModel):
     content: str = Field(max_length=10_000)
 
 
+# A definition has a handful of top-level keys; this caps them as a light structural
+# guard. It does not bound the nested payload size - overall request-body limiting is
+# an app-level concern (there is no body-size middleware yet).
+_DEFINITION_MAX_KEYS = 50
+
+
 class BuilderRequest(BaseModel):
     messages: list[BuilderMessage] = Field(max_length=50)
     # The working definition so far, assembled key by key; empty on the first turn of a
-    # new-carrier onboarding. Bounded to a sane number of top-level keys (a definition
-    # has a handful) so a request can't hand over an unbounded object.
-    definition: dict[str, object] = Field(default_factory=dict, max_length=50)
+    # new-carrier onboarding.
+    definition: dict[str, object] = Field(
+        default_factory=dict, max_length=_DEFINITION_MAX_KEYS
+    )
 
 
 class BuilderReply(BaseModel):
