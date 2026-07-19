@@ -112,6 +112,24 @@ is the active definition's re-render; recorded traffic becomes the baseline
 as it accumulates.
 _Avoid_: dry run (that is the rulebook's replay; this one renders requests)
 
+**Onboarding Packet**:
+The material an operator provides to start onboarding a carrier: uploaded doc
+attachments, pasted raw text (a forwarded email), and endpoint URLs with
+credentials, in any combination - not a single required document. The AI
+integration builder reads it to draft a Carrier Definition; the credentials in
+it route to Carrier Config, never to the model (ADR 0018).
+_Avoid_: treating it as one document or a rigid upload form; sending its
+credentials to the AI
+
+**Handoff**:
+A first-class blocker on a draft Carrier Definition marking a technical gap the
+non-technical operator cannot close - either a needed plugin (bounded code) or a
+decision the docs do not answer - passed to the engineer, the second persona who
+owns technical escalations on the same draft (ADR 0018). The single escalation
+seam, on the draft/test/publish rails.
+_Avoid_: an out-of-band email; treating it as a failure rather than a normal
+step; "defer to developer" as only ever "needs a plugin"
+
 **Delivery Cost**:
 What a carrier charges the company to deliver a consignment. Used to pick the
 cheapest suitable carrier during allocation.
