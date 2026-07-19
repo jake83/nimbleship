@@ -33,11 +33,9 @@ class BuilderMessage(BaseModel):
 class BuilderRequest(BaseModel):
     messages: list[BuilderMessage] = Field(max_length=50)
     # The working definition so far, assembled key by key; empty on the first turn of a
-    # new-carrier onboarding.
-    definition: dict[str, object] = Field(default_factory=dict)
-    # The onboarding documentation the AI reads - pasted text for now. Bounded so a
-    # request can't ask the model to ingest an unbounded blob.
-    packet: str = Field(default="", max_length=200_000)
+    # new-carrier onboarding. Bounded to a sane number of top-level keys (a definition
+    # has a handful) so a request can't hand over an unbounded object.
+    definition: dict[str, object] = Field(default_factory=dict, max_length=50)
 
 
 class BuilderReply(BaseModel):
@@ -63,7 +61,7 @@ def builder_messages(request: BuilderRequest, llm: LlmDep) -> BuilderReply:
         for message in request.messages
     ]
     try:
-        result = build(conversation, request.definition, request.packet, llm=llm)
+        result = build(conversation, request.definition, llm=llm)
     except anthropic.APIError as error:
         raise HTTPException(502, "the carrier builder is unavailable") from error
     return BuilderReply(reply=result.reply, definition=result.definition)

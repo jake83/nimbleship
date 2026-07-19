@@ -34,20 +34,19 @@ class BuildResult:
 def build(
     conversation: Sequence[Message],
     definition: dict[str, object],
-    packet: str,
     *,
     llm: LlmClient,
 ) -> BuildResult:
-    """Run one builder turn against the working `definition`, grounded in `packet` (the
-    onboarding documentation), and return the reply plus the edited copy. The copy is
-    mutated in memory only; nothing is persisted."""
+    """Run one builder turn against the working `definition` and return the reply plus
+    the edited copy. The copy is mutated in memory only; nothing is persisted.
+
+    Bulk document ingestion (the onboarding packet) is deferred to a follow-up: it must
+    route credentials to Carrier Config and keep them out of the model (ADR 0018), so a
+    raw doc dump can't reach the prompt until that separation exists."""
     state = WorkingDefinition(data=dict(definition))
-    system = BUILDER_SYSTEM_PROMPT
-    if packet.strip():
-        system += f"\n\nCarrier documentation provided by the operator:\n{packet}"
     reply = run_tool_use_loop(
         conversation,
-        system=system,
+        system=BUILDER_SYSTEM_PROMPT,
         tools=TOOL_SCHEMAS,
         run_tool=lambda name, tool_input: run_carrier_builder_tool(
             state, name, tool_input

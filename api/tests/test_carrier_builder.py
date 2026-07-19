@@ -78,6 +78,19 @@ def test_put_operation_rejects_malformed_and_adds_valid() -> None:
     assert "book" in state.operations()
 
 
+def test_put_operation_rejects_a_misspelt_field_instead_of_dropping_it() -> None:
+    # pydantic ignores an unknown key, so a mistyped `allocate` would silently drop the
+    # SSCC minting the operator asked for while check() still reports valid - reject it.
+    state = WorkingDefinition()
+    operation = {
+        **_OPERATION,
+        "alloacte": [{"kind": "sscc", "per": "parcel", "prefix": "config.p"}],
+    }
+    result = put_operation(state, {"name": "book", "operation": operation})
+    assert "unknown field 'alloacte'" in str(result["error"])
+    assert state.operations() == {}
+
+
 def test_remove_operation_drops_by_name() -> None:
     state = _complete()
     assert remove_operation(state, {"name": "book"})["removed"] == "book"
@@ -123,9 +136,9 @@ class _FakeLlm:
         return self._replies.pop(0)
 
 
-def test_build_assembles_a_definition_and_grounds_it_in_the_packet() -> None:
-    # The model sets identity/auth/operation from the packet, then replies; the loop
-    # applies each edit and hands back the working copy for the operator to review.
+def test_build_assembles_a_definition_from_the_conversation() -> None:
+    # The model sets identity/auth/operation, then replies; the loop applies each edit
+    # and hands back the working copy for the operator to review.
     llm = _FakeLlm(
         [
             LlmReply(
@@ -145,15 +158,8 @@ def test_build_assembles_a_definition_and_grounds_it_in_the_packet() -> None:
         ]
     )
 
-    result = build(
-        [{"role": "user", "content": "onboard acme"}],
-        {},
-        "Acme API: POST /book, no auth.",
-        llm=llm,
-    )
+    result = build([{"role": "user", "content": "onboard acme"}], {}, llm=llm)
 
     assert "Drafted" in result.reply
     assert result.definition["carrier"] == "acme"
     assert "book" in result.definition["operations"]  # type: ignore[operator]
-    # The packet is handed to the model as grounding.
-    assert "Acme API" in llm.systems[0]

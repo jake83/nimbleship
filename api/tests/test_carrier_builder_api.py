@@ -89,10 +89,7 @@ def test_messages_edits_the_working_definition_and_returns_it(
     )
     response = client.post(
         "/api/carrier-builder/messages",
-        json={
-            "messages": [{"role": "user", "content": "onboard acme"}],
-            "packet": "Acme API: POST /book",
-        },
+        json={"messages": [{"role": "user", "content": "onboard acme"}]},
     )
     assert response.status_code == 200
     body = response.json()

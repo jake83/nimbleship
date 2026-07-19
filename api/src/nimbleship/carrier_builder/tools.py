@@ -6,9 +6,16 @@ mid-build it is legitimately incomplete."""
 
 from dataclasses import dataclass, field
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from nimbleship.domain.carrier_definition import Auth, CarrierDefinition, Operation
+from nimbleship.domain.carrier_definition import (
+    Auth,
+    CarrierDefinition,
+    MappingEntry,
+    Operation,
+    RequestSpec,
+    Step,
+)
 
 _AUTH_ADAPTER: TypeAdapter[Auth] = TypeAdapter(Auth)
 
@@ -61,6 +68,46 @@ def set_auth(
     return {"auth_scheme": auth.get("scheme")}
 
 
+def _unknown_field(data: dict[str, object], model: type[BaseModel]) -> str | None:
+    allowed = set(model.model_fields)
+    allowed |= {f.alias for f in model.model_fields.values() if f.alias is not None}
+    return next((key for key in data if key not in allowed), None)
+
+
+def _first_misspelt_field(operation: dict[str, object]) -> str | None:
+    """The first operation/step/request/mapping key no model field claims, or None.
+    pydantic ignores an unknown key, so a mistyped optional field (`alloacte` for
+    `allocate`, `fanout` for `fan_out`) would silently drop what the operator asked for
+    while check() still reports the definition valid - reject it, as the rules builder
+    does for its own edits."""
+    unknown = _unknown_field(operation, Operation)
+    if unknown is not None:
+        return unknown
+    steps = operation.get("steps")
+    if not isinstance(steps, list):
+        return None
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        unknown = _unknown_field(step, Step)
+        if unknown is not None:
+            return unknown
+        request = step.get("request")
+        if not isinstance(request, dict):
+            continue
+        unknown = _unknown_field(request, RequestSpec)
+        if unknown is not None:
+            return unknown
+        mapping = request.get("mapping")
+        if isinstance(mapping, list):
+            for entry in mapping:
+                if isinstance(entry, dict):
+                    unknown = _unknown_field(entry, MappingEntry)
+                    if unknown is not None:
+                        return unknown
+    return None
+
+
 def put_operation(
     state: WorkingDefinition, tool_input: dict[str, object]
 ) -> dict[str, object]:
@@ -71,6 +118,9 @@ def put_operation(
     operation = tool_input.get("operation")
     if not isinstance(name, str) or not isinstance(operation, dict):
         return {"error": "put_operation needs a 'name' and an 'operation' object"}
+    misspelt = _first_misspelt_field(operation)
+    if misspelt is not None:
+        return {"error": f"unknown field '{misspelt}' - check the spelling"}
     try:
         Operation.model_validate(operation)
     except ValidationError as error:
