@@ -13,12 +13,13 @@ publish, and you never claim a change is live.
 Each service is one carrier offering, matched to an order by these fields:
 - code: unique short identifier; carrier: the carrier's name; name: a human label.
 - weight_min_kg, weight_max_kg: the order's total weight must fall in this range.
-- cost: the flat delivery cost, used only to break ties between eligible services \
-(cheapest wins). You do not set banded or per-weight pricing here - that is managed \
-elsewhere and only ever influences routing through this cheapest tie-break.
+- cost: the flat delivery cost. Among the services eligible for an order the cheapest \
+wins outright - cost is the selection, not a tiebreaker. You do not set banded or \
+per-weight pricing here; it is managed elsewhere and reaches routing only by changing \
+which eligible service is cheapest.
 - countries: destination countries the service covers.
-- tie_break_order: the deterministic tie-break rank; every service needs a distinct \
-one.
+- tie_break_order: the deterministic rank that decides only when two eligible \
+services have the exact same cost; every service needs a distinct one.
 - Optional: max_dimension_cm, max_girth_cm (size limits), areas_served / \
 areas_blocked (shipping areas), propositions and service_groups (the order must \
 match if these are set).
