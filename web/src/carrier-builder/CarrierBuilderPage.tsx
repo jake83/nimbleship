@@ -92,6 +92,7 @@ export function CarrierBuilderPage() {
   const [credKey, setCredKey] = useState('')
   const [credValue, setCredValue] = useState('')
   const [credsSaved, setCredsSaved] = useState<string[]>([])
+  const [credsMissing, setCredsMissing] = useState<string[]>([])
   const [credError, setCredError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -158,8 +159,9 @@ export function CarrierBuilderPage() {
     if (key === '' || credValue === '' || target === '') return
     setCredError(null)
     try {
-      await saveCredentials(target, { [key]: credValue })
+      const saved = await saveCredentials(target, { [key]: credValue })
       setCredsSaved((current) => [...current, key])
+      setCredsMissing(saved.missing)
       setCredKey('')
       setCredValue('')
     } catch (caught) {
@@ -303,6 +305,8 @@ export function CarrierBuilderPage() {
             {credsSaved.length > 0 && (
               <p className="text-xs text-muted-foreground">
                 Stored: {credsSaved.join(', ')}
+                {credsMissing.length > 0 &&
+                  ` - the live definition still needs: ${credsMissing.join(', ')}`}
               </p>
             )}
             {credError !== null && (

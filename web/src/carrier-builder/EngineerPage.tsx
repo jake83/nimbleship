@@ -26,7 +26,8 @@ export function EngineerPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [resolutions, setResolutions] = useState<Record<number, string>>({})
   const [resolveError, setResolveError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  // Per-blocker, so a hung resolve locks only its own button, not the whole queue.
+  const [busyId, setBusyId] = useState<number | null>(null)
   // Two loads can race (retype the carrier, click again before the first lands);
   // only the latest may apply, or a slow response shows the wrong carrier's queue.
   const loadSeq = useRef(0)
@@ -49,7 +50,8 @@ export function EngineerPage() {
   async function resolve(blocker: Blocker) {
     const resolution = (resolutions[blocker.id] ?? '').trim()
     if (resolution === '') return
-    setBusy(true)
+    const seq = loadSeq.current
+    setBusyId(blocker.id)
     setResolveError(null)
     try {
       const updated = await resolveBlocker(blocker.id, resolution)
@@ -58,9 +60,13 @@ export function EngineerPage() {
           current?.map((b) => (b.id === updated.id ? updated : b)) ?? null,
       )
     } catch (caught) {
-      setResolveError(caught instanceof Error ? caught.message : String(caught))
+      // A stale failure (the engineer has since loaded another carrier) must not be
+      // attributed to the queue now on screen.
+      if (seq === loadSeq.current) {
+        setResolveError(caught instanceof Error ? caught.message : String(caught))
+      }
     } finally {
-      setBusy(false)
+      setBusyId((current) => (current === blocker.id ? null : current))
     }
   }
 
@@ -155,7 +161,8 @@ export function EngineerPage() {
                       type="button"
                       onClick={() => void resolve(blocker)}
                       disabled={
-                        busy || (resolutions[blocker.id] ?? '').trim() === ''
+                        busyId === blocker.id ||
+                        (resolutions[blocker.id] ?? '').trim() === ''
                       }
                     >
                       Resolve

@@ -555,8 +555,10 @@ def _config_key(source: str, into: set[str]) -> None:
 class CarrierDefinition(BaseModel):
     # Extra top-level keys (e.g. a `notes` array) are source-file commentary:
     # ignored here, never persisted onto the model, not a schema field.
-    carrier: str = Field(max_length=64)
-    name: str = Field(max_length=255)
+    # Identity is structural (strict on load too): a blank carrier is a rails key
+    # nothing can route to, so /check must not call such a definition valid.
+    carrier: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=255)
     auth: Auth
     operations: dict[str, Operation]
 

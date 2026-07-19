@@ -56,9 +56,7 @@ class BuilderRequest(BaseModel):
     definition: dict[str, object] = Field(
         default_factory=dict, max_length=_DEFINITION_MAX_KEYS
     )
-    # The onboarding documentation (pasted text and text attachments), redacted of
-    # known stored config values before it reaches the model. Bounded so a request
-    # can't ask the model to ingest an unbounded blob.
+    # Bounded so a request can't ask the model to ingest an unbounded blob.
     packet: str = Field(default="", max_length=200_000)
 
 
