@@ -33,9 +33,11 @@ LabelStoreDep = Annotated[LabelStore, Depends(get_label_store)]
 HttpClientDep = Annotated[httpx.Client, Depends(get_http_client)]
 UploaderDep = Annotated[Mapping[str, FileUploader], Depends(get_carrier_uploaders)]
 
-# A WMS consignment batch is small; cap the read so a hostile or runaway caller
-# cannot exhaust memory with a giant body (defusedxml stops entity amplification,
-# not raw size).
+# A WMS consignment batch is small; cap the read so an oversized body is refused
+# (defusedxml stops entity amplification, not raw size). The app-wide middleware
+# bounds memory first - it buffers every body up to its higher global cap before any
+# route runs - so this streaming read is the edge's tighter contract check, not the
+# memory backstop.
 _MAX_BODY_BYTES = 5 * 1024 * 1024
 
 

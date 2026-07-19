@@ -1,19 +1,11 @@
 """Tests for the app-wide body-byte cap (nimbleship.middleware)."""
 
-import asyncio
 from collections.abc import Iterator
 
 from fastapi.testclient import TestClient
 
 from nimbleship.legacy.router import _MAX_BODY_BYTES as LEGACY_MAX_BODY_BYTES
-from nimbleship.middleware import (
-    MAX_BODY_BYTES,
-    BodySizeLimitMiddleware,
-    Message,
-    Receive,
-    Scope,
-    Send,
-)
+from nimbleship.middleware import MAX_BODY_BYTES
 
 
 def test_the_global_cap_sits_above_every_per_edge_ceiling() -> None:
@@ -33,44 +25,20 @@ def test_an_over_declared_body_is_a_clean_413(client: TestClient) -> None:
     assert "too large" in response.text
 
 
-def test_a_lying_declaration_cannot_smuggle_an_over_cap_body() -> None:
+def test_a_lying_declaration_cannot_smuggle_an_over_cap_body(
+    client: TestClient,
+) -> None:
     # Content-Length is sender-controlled: a real server rejects a mismatch at its
-    # framing layer, but the cap must hold without trusting that. The lie is only
-    # expressible at the ASGI layer, so forge it there.
-    reached: list[bytes] = []
-
-    async def recording_app(scope: Scope, receive: Receive, send: Send) -> None:
-        while True:
-            message = await receive()
-            body = message.get("body", b"")
-            reached.append(body if isinstance(body, bytes) else b"")
-            if not message.get("more_body"):
-                break
-
-    guarded = BodySizeLimitMiddleware(recording_app, max_bytes=1024)
-    scope: Scope = {
-        "type": "http",
-        "method": "POST",
-        "headers": [(b"content-length", b"10")],
-    }
-    body_iter = iter(
-        [
-            {"type": "http.request", "body": b"x" * 2048, "more_body": False},
-        ]
+    # framing layer, but the cap must hold without trusting that. httpx honours a
+    # caller-supplied Content-Length over the computed one, so the lie is expressible
+    # black-box - on the old declared-length fast path this body smuggled through.
+    response = client.post(
+        "/api/carrier-builder/check",
+        content=b"x" * (MAX_BODY_BYTES + 1),
+        headers={"Content-Type": "application/json", "Content-Length": "10"},
     )
-
-    async def receive() -> Message:
-        return dict(next(body_iter))
-
-    sent: list[Message] = []
-
-    async def send(message: Message) -> None:
-        sent.append(message)
-
-    asyncio.run(guarded(scope, receive, send))
-    assert not reached  # the over-cap body never reaches the app
-    starts = [m for m in sent if m["type"] == "http.response.start"]
-    assert starts and starts[0]["status"] == 413
+    assert response.status_code == 413
+    assert "too large" in response.text
 
 
 def test_an_undeclared_chunked_body_over_the_cap_is_a_clean_413(

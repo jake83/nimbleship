@@ -34,8 +34,10 @@ class BodySizeLimitMiddleware:
         await self._buffered(scope, receive, send)
 
     async def _buffered(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Counts every body for real - a declared length is never trusted. Every
-        route reads its body whole anyway, so buffering adds no new cost."""
+        """Buffering ahead of the app is what makes the over-cap refusal a clean 413 -
+        streaming through could not refuse once the app starts reading - and it costs
+        at most the cap per request. A route that streams its body (the legacy edge)
+        sees one joined chunk, its own tighter cap still enforced on that."""
         chunks: list[bytes] = []
         received = 0
         interrupted: Message | None = None
