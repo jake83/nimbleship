@@ -13,6 +13,7 @@ from nimbleship.assistant import LlmReply, ToolUse
 from nimbleship.domain.allocation import ServiceDeclaration
 from nimbleship.rules_builder import InvalidWorkingCopy, WorkingCopy, build
 from nimbleship.rules_builder.tools import (
+    _SERVICE_PROPERTIES,
     add_service,
     dry_run,
     remove_service,
@@ -123,7 +124,7 @@ def test_add_service_rejects_banded_pricing_fields() -> None:
     # rejected, so a band can't be silently attached to the working copy.
     state = WorkingCopy()
     result = add_service(state, {"service": {**_DROPOUT, "cost_bands": [_BAND]}})
-    assert "banded pricing is managed elsewhere" in str(result["error"])
+    assert "not fields the builder sets: cost_bands" in str(result["error"])
     assert state.services == []
 
 
@@ -132,7 +133,7 @@ def test_update_service_rejects_authoring_banded_pricing() -> None:
     result = update_service(
         state, {"code": "DROPOUT-STD", "changes": {"charge_bands": [_BAND]}}
     )
-    assert "banded pricing is managed elsewhere" in str(result["error"])
+    assert "not fields the builder sets: charge_bands" in str(result["error"])
     assert state.services[0].charge_bands is None
 
 
@@ -143,8 +144,28 @@ def test_update_service_rejects_clearing_bands_with_a_null() -> None:
     result = update_service(
         state, {"code": "DROPOUT-STD", "changes": {"cost_bands": None}}
     )
-    assert "banded pricing is managed elsewhere" in str(result["error"])
+    assert "not fields the builder sets: cost_bands" in str(result["error"])
     assert state.services[0].cost_bands is not None  # unchanged
+
+
+def test_the_settable_fields_are_the_declaration_fields_minus_pricing() -> None:
+    # The allow-list must stay exactly the ServiceDeclaration fields minus the two
+    # banded-pricing fields, so a field added to the model later forces a deliberate
+    # choice here rather than being silently rejected (or a new band silently let in).
+    settable = set(ServiceDeclaration.model_fields) - {"cost_bands", "charge_bands"}
+    assert set(_SERVICE_PROPERTIES) == settable
+
+
+def test_update_service_rejects_a_misnamed_field_instead_of_no_op() -> None:
+    # A typo'd field name (pydantic would silently drop it, validating the unchanged
+    # service and reporting a success that changed nothing) is rejected, so the model
+    # gets a signal to retry rather than telling the operator of a change never made.
+    state = _copy(_DROPOUT)
+    result = update_service(
+        state, {"code": "DROPOUT-STD", "changes": {"max_weight_kg": "50"}}
+    )
+    assert "not fields the builder sets: max_weight_kg" in str(result["error"])
+    assert str(state.services[0].weight_max_kg) == "999"  # unchanged
 
 
 def test_update_service_preserves_a_seeded_services_existing_bands() -> None:
