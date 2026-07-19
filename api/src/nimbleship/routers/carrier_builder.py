@@ -8,11 +8,12 @@ from typing import Annotated, Literal
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from nimbleship.assistant import LlmClient, build_client
 from nimbleship.carrier_builder import build
 from nimbleship.config import get_settings
+from nimbleship.domain.carrier_definition import CarrierDefinition
 
 router = APIRouter(prefix="/carrier-builder", tags=["carrier-builder"])
 
@@ -50,6 +51,19 @@ class BuilderReply(BaseModel):
     definition: dict[str, object]
 
 
+class CheckRequest(BaseModel):
+    definition: dict[str, object] = Field(
+        default_factory=dict, max_length=_DEFINITION_MAX_KEYS
+    )
+
+
+class CheckOut(BaseModel):
+    valid: bool
+    # Human-readable validation problems; empty when valid. The surface shows these on
+    # the capability board so the operator sees what still remains.
+    errors: list[str]
+
+
 @router.get("/status")
 def builder_status(llm: LlmDep) -> dict[str, bool]:
     """Whether the builder is configured, so a surface can disable its input instead of
@@ -72,3 +86,20 @@ def builder_messages(request: BuilderRequest, llm: LlmDep) -> BuilderReply:
     except anthropic.APIError as error:
         raise HTTPException(502, "the carrier builder is unavailable") from error
     return BuilderReply(reply=result.reply, definition=result.definition)
+
+
+@router.post("/check")
+def builder_check(request: CheckRequest) -> CheckOut:
+    """Validate the working definition as a whole CarrierDefinition and report what
+    remains - the capability board's completeness signal. Pure validation, no model, so
+    it needs no API key. An incomplete mid-build copy is a normal 200 with errors, not
+    a 422: incompleteness is the expected state this endpoint exists to describe."""
+    try:
+        CarrierDefinition.model_validate(request.definition)
+    except ValidationError as error:
+        problems = [
+            f"{'.'.join(str(part) for part in issue['loc'])}: {issue['msg']}"
+            for issue in error.errors()
+        ]
+        return CheckOut(valid=False, errors=problems)
+    return CheckOut(valid=True, errors=[])
