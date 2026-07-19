@@ -6,6 +6,7 @@ from fastapi import APIRouter, FastAPI
 
 from nimbleship.labels.store import get_label_store
 from nimbleship.legacy.router import router as legacy_router
+from nimbleship.middleware import BodySizeLimitMiddleware
 from nimbleship.routers.assistant import router as assistant_router
 from nimbleship.routers.carrier_builder import router as carrier_builder_router
 from nimbleship.routers.consignments import router as consignments_router
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
         openapi_url=f"{API_PREFIX}/openapi.json",
         lifespan=_lifespan,
     )
+    app.add_middleware(BodySizeLimitMiddleware)
     router = APIRouter(prefix=API_PREFIX)
 
     @router.get("/health")
