@@ -65,11 +65,18 @@ bounded engineer escalation) do it instead.
   everything else it can, so the engineer inherits a mostly-complete draft with a
   sharp, isolated gap.
   - **Needs a plugin** resolves through code, and the draft enforces it: the AI
-    writes a reference to a named-but-unimplemented plugin (e.g.
-    `auth: plugin:acme_hmac`) plus the spec of what it must do. ADR 0009's load
-    validation already refuses to publish a definition referencing an unknown
-    plugin, so the publish gate *is* the handoff gate. The engineer implements
-    the plugin as a normal reviewed PR; once deployed, the reference resolves.
+    writes a reference to a named-but-unimplemented plugin plus the spec of what
+    it must do. ADR 0009's *authoring* validation (the publish gate, not the more
+    lenient load-time read) refuses a definition naming an unregistered plugin, so
+    the publish gate *is* the handoff gate. This holds today only for computed-field
+    plugins, which are validated against the registry at authoring; the other
+    extension points, notably auth plugins, tolerate an unregistered name (a draft
+    naming one would publish and fail only at booking). Closing that - the same
+    authoring-time unknown-plugin rejection at every extension point - is a 5c
+    prerequisite, small and squarely in ADR 0009's model (it always intended
+    plugins validated at authoring; the check simply was not built where no carrier
+    yet needed it). The engineer then implements the plugin as a normal reviewed PR;
+    once deployed, the reference resolves.
   - **Needs a decision** resolves through an answer the engineer records on the
     blocker (a value, a config key, "use the v2 endpoint"), which the AI consumes.
   - The draft carries a visible **blocked-on-engineer** state and cannot publish
@@ -103,9 +110,11 @@ bounded engineer escalation) do it instead.
 
 - The declarative vocabulary is the AI/engineer boundary, mechanically enforced:
   anything expressible in ADR 0009's rows is the AI's to draft, anything needing
-  a plugin defers, and the existing publish gate (unknown-plugin rejection,
-  config completeness, golden replay) refuses to let a half-resolved draft go
-  live. No new gate had to be invented.
+  a plugin defers, and the publish gate (unknown-plugin rejection, config
+  completeness, golden replay) refuses to let a half-resolved draft go live. No
+  new *kind* of gate is invented - only the existing authoring-time unknown-plugin
+  rejection has to be extended from computed-field plugins to every extension
+  point (the prerequisite above).
 - Non-technical operators are first-class, not tolerated: they never see
   definition guts or secrets, and the capability board answers their only real
   question - "how far along, and what is it waiting on?" The engineer never has

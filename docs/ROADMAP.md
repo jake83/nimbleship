@@ -236,7 +236,7 @@ Goal: the differentiators, each riding rails built earlier.
   short session on the Q&A UX.
 - 5c AI integration builder: carrier docs in, question-and-answer flow,
   draft carrier definition out; unanswerable questions become a bounded
-  defer-to-developer handoff (usually "this needs a plugin"). Session C held
+  defer-to-engineer handoff (a needed plugin, or a technical decision). Session C held
   2026-07-19 -> ADR 0018: an onboarding packet (uploads + pasted text + endpoint
   URLs/credentials) drives 5b's builder pattern; two personas (non-technical
   operator, engineer) with the defer-to-engineer handoff as a first-class draft
