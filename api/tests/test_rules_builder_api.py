@@ -174,3 +174,72 @@ def test_messages_502_when_the_model_is_unavailable(
         json={"messages": [{"role": "user", "content": "add a service"}]},
     )
     assert response.status_code == 502
+
+
+def test_messages_rejects_a_working_copy_over_the_cap(
+    app: FastAPI, client: TestClient
+) -> None:
+    _use(app, [])
+    too_many = [{**_DROPOUT, "code": f"S{i}", "tie_break_order": i} for i in range(501)]
+    response = client.post(
+        "/api/rulebook/builder/messages",
+        json={"messages": [{"role": "user", "content": "x"}], "services": too_many},
+    )
+    assert response.status_code == 422
+
+
+_GB_ORDER = {
+    "order_number": "95000254580",
+    "recipient_name": "John Doe",
+    "address_lines": ["10 Downing Street", "London"],
+    "postcode": "SW1A 2AA",
+    "destination_country": "GB",
+    "parcels": [{"weight_kg": "4.2"}],
+}
+
+
+def test_dry_run_reports_working_copy_impact(client: TestClient) -> None:
+    # Publish a rulebook and ship an order under it, then dry-run a working copy that
+    # reroutes that order to a new cheaper service - the report names the change. No
+    # API key needed: dry-run is pure allocation, not the model.
+    version = client.post(
+        "/api/rulebook/drafts", json={"author": "j", "services": [_DROPOUT]}
+    ).json()["version"]
+    client.post(f"/api/rulebook/versions/{version}/publish")
+    assert client.post("/api/consignments", json=_GB_ORDER).status_code == 201
+
+    cheaper = {**_DROPOUT, "code": "CHEAP", "cost": "1.00", "tie_break_order": 1}
+    original = {**_DROPOUT, "tie_break_order": 2}
+    response = client.post(
+        "/api/rulebook/builder/dry-run", json={"services": [original, cheaper]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["changed"] == 1
+    assert body["results"][0]["current_service"] == "DROPOUT-STD"
+    assert body["results"][0]["draft_service"] == "CHEAP"
+
+
+def test_dry_run_rejects_an_invalid_working_copy(client: TestClient) -> None:
+    # Two services sharing a tie-break can't form a rulebook - a bad request (422),
+    # not a 500.
+    clash = {**_DROPOUT, "code": "OTHER"}  # same tie_break_order as _DROPOUT
+    response = client.post(
+        "/api/rulebook/builder/dry-run", json={"services": [_DROPOUT, clash]}
+    )
+    assert response.status_code == 422
+
+
+def test_dry_run_rejects_an_empty_working_copy(client: TestClient) -> None:
+    # Nothing to allocate against: Rulebook's min_length makes it a 422, not a 500 -
+    # the case the docstring calls out.
+    response = client.post("/api/rulebook/builder/dry-run", json={"services": []})
+    assert response.status_code == 422
+
+
+def test_dry_run_over_the_cap_is_rejected(client: TestClient) -> None:
+    too_many = [{**_DROPOUT, "code": f"S{i}", "tie_break_order": i} for i in range(501)]
+    response = client.post("/api/rulebook/builder/dry-run", json={"services": too_many})
+    assert response.status_code == 422

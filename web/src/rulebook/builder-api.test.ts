@@ -1,6 +1,10 @@
 import { sentBody, service, stubFetch } from '@/test/rulebook'
 
-import { fetchBuilderStatus, sendBuilderMessages } from './builder-api'
+import {
+  dryRunWorkingCopy,
+  fetchBuilderStatus,
+  sendBuilderMessages,
+} from './builder-api'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -23,6 +27,22 @@ describe('rules builder api', () => {
     expect(result.services).toEqual([edited])
     expect(sentBody(mock, 'POST /api/rulebook/builder/messages')).toEqual({
       messages,
+      services,
+    })
+  })
+
+  it('posts the working copy for a dry run and returns the impact', async () => {
+    const mock = stubFetch({
+      'POST /api/rulebook/builder/dry-run': {
+        body: { total: 2, changed: 1, results: [] },
+      },
+    })
+    const services = [service()]
+
+    const outcome = await dryRunWorkingCopy(services)
+
+    expect(outcome).toEqual({ total: 2, changed: 1, results: [] })
+    expect(sentBody(mock, 'POST /api/rulebook/builder/dry-run')).toEqual({
       services,
     })
   })

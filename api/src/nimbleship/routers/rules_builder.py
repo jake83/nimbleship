@@ -8,19 +8,25 @@ from typing import Annotated, Literal
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from nimbleship.assistant import LlmClient, build_client
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
-from nimbleship.domain.allocation import ServiceDeclaration
+from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
+from nimbleship.domain.dry_run import DEFAULT_LIMIT, dry_run_rulebook
 from nimbleship.domain.rulebook import active_rulebook
+from nimbleship.routers.rulebook import DryRunResultOut
 from nimbleship.rules_builder import InvalidWorkingCopy, build
 
 router = APIRouter(prefix="/rulebook/builder", tags=["rulebook"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+# Caps the working copy that rides every turn; a real rulebook is dozens of
+# services, far under this. Matches the order_numbers replay cap.
+SERVICES_MAX = 500
 
 
 def get_llm_client() -> LlmClient | None:
@@ -40,12 +46,27 @@ class BuilderRequest(BaseModel):
     messages: list[BuilderMessage] = Field(max_length=50)
     # The working copy so far. Omitted on the first turn: the builder seeds from the
     # live rulebook so edits start from what is shipping today.
-    services: list[ServiceDeclaration] | None = None
+    services: list[ServiceDeclaration] | None = Field(
+        default=None, max_length=SERVICES_MAX
+    )
 
 
 class BuilderReply(BaseModel):
     reply: str
     services: list[ServiceDeclaration]
+
+
+class BuilderDryRunRequest(BaseModel):
+    services: list[ServiceDeclaration] = Field(max_length=SERVICES_MAX)
+    order_numbers: list[str] | None = Field(default=None, max_length=500)
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=500)
+
+
+class BuilderDryRunOut(BaseModel):
+    # No rulebook_version: the working copy is unsaved, so there is no version yet.
+    total: int
+    changed: int
+    results: list[DryRunResultOut]
 
 
 @router.get("/status")
@@ -81,3 +102,30 @@ def builder_messages(
     except anthropic.APIError as error:
         raise HTTPException(502, "the rules builder is unavailable") from error
     return BuilderReply(reply=result.reply, services=result.services)
+
+
+@router.post("/dry-run")
+def builder_dry_run(
+    request: BuilderDryRunRequest, session: SessionDep
+) -> BuilderDryRunOut:
+    """Replay the working copy over historical orders as a pre-save preview (ADR
+    0017); pure allocation, no model needed. An invalid copy (duplicate code or
+    tie-break, or empty) is a 422, not a 500."""
+    try:
+        rulebook = Rulebook(version=0, services=request.services)
+    except ValidationError as error:
+        raise HTTPException(422, str(error)) from error
+    report = dry_run_rulebook(session, rulebook, request.order_numbers, request.limit)
+    return BuilderDryRunOut(
+        total=report.total,
+        changed=report.changed,
+        results=[
+            DryRunResultOut(
+                order_number=result.order_number,
+                current_service=result.current_service,
+                draft_service=result.draft_service,
+                changed=result.changed,
+            )
+            for result in report.results
+        ],
+    )

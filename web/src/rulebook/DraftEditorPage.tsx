@@ -39,6 +39,7 @@ const EMPTY_SERVICE: EditableService = {
   areasServed: '',
   areasBlocked: '',
   propositions: '',
+  serviceGroups: [],
   costBands: null,
   chargeBands: null,
 }

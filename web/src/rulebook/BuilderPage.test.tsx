@@ -27,6 +27,83 @@ function renderPage() {
 }
 
 describe('BuilderPage', () => {
+  it('surfaces a restriction the AI just added to the working copy', async () => {
+    // A proposition/group/area restriction the AI adds must be visible in the review
+    // panel before the operator saves, not only summarised in the chat bubble.
+    const restricted = service({
+      code: 'DROPOUT-STD',
+      propositions: ['SIGNATURE_REQUIRED'],
+    })
+    stubFetch({
+      'GET /api/rulebook/builder/status': { body: { configured: true } },
+      'GET /api/rulebook/active': { body: ACTIVE },
+      'POST /api/rulebook/builder/messages': {
+        body: { reply: 'Restricted it.', services: [restricted] },
+      },
+    })
+    renderPage()
+
+    const input = await screen.findByLabelText(/message the rules builder/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'restrict to signature required{Enter}')
+
+    expect(await screen.findByText(/restricted it/i)).toBeInTheDocument()
+    expect(screen.getByText(/propositions: SIGNATURE_REQUIRED/i)).toBeInTheDocument()
+  })
+
+  it('reads an empty areas-served list as blocked everywhere, not blank', async () => {
+    // areas_served null = anywhere, [] = nowhere (the most severe value). [] must
+    // read legibly, not as a blank "areas served: " that looks like a glitch.
+    const blocked = service({ code: 'DROPOUT-STD', areas_served: [] })
+    stubFetch({
+      'GET /api/rulebook/builder/status': { body: { configured: true } },
+      'GET /api/rulebook/active': { body: { version: 1, services: [blocked] } },
+    })
+    renderPage()
+
+    expect(
+      await screen.findByText(/areas served: none - blocked everywhere/i),
+    ).toBeInTheDocument()
+  })
+
+  it('previews the working copy impact over recent orders', async () => {
+    stubFetch({
+      'GET /api/rulebook/builder/status': { body: { configured: true } },
+      'GET /api/rulebook/active': { body: ACTIVE },
+      'POST /api/rulebook/builder/dry-run': {
+        body: {
+          total: 3,
+          changed: 1,
+          results: [
+            {
+              order_number: 'A1',
+              current_service: 'DROPOUT-STD',
+              draft_service: 'CHEAP',
+              changed: true,
+            },
+            {
+              order_number: 'A2',
+              current_service: 'DROPOUT-STD',
+              draft_service: 'DROPOUT-STD',
+              changed: false,
+            },
+          ],
+        },
+      },
+    })
+    renderPage()
+
+    await screen.findByText('DROPOUT-STD')
+    await userEvent.click(screen.getByRole('button', { name: /preview impact/i }))
+
+    expect(
+      await screen.findByText(/1 of 3 recent orders would change service/i),
+    ).toBeInTheDocument()
+    // Only the changed order is listed, with its from -> to.
+    expect(screen.getByText(/A1/)).toBeInTheDocument()
+    expect(screen.queryByText(/A2/)).not.toBeInTheDocument()
+  })
+
   it('seeds the working copy from the live rulebook and applies an edit', async () => {
     const added = service({ code: 'FR-NEXT-DAY', carrier: 'zip' })
     stubFetch({

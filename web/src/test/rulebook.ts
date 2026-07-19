@@ -19,6 +19,7 @@ export function service(
     areas_served: null,
     areas_blocked: [],
     propositions: [],
+    service_groups: [],
     cost_bands: null,
     charge_bands: null,
     ...overrides,

@@ -16,6 +16,7 @@ export interface ServiceDeclaration {
   areas_served: string[] | null
   areas_blocked: string[]
   propositions: string[]
+  service_groups: string[]
   // Banded Delivery Cost/Charge structures (owned by other chunks); the
   // Rules UI carries them through untouched, never edits them.
   cost_bands: unknown[] | null

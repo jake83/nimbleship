@@ -19,6 +19,7 @@ function declaration(
     areas_served: null,
     areas_blocked: [],
     propositions: [],
+    service_groups: [],
     cost_bands: null,
     charge_bands: null,
     ...overrides,
@@ -48,6 +49,14 @@ describe('fromDeclaration / toDeclaration', () => {
     })
 
     expect(toDeclaration(fromDeclaration(banded))).toEqual(banded)
+  })
+
+  it('carries service groups through untouched (no form field yet)', () => {
+    // The editor has no service_groups field, but a service's groups must survive a
+    // round trip rather than being silently dropped on save.
+    const grouped = declaration({ service_groups: ['ECONOMY', 'STANDARD'] })
+
+    expect(toDeclaration(fromDeclaration(grouped))).toEqual(grouped)
   })
 
   it('parses comma-separated lists tolerantly', () => {
