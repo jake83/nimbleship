@@ -296,6 +296,23 @@ def test_suggest_rationale_is_none_and_calls_nothing_when_unchanged() -> None:
     assert suggest_rationale(active, list(active), llm=_FakeLlm([])) is None
 
 
+def test_suggest_rationale_ignores_a_formatting_only_decimal_restatement() -> None:
+    # A real edit (name) bundled with a Decimal restated in a different form (cost
+    # 4.50 -> 4.5, numerically equal) must not report cost as changed - that would put
+    # a false edit in the durable rationale.
+    active = [ServiceDeclaration.model_validate({**_DROPOUT, "cost": "4.50"})]
+    edited = ServiceDeclaration.model_validate(
+        {**_DROPOUT, "name": "Drop Out Plus", "cost": "4.5"}
+    )
+    llm = _CapturingLlm("Renamed it.")
+
+    suggest_rationale(active, [edited], llm=llm)
+
+    diff = str(llm.seen[0])
+    assert "name" in diff
+    assert "cost" not in diff
+
+
 def test_suggest_rationale_caps_a_verbose_reply_to_the_description_limit() -> None:
     # The suggestion's only consumer is the 280-char draft description; a long reply
     # is trimmed to fit rather than pre-filling a value that only fails at save.

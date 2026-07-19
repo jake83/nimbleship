@@ -18,9 +18,8 @@ concise line naming what changed in operational terms - no preamble, no quotes, 
 trailing period, at most about 140 characters. Example: "Added Saturday FedEx for GB \
 orders over 20kg." If several things changed, summarise them in one line."""
 
-# The suggestion's only consumer is the draft description (DraftIn.description,
-# max_length 280), so a verbose reply must be trimmed to fit - otherwise it pre-fills
-# and displays fine, then fails only at save. Cut at a word boundary where possible.
+# Only consumer is the 280-char DraftIn.description; a verbose reply is trimmed here,
+# or it pre-fills and displays fine but fails only at save.
 _MAX_RATIONALE_LEN = 280
 
 
@@ -49,10 +48,13 @@ def _service_summary(service: ServiceDeclaration) -> str:
 def _changed_fields(old: ServiceDeclaration, new: ServiceDeclaration) -> str:
     before = old.model_dump(mode="json")
     after = new.model_dump(mode="json")
+    # Compare by value, not JSON string: a Decimal restated in a different form
+    # (cost "4.50" -> "4.5") is not a change, and reporting it would put a false edit
+    # in the durable rationale.
     changes = [
         f"{field} {before[field]!r} -> {after[field]!r}"
         for field in after
-        if before.get(field) != after[field]
+        if getattr(old, field) != getattr(new, field)
     ]
     return f"{new.code}: {', '.join(changes)}"
 
@@ -92,11 +94,10 @@ def suggest_rationale(
     *,
     llm: LlmClient,
 ) -> str | None:
-    """A one-line rationale for how the working copy `draft` changes the live rulebook
-    `active`, or None if nothing changed. The model phrases the computed diff. Rejects
-    a `draft` that breaks a cross-service invariant (the same gate the edit and dry-run
-    paths apply): a duplicate code would collapse in the code-keyed diff and describe a
-    copy that was never sent."""
+    """A one-line rationale for how `draft` changes the live rulebook `active`, or None
+    if unchanged. The model phrases the computed diff. Rejects an invalid `draft`
+    (duplicate code/tie-break) before diffing - it would otherwise collapse in the
+    code-keyed diff and describe a copy that was never sent."""
     problem = working_copy_error(list(draft))
     if problem is not None:
         raise InvalidWorkingCopy(problem)
