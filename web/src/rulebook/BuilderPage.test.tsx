@@ -104,6 +104,59 @@ describe('BuilderPage', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('keeps the input disabled until the live rulebook seed has loaded', async () => {
+    // The status check and the seed fetch race. The client sends whatever `services`
+    // it holds each turn, and an empty [] is a legal working copy server-side, so
+    // sending before the seed lands would silently build from scratch instead of the
+    // live rulebook. The input must stay disabled until the seed resolves.
+    let resolveActive: (value: Response) => void = () => {}
+    const activePending = new Promise<Response>((resolve) => {
+      resolveActive = resolve
+    })
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const key = `${init?.method ?? 'GET'} ${String(input)}`
+        if (key === 'GET /api/rulebook/builder/status')
+          return json({ configured: true })
+        if (key === 'GET /api/rulebook/active') return activePending
+        throw new Error(`unmocked fetch: ${key}`)
+      }),
+    )
+    renderPage()
+
+    // Status has resolved (configured), but the seed has not - input stays disabled.
+    const input = await screen.findByLabelText(/message the rules builder/i)
+    await waitFor(() => expect(input).toBeDisabled())
+    expect(screen.getByText(/loading the current rulebook/i)).toBeInTheDocument()
+
+    // Seed lands: input enables and the live service appears in the working copy.
+    resolveActive(json(ACTIVE))
+    await waitFor(() => expect(input).toBeEnabled())
+    expect(screen.getByText('DROPOUT-STD')).toBeInTheDocument()
+  })
+
+  it('surfaces a failure to load the live rulebook seed', async () => {
+    stubFetch({
+      'GET /api/rulebook/builder/status': { body: { configured: true } },
+      'GET /api/rulebook/active': { body: { detail: 'boom' }, status: 500 },
+    })
+    renderPage()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /couldn.t load the current rulebook/i,
+    )
+    // Without a seed the input is disabled rather than silently starting empty.
+    expect(
+      await screen.findByLabelText(/message the rules builder/i),
+    ).toBeDisabled()
+  })
+
   it('surfaces a builder request failure as an error', async () => {
     stubFetch({
       'GET /api/rulebook/builder/status': { body: { configured: true } },

@@ -74,7 +74,12 @@ function WorkingCopyTable({ services }: { services: ServiceDeclaration[] }) {
 export function BuilderPage() {
   const navigate = useNavigate()
   const [messages, setMessages] = useState<BuilderMessage[]>([])
-  const [services, setServices] = useState<ServiceDeclaration[]>([])
+  // null until the live rulebook seed loads. The client sends whatever it holds each
+  // turn, and an empty [] is a legal working copy server-side, so sending before the
+  // seed lands would silently start the builder from scratch instead of the live
+  // rulebook - the input stays disabled until this is non-null.
+  const [services, setServices] = useState<ServiceDeclaration[] | null>(null)
+  const [seedError, setSeedError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [configured, setConfigured] = useState<boolean | null>(null)
@@ -92,14 +97,18 @@ export function BuilderPage() {
       .catch(() => {
         if (!cancelled) setConfigured(false)
       })
-    // Seed the shown working copy from what is shipping today, so the panel is
-    // populated before the first turn (the same starting point the API seeds from).
+    // Seed the working copy from what is shipping today, so edits start from the live
+    // rulebook. A load failure is surfaced rather than silently leaving an empty copy.
     fetchActiveRulebook()
       .then((rulebook) => {
         if (!cancelled) setServices(rulebook.services)
       })
-      .catch(() => {
-        // A load failure leaves an empty copy; the builder can still add services.
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setSeedError(
+            caught instanceof Error ? caught.message : String(caught),
+          )
+        }
       })
     return () => {
       cancelled = true
@@ -108,6 +117,7 @@ export function BuilderPage() {
 
   const runTurn = useCallback(
     async (text: string) => {
+      if (services === null) return // seed not loaded; the input is disabled anyway
       setError(null)
       const withUser: BuilderMessage[] = [
         ...messages,
@@ -134,9 +144,11 @@ export function BuilderPage() {
       : author.trim().length > 64
         ? 'Author must be 64 characters or fewer.'
         : null
-  const canSave = services.length > 0 && authorError === null && !saving
+  const canSave =
+    services !== null && services.length > 0 && authorError === null && !saving
 
   async function save() {
+    if (services === null) return
     setSaving(true)
     setSaveError(null)
     try {
@@ -200,6 +212,11 @@ export function BuilderPage() {
                 {error}
               </p>
             )}
+            {seedError !== null && (
+              <p className="text-sm text-destructive" role="alert">
+                Couldn&apos;t load the current rulebook: {seedError}
+              </p>
+            )}
             {configured === false ? (
               <p className="text-sm text-muted-foreground">
                 The rules builder isn&apos;t configured on this install.
@@ -207,7 +224,7 @@ export function BuilderPage() {
             ) : (
               <ChatInput
                 onSubmit={(text) => void runTurn(text)}
-                disabled={configured !== true}
+                disabled={configured !== true || services === null}
                 pending={pending}
                 placeholder="e.g. add a next-day service for France up to 10kg…"
                 ariaLabel="Message the rules builder"
@@ -220,12 +237,19 @@ export function BuilderPage() {
           <CardHeader>
             <CardTitle>Working copy</CardTitle>
             <CardDescription>
-              {services.length} service{services.length === 1 ? '' : 's'}. Not saved
-              until you create a draft.
+              {services === null
+                ? 'Loading…'
+                : `${services.length} service${services.length === 1 ? '' : 's'}. Not saved until you create a draft.`}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-1 flex-col gap-4">
-            <WorkingCopyTable services={services} />
+            {services === null ? (
+              <p className="text-sm text-muted-foreground">
+                Loading the current rulebook…
+              </p>
+            ) : (
+              <WorkingCopyTable services={services} />
+            )}
 
             <div className="mt-auto flex flex-col gap-3 border-t pt-4">
               <div className="grid gap-1.5">
