@@ -15,6 +15,7 @@ KINDS = ("needs_plugin", "needs_decision")
 # Bounded to the columns, enforced here at the write path: the tool's input is a raw
 # model-supplied dict, and SQLite (the test engine) would silently accept what
 # Postgres rejects at flush as an uncaught DataError.
+CARRIER_MAX = 64
 TITLE_MAX = 255
 PLUGIN_NAME_MAX = 64
 
@@ -43,6 +44,8 @@ def raise_blocker(
         raise ValueError(f"unknown blocker kind '{kind}'")
     if kind == "needs_plugin" and (plugin_name is None or not plugin_name.strip()):
         raise ValueError("a needs_plugin blocker must name the plugin to build")
+    if len(carrier) > CARRIER_MAX:
+        raise ValueError(f"carrier must be {CARRIER_MAX} characters or fewer")
     if len(title) > TITLE_MAX:
         raise ValueError(f"title must be {TITLE_MAX} characters or fewer")
     if plugin_name is not None and len(plugin_name) > PLUGIN_NAME_MAX:

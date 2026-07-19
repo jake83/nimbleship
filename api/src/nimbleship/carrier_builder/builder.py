@@ -41,7 +41,7 @@ def build(
 ) -> BuildResult:
     """Run one builder turn against the working `definition` and return the reply plus
     the edited copy. The copy is mutated in memory only; the one durable side effect a
-    turn may have is raising a Handoff blocker (the session), which must outlive the
+    turn may have is raising a Handoff blocker via `session`, which must outlive the
     conversation for the engineer to resolve.
 
     Bulk document ingestion (the onboarding packet) is deferred to a follow-up: it must

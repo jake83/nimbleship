@@ -209,6 +209,8 @@ def test_raise_blocker_enforces_its_invariants_at_the_domain(app: FastAPI) -> No
     with app.state.session_factory() as session:
         with pytest.raises(ValueError, match="must name the plugin"):
             raise_blocker(session, "acme", "needs_plugin", "t", "d")
+        with pytest.raises(ValueError, match="carrier must be"):
+            raise_blocker(session, "c" * 65, "needs_decision", "t", "d")
         with pytest.raises(ValueError, match="title must be"):
             raise_blocker(session, "acme", "needs_decision", "x" * 256, "d")
         with pytest.raises(ValueError, match="plugin_name must be"):
