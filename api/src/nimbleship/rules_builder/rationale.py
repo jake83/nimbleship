@@ -18,6 +18,11 @@ concise line naming what changed in operational terms - no preamble, no quotes, 
 trailing period, at most about 140 characters. Example: "Added Saturday FedEx for GB \
 orders over 20kg." If several things changed, summarise them in one line."""
 
+# The suggestion's only consumer is the draft description (DraftIn.description,
+# max_length 280), so a verbose reply must be trimmed to fit - otherwise it pre-fills
+# and displays fine, then fails only at save. Cut at a word boundary where possible.
+_MAX_RATIONALE_LEN = 280
+
 
 def _service_summary(service: ServiceDeclaration) -> str:
     bits = [
@@ -104,4 +109,6 @@ def suggest_rationale(
         tools=[],
     )
     text = reply.text.strip()
+    if len(text) > _MAX_RATIONALE_LEN:
+        text = text[:_MAX_RATIONALE_LEN].rsplit(" ", 1)[0]
     return text or None

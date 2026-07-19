@@ -74,7 +74,8 @@ class BuilderRationaleRequest(BaseModel):
 
 
 class BuilderRationaleOut(BaseModel):
-    # null when the working copy matches the live rulebook (nothing to describe).
+    # null when there is nothing to suggest: the copy matches the live rulebook, or
+    # the model returned no text.
     rationale: str | None
 
 
