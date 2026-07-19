@@ -65,6 +65,66 @@ describe('EngineerPage', () => {
     )
   })
 
+  it('a slow first load does not clobber a faster second load', async () => {
+    // Retype the carrier and re-load before the first response lands: only the
+    // latest request may apply, or the engineer sees the wrong carrier's queue
+    // under the right carrier's name.
+    let resolveFirst: (value: Response) => void = () => {}
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('carrier=acm'))
+          return new Promise<Response>((resolve) => {
+            resolveFirst = resolve
+          })
+        if (url.endsWith('carrier=acme')) return json([OPEN_BLOCKER])
+        throw new Error(`unmocked fetch: ${url}`)
+      }),
+    )
+    renderPage()
+
+    await userEvent.type(screen.getByLabelText('Carrier'), 'acm')
+    await userEvent.click(screen.getByRole('button', { name: /load handoffs/i }))
+    await userEvent.type(screen.getByLabelText('Carrier'), 'e') // now "acme"
+    await userEvent.click(screen.getByRole('button', { name: /load handoffs/i }))
+    expect(await screen.findByText('HMAC signing')).toBeInTheDocument()
+
+    // The stale first response lands last - it must not replace acme's queue.
+    resolveFirst(
+      json([{ ...OPEN_BLOCKER, id: 9, carrier: 'acm', title: 'Wrong queue' }]),
+    )
+    expect(await screen.findByText('HMAC signing')).toBeInTheDocument()
+    expect(screen.queryByText('Wrong queue')).not.toBeInTheDocument()
+  })
+
+  it('describes a needs_decision blocker as needing a decision', async () => {
+    stubFetch({
+      'GET /api/carrier-builder/blockers?carrier=acme': {
+        body: [
+          {
+            ...OPEN_BLOCKER,
+            kind: 'needs_decision',
+            plugin_name: null,
+            title: 'Which endpoint?',
+          },
+        ],
+      },
+    })
+    renderPage()
+
+    await userEvent.type(screen.getByLabelText('Carrier'), 'acme')
+    await userEvent.click(screen.getByRole('button', { name: /load handoffs/i }))
+
+    expect(await screen.findByText('Which endpoint?')).toBeInTheDocument()
+    expect(screen.getByText(/needs a decision/i)).toBeInTheDocument()
+  })
+
   it('shows an empty state when the carrier has no handoffs', async () => {
     stubFetch({
       'GET /api/carrier-builder/blockers?carrier=quiet': { body: [] },

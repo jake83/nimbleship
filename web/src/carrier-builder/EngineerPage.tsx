@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -18,10 +18,8 @@ import {
   type Blocker,
 } from '@/carrier-builder/api'
 
-/** The engineer's technical surface for Handoff blockers (ADR 0018): the queue of
- * gaps the builder parked - a plugin to build, a decision to make - resolved here
- * with a recorded answer the next builder turn consumes. Separate from the
- * operator's chat: the engineer works the queue, not the conversation. */
+/** The engineer's technical surface for Handoff blockers (ADR 0018): work the
+ * queue here - a plugin to build, a decision to record - not the operator's chat. */
 export function EngineerPage() {
   const [carrier, setCarrier] = useState('')
   const [blockers, setBlockers] = useState<Blocker[] | null>(null)
@@ -29,15 +27,22 @@ export function EngineerPage() {
   const [resolutions, setResolutions] = useState<Record<number, string>>({})
   const [resolveError, setResolveError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Two loads can race (retype the carrier, click again before the first lands);
+  // only the latest may apply, or a slow response shows the wrong carrier's queue.
+  const loadSeq = useRef(0)
 
   async function load() {
+    const seq = ++loadSeq.current
     setLoadError(null)
     setResolveError(null)
     try {
-      setBlockers(await fetchBlockers(carrier.trim()))
+      const queue = await fetchBlockers(carrier.trim())
+      if (seq === loadSeq.current) setBlockers(queue)
     } catch (caught) {
-      setBlockers(null)
-      setLoadError(caught instanceof Error ? caught.message : String(caught))
+      if (seq === loadSeq.current) {
+        setBlockers(null)
+        setLoadError(caught instanceof Error ? caught.message : String(caught))
+      }
     }
   }
 
