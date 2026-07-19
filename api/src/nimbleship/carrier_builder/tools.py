@@ -150,6 +150,26 @@ def _steps_of(operation: dict[str, object]) -> list[dict[str, object]]:
     return steps
 
 
+def _sole_index(
+    items: list[dict[str, object]], key: str, value: str, what: str
+) -> int | None | str:
+    """The index of the single item whose `key` equals `value`; None when absent; an
+    error string when several match. The granular tools address by that key, so a
+    duplicate makes the address ambiguous - editing the first would strand the other,
+    and removing all would silently delete more than asked."""
+    matches = [
+        i
+        for i, item in enumerate(items)
+        if isinstance(item, dict) and item.get(key) == value
+    ]
+    if len(matches) > 1:
+        return (
+            f"'{value}' matches more than one {what} - the granular tools need a"
+            f" unique {key}; re-put the whole operation instead"
+        )
+    return matches[0] if matches else None
+
+
 def put_step(
     state: WorkingDefinition, tool_input: dict[str, object]
 ) -> dict[str, object]:
@@ -163,9 +183,9 @@ def put_step(
     if not isinstance(step, dict) or not isinstance(step.get("name"), str):
         return {"error": "put_step needs a 'step' object with a 'name'"}
     steps = _steps_of(candidate)
-    index = next(
-        (i for i, s in enumerate(steps) if s.get("name") == step["name"]), None
-    )
+    index = _sole_index(steps, "name", str(step["name"]), "step")
+    if isinstance(index, str):
+        return {"error": index}
     if index is None:
         steps.append(step)
     else:
@@ -191,10 +211,12 @@ def remove_step(
     if not isinstance(name, str):
         return {"error": "remove_step needs a 'name'"}
     steps = _steps_of(candidate)
-    remaining = [s for s in steps if s.get("name") != name]
-    if len(remaining) == len(steps):
+    index = _sole_index(steps, "name", name, "step")
+    if isinstance(index, str):
+        return {"error": index}
+    if index is None:
         return {"error": f"no step '{name}' in operation '{operation_name}'"}
-    candidate["steps"] = remaining
+    del steps[index]
     problem = _operation_error(operation_name, candidate)
     if problem is not None:
         return {"error": problem}
@@ -207,10 +229,12 @@ def _step_in(
 ) -> dict[str, object] | str:
     if not isinstance(step_name, str):
         return "a 'step' name is required"
-    step = next((s for s in _steps_of(candidate) if s.get("name") == step_name), None)
-    if step is None:
+    index = _sole_index(_steps_of(candidate), "name", step_name, "step")
+    if isinstance(index, str):
+        return index
+    if index is None:
         return f"no step '{step_name}' in operation '{operation_name}'"
-    return step
+    return _steps_of(candidate)[index]
 
 
 def put_mapping_entry(
@@ -235,14 +259,9 @@ def put_mapping_entry(
     mapping = request.setdefault("mapping", [])
     if not isinstance(mapping, list):
         return {"error": f"step '{step.get('name')}' has no mapping list"}
-    index = next(
-        (
-            i
-            for i, e in enumerate(mapping)
-            if isinstance(e, dict) and e.get("target") == entry["target"]
-        ),
-        None,
-    )
+    index = _sole_index(mapping, "target", str(entry["target"]), "mapping entry")
+    if isinstance(index, str):
+        return {"error": index}
     if index is None:
         mapping.append(entry)
     else:
@@ -272,13 +291,12 @@ def remove_mapping_entry(
     mapping = request.get("mapping") if isinstance(request, dict) else None
     if not isinstance(mapping, list):
         return {"error": f"step '{step.get('name')}' has no mapping list"}
-    remaining = [
-        e for e in mapping if not (isinstance(e, dict) and e.get("target") == target)
-    ]
-    if len(remaining) == len(mapping):
+    index = _sole_index(mapping, "target", target, "mapping entry")
+    if isinstance(index, str):
+        return {"error": index}
+    if index is None:
         return {"error": f"no mapping entry targeting '{target}'"}
-    assert isinstance(request, dict)  # mapping came from it above
-    request["mapping"] = remaining
+    del mapping[index]
     problem = _operation_error(operation_name, candidate)
     if problem is not None:
         return {"error": problem}

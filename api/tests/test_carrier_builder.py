@@ -259,6 +259,43 @@ def test_remove_step_refuses_to_leave_an_invalid_operation() -> None:
     assert "book" in state.operations()  # unchanged
 
 
+def test_granular_edits_refuse_an_ambiguous_duplicate_key() -> None:
+    # A whole-op put (or client seed) can carry two entries sharing a target; the
+    # granular tools address by that key, so the ambiguity is refused - removing all
+    # matches would silently delete more than asked, editing the first would strand
+    # the duplicate.
+    duplicated = {
+        "steps": [
+            {
+                "name": "book",
+                "transport": "http",
+                "request": {
+                    "method": "POST",
+                    "url": "config.url",
+                    "content_type": "json",
+                    "mapping": [
+                        {"target": "t", "const": "one"},
+                        {"target": "keep", "const": "kept"},
+                        {"target": "t", "const": "two"},
+                    ],
+                },
+            }
+        ]
+    }
+    state = WorkingDefinition(data={"operations": {"book": duplicated}})
+    removed = remove_mapping_entry(
+        state, {"operation": "book", "step": "book", "target": "t"}
+    )
+    assert "matches more than one mapping entry" in str(removed["error"])
+    replaced = put_mapping_entry(
+        state,
+        {"operation": "book", "step": "book", "entry": {"target": "t", "const": "x"}},
+    )
+    assert "matches more than one" in str(replaced["error"])
+    mapping = state.operations()["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
+    assert len(mapping) == 3  # nothing was deleted or edited
+
+
 def test_granular_edits_reject_a_malformed_client_seeded_base() -> None:
     # An operation can arrive straight from the client's seed without ever passing
     # the write gate; a malformed one must be a clean tool error, not a crash (500).
