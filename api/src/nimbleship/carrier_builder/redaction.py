@@ -1,10 +1,9 @@
-"""Scrub known credentials from the onboarding packet before it reaches the model
-(ADR 0018: secrets never reach the model; the AI is told only that a secret exists at
-config.apiKey, never its value). The packet is a forwarded email or pasted docs, which
-routinely embed the same credentials the operator entered into Carrier Config - those
-stored values are KNOWN, so exact occurrences are replaced with their config.* path.
-This is defence in depth for the doc text; the primary channel is the credentials
-intake, which routes values straight to config and never into the packet at all."""
+"""Scrub known stored config values from the onboarding packet before it reaches the
+model (ADR 0018): each occurrence is replaced with its config.* path. Defence in depth
+for the doc text - the credentials intake is the primary channel and never puts a
+value in the packet at all. Deliberately broader than credentials: every long-enough
+config value is scrubbed (an endpoint drifting between docs and config is worth
+catching too, and the model should reference config.X either way)."""
 
 import re
 
@@ -15,7 +14,7 @@ from nimbleship.models import CarrierConfig
 
 # Values shorter than this are skipped: redacting e.g. a port number or a two-letter
 # country code would shred the documentation without protecting a real secret.
-MIN_SECRET_LENGTH = 6
+MIN_REDACT_LENGTH = 6
 
 
 def _leaf_values(data: object, path: str) -> list[tuple[str, str]]:
@@ -37,14 +36,14 @@ def _leaf_values(data: object, path: str) -> list[tuple[str, str]]:
     return []
 
 
-def known_secrets(session: Session) -> list[tuple[str, str]]:
-    """(config path, value) for every stored carrier-config string leaf long enough to
-    be a credential. All carriers, not just the one being onboarded: a stored secret
-    must never reach the model regardless of which packet happens to contain it."""
+def known_config_values(session: Session) -> list[tuple[str, str]]:
+    """(config path, value) for every stored carrier-config string leaf long enough
+    to redact. All carriers, not just the one being onboarded: a stored secret must
+    never reach the model regardless of which packet happens to contain it."""
     pairs: list[tuple[str, str]] = []
     for row in session.execute(select(CarrierConfig)).scalars():
         pairs.extend(_leaf_values(row.data, "config"))
-    return [(path, value) for path, value in pairs if len(value) >= MIN_SECRET_LENGTH]
+    return [(path, value) for path, value in pairs if len(value) >= MIN_REDACT_LENGTH]
 
 
 def redact_packet(session: Session, packet: str) -> str:
@@ -54,7 +53,7 @@ def redact_packet(session: Session, packet: str) -> str:
     Case-insensitive: forwarded emails routinely re-case text (an upper-cased header
     line, HTML-to-text conversion), and a re-cased secret is still the secret."""
     for path, value in sorted(
-        known_secrets(session), key=lambda pair: len(pair[1]), reverse=True
+        known_config_values(session), key=lambda pair: len(pair[1]), reverse=True
     ):
         # Backslashes doubled so the substituted text is never interpreted for group
         # references, whatever characters a config path carries.

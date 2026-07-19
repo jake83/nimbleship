@@ -106,11 +106,12 @@ export function sendBuilderMessages(
 }
 
 /** Store credentials for a carrier - straight to Carrier Config, never into the
- * packet or the model (ADR 0018). Merges, so adding a key keeps the rest. */
+ * packet or the model (ADR 0018). Merges, so adding a key keeps the rest. `missing`
+ * reports the config.* keys the carrier's active definition still needs. */
 export function saveCredentials(
   carrier: string,
   entries: Record<string, string>,
-): Promise<{ carrier: string; status: string }> {
+): Promise<{ carrier: string; status: string; missing: string[] }> {
   return request(`/api/carriers/${encodeURIComponent(carrier)}/config`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },

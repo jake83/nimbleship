@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nimbleship.assistant import LlmReply
-from nimbleship.carrier_builder.redaction import known_secrets, redact_packet
+from nimbleship.carrier_builder.redaction import known_config_values, redact_packet
 from nimbleship.models import CarrierConfig
 from nimbleship.routers.carrier_builder import get_llm_client
 
@@ -77,7 +77,7 @@ def test_redact_covers_every_carrier_not_just_the_one_onboarding(
     _store(app, "other", {"password": "s3cretpass"})
     with app.state.session_factory() as session:
         assert "s3cretpass" not in redact_packet(session, "pw is s3cretpass")
-        assert ("config.password", "s3cretpass") in known_secrets(session)
+        assert ("config.password", "s3cretpass") in known_config_values(session)
 
 
 class _CapturingLlm:

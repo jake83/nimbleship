@@ -91,7 +91,14 @@ export function CarrierBuilderPage() {
   const [credCarrier, setCredCarrier] = useState('')
   const [credKey, setCredKey] = useState('')
   const [credValue, setCredValue] = useState('')
-  const [credsSaved, setCredsSaved] = useState<string[]>([])
+  // Self-labelled with its carrier: the credential target (credCarrier) is freely
+  // editable and can diverge from the carrier being drafted, so an unlabelled hint
+  // could describe a different carrier than the board on screen.
+  const [credNote, setCredNote] = useState<{
+    carrier: string
+    saved: string[]
+    missing: string[]
+  } | null>(null)
   const [credError, setCredError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -158,8 +165,15 @@ export function CarrierBuilderPage() {
     if (key === '' || credValue === '' || target === '') return
     setCredError(null)
     try {
-      await saveCredentials(target, { [key]: credValue })
-      setCredsSaved((current) => [...current, key])
+      const saved = await saveCredentials(target, { [key]: credValue })
+      setCredNote((current) => ({
+        carrier: target,
+        saved:
+          current !== null && current.carrier === target
+            ? [...current.saved, key]
+            : [key],
+        missing: saved.missing,
+      }))
       setCredKey('')
       setCredValue('')
     } catch (caught) {
@@ -300,9 +314,11 @@ export function CarrierBuilderPage() {
                 Store credential
               </Button>
             </div>
-            {credsSaved.length > 0 && (
+            {credNote !== null && (
               <p className="text-xs text-muted-foreground">
-                Stored: {credsSaved.join(', ')}
+                Stored for {credNote.carrier}: {credNote.saved.join(', ')}
+                {credNote.missing.length > 0 &&
+                  ` - ${credNote.carrier}'s definition still needs: ${credNote.missing.join(', ')}`}
               </p>
             )}
             {credError !== null && (
