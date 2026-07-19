@@ -59,8 +59,7 @@ class CheckRequest(BaseModel):
 
 class CheckOut(BaseModel):
     valid: bool
-    # Human-readable validation problems; empty when valid. The surface shows these on
-    # the capability board so the operator sees what still remains.
+    # Human-readable validation problems; empty when valid.
     errors: list[str]
 
 

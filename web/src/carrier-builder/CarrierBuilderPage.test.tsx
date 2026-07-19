@@ -18,11 +18,28 @@ function renderPage() {
   )
 }
 
+// Mirrors the backend's own realistic fixture: an operation the real /check endpoint
+// could actually report valid (an empty steps list could not).
 const DRAFTED = {
   carrier: 'acme',
   name: 'Acme',
   auth: { scheme: 'none' },
-  operations: { book: { steps: [] } },
+  operations: {
+    book: {
+      steps: [
+        {
+          name: 'book',
+          transport: 'http',
+          request: {
+            method: 'POST',
+            url: 'config.url',
+            content_type: 'json',
+            mapping: [{ target: 'order', source: 'shipment.order_number' }],
+          },
+        },
+      ],
+    },
+  },
 }
 
 describe('CarrierBuilderPage', () => {
@@ -126,6 +143,53 @@ describe('CarrierBuilderPage', () => {
     await userEvent.type(screen.getByLabelText('Author'), 'jake')
     // Author present, but the definition is incomplete: save stays disabled.
     expect(screen.getByRole('button', { name: /save as draft/i })).toBeDisabled()
+  })
+
+  it('disables save while a turn is in flight', async () => {
+    // Saving mid-turn would persist the pre-turn definition while confirming
+    // success - the copy on screen is about to be superseded.
+    let resolveSecondTurn: (value: Response) => void = () => {}
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    let turn = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const key = `${init?.method ?? 'GET'} ${String(input)}`
+        if (key === 'GET /api/carrier-builder/status')
+          return json({ configured: true })
+        if (key === 'POST /api/carrier-builder/messages') {
+          turn += 1
+          if (turn === 1) return json({ reply: 'Done.', definition: DRAFTED })
+          return new Promise<Response>((resolve) => {
+            resolveSecondTurn = resolve
+          })
+        }
+        if (key === 'POST /api/carrier-builder/check')
+          return json({ valid: true, errors: [] })
+        throw new Error(`unmocked fetch: ${key}`)
+      }),
+    )
+    renderPage()
+
+    const input = await screen.findByLabelText(/message the carrier builder/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'onboard acme{Enter}')
+    await screen.findByText(/complete and ready to save/i)
+    await userEvent.type(screen.getByLabelText('Author'), 'jake')
+    expect(screen.getByRole('button', { name: /save as draft/i })).toBeEnabled()
+
+    // A second turn is in flight: save must disable until it resolves.
+    await userEvent.type(input, 'add a tracking operation{Enter}')
+    expect(screen.getByRole('button', { name: /save as draft/i })).toBeDisabled()
+
+    resolveSecondTurn(json({ reply: 'Added.', definition: DRAFTED }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /save as draft/i })).toBeEnabled(),
+    )
   })
 
   it('shows a not-configured notice and no input when unconfigured', async () => {

@@ -228,8 +228,14 @@ export function BuilderPage() {
       : author.trim().length > 64
         ? 'Author must be 64 characters or fewer.'
         : null
+  // !pending matters: during a turn the copy on screen is about to be superseded, so
+  // saving would persist the pre-turn services while confirming success.
   const canSave =
-    services !== null && services.length > 0 && authorError === null && !saving
+    services !== null &&
+    services.length > 0 &&
+    authorError === null &&
+    !saving &&
+    !pending
 
   async function save() {
     if (services === null) return

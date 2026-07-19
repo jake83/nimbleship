@@ -52,6 +52,19 @@ def test_set_identity_sets_carrier_and_name() -> None:
     assert state.data["name"] == "Acme"
 
 
+def test_set_identity_rejects_a_blank_carrier_or_name() -> None:
+    # A blank identity would pass whole-definition validation (no min_length) but is
+    # meaningless as a rails key and unsaveable in the surface.
+    state = WorkingDefinition()
+    assert "must not be blank" in str(
+        set_identity(state, {"carrier": "", "name": "Acme"})["error"]
+    )
+    assert "must not be blank" in str(
+        set_identity(state, {"carrier": "acme", "name": "  "})["error"]
+    )
+    assert state.data == {}
+
+
 def test_set_auth_rejects_an_invalid_scheme_and_accepts_a_valid_one() -> None:
     state = WorkingDefinition()
     assert "invalid auth" in str(set_auth(state, {"auth": {"scheme": "nope"}})["error"])
