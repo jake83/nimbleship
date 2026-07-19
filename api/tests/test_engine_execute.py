@@ -468,35 +468,33 @@ def stamp_plugin() -> Iterator[None]:
     del AUTH_PLUGINS["stamp"]
 
 
-def _plugin_definition() -> CarrierDefinition:
-    return CarrierDefinition.model_validate(
-        {
-            "carrier": "fedex",
-            "name": "FedEx",
-            "auth": {"scheme": "plugin", "plugin": "stamp"},
-            "operations": {
-                "book": {
-                    "steps": [
-                        {
-                            "name": "ship",
-                            "transport": "http",
-                            "request": {
-                                "method": "POST",
-                                "url": "config.base_url",
-                                "content_type": "json",
-                                "mapping": [
-                                    {
-                                        "target": "order",
-                                        "source": "shipment.order_number",
-                                    }
-                                ],
-                            },
-                        }
-                    ],
+_PLUGIN_DEF_DATA: dict[str, object] = {
+    "carrier": "fedex",
+    "name": "FedEx",
+    "auth": {"scheme": "plugin", "plugin": "stamp"},
+    "operations": {
+        "book": {
+            "steps": [
+                {
+                    "name": "ship",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.base_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"}
+                        ],
+                    },
                 }
-            },
+            ],
         }
-    )
+    },
+}
+
+
+def _plugin_definition() -> CarrierDefinition:
+    return CarrierDefinition.model_validate(_PLUGIN_DEF_DATA)
 
 
 def test_plugin_auth_is_applied_to_each_http_request(stamp_plugin: None) -> None:
@@ -519,16 +517,20 @@ def test_plugin_auth_is_applied_to_each_http_request(stamp_plugin: None) -> None
 
 
 def test_unregistered_auth_plugin_fails_loudly() -> None:
+    # An unknown auth plugin is now rejected at authoring, but a stored definition
+    # whose plugin was later removed still loads (lenient) and must fail loudly at
+    # execute rather than silently skip auth - so this loads the definition.
     facts: dict[str, object] = {
         "shipment": {"order_number": "95000254580"},
         "config": {"base_url": "https://api.fedex.example", "stamp": "S-9"},
     }
 
+    definition = CarrierDefinition.load(_PLUGIN_DEF_DATA)
     with (
         _client(httpx.MockTransport(lambda request: httpx.Response(200))) as client,
         pytest.raises(ValueError, match=r"auth plugin 'stamp' is not registered"),
     ):
-        execute_operation(_plugin_definition(), "book", facts, client)
+        execute_operation(definition, "book", facts, client)
 
 
 def test_form_step_with_a_collection_field_is_rejected() -> None:
@@ -775,7 +777,9 @@ def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None
     assert "530 Login incorrect" in record.response_body
 
 
-PLUGIN_AUTH_DEFINITION = CarrierDefinition.model_validate(
+# Loaded, not authored: the executor runs on loaded definitions, and stub_auth is
+# registered only inside the test below - authoring would reject the unknown name.
+PLUGIN_AUTH_DEFINITION = CarrierDefinition.load(
     {
         **FORM_DEFINITION.model_dump(mode="json"),
         "auth": {"scheme": "plugin", "plugin": "stub_auth"},

@@ -439,6 +439,57 @@ def test_unregistered_plugin_names_are_rejected_at_authoring() -> None:
         CarrierDefinition.model_validate(bad)
 
 
+def _with_auth(plugin: str) -> dict[str, object]:
+    return {
+        "carrier": "fedexlike",
+        "name": "FedEx-like",
+        "auth": {"scheme": "plugin", "plugin": plugin},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.ship_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+
+
+def test_a_registered_auth_plugin_validates_at_authoring() -> None:
+    definition = CarrierDefinition.model_validate(
+        _with_auth("oauth_client_credentials")
+    )
+    assert definition.auth.scheme == "plugin"
+
+
+def test_an_unregistered_auth_plugin_is_rejected_at_authoring() -> None:
+    # The defer-to-engineer handoff gate (ADR 0018): a draft naming an unimplemented
+    # auth plugin can't publish, the same as a computed-field plugin.
+    with pytest.raises(ValidationError, match="unknown auth plugin 'nonesuch'"):
+        CarrierDefinition.model_validate(_with_auth("nonesuch"))
+
+
+def test_load_accepts_an_unregistered_auth_plugin() -> None:
+    # Auth is applied at execute time, not render, so an unknown plugin fails cleanly
+    # at booking - skippable on load (ADR 0009), unlike a render-structural field
+    # plugin, whose check stays strict on load.
+    bad = _with_auth("nonesuch")
+
+    with pytest.raises(ValidationError, match="unknown auth plugin"):
+        CarrierDefinition.model_validate(bad)
+    assert CarrierDefinition.load(bad).carrier == "fedexlike"
+
+
 def test_plugin_is_exclusive_with_source_and_const(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
