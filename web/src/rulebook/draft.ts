@@ -20,6 +20,9 @@ export interface EditableService {
   areasServed: string
   areasBlocked: string
   propositions: string
+  /** Carried through untouched: the manual editor has no field for it yet, but a
+   * service's groups must survive a round trip (they filter legacy orders). */
+  serviceGroups: string[]
   costBands: unknown[] | null
   chargeBands: unknown[] | null
 }
@@ -39,6 +42,7 @@ export function fromDeclaration(service: ServiceDeclaration): EditableService {
     areasServed: service.areas_served?.join(', ') ?? '',
     areasBlocked: service.areas_blocked.join(', '),
     propositions: service.propositions.join(', '),
+    serviceGroups: service.service_groups,
     costBands: service.cost_bands,
     chargeBands: service.charge_bands,
   }
@@ -76,6 +80,7 @@ export function toDeclaration(service: EditableService): ServiceDeclaration {
         : parseCaseSensitiveList(service.areasServed),
     areas_blocked: parseCaseSensitiveList(service.areasBlocked),
     propositions: parseCaseSensitiveList(service.propositions),
+    service_groups: service.serviceGroups,
     cost_bands: service.costBands,
     charge_bands: service.chargeBands,
   }

@@ -27,7 +27,9 @@ DRY_RUN_DEFAULT_LIMIT = 50
 
 
 class DraftIn(BaseModel):
-    services: list[ServiceDeclaration]
+    # Bounded so a draft POST can't ask the server to validate an unbounded array;
+    # a real rulebook is far under this.
+    services: list[ServiceDeclaration] = Field(max_length=500)
     # Placeholder identity pending the auth story; bounded to the column.
     author: str = Field(default="api", max_length=64)
     # Optional rationale note (ADR 0017): why this version exists.

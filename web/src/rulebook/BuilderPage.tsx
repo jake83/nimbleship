@@ -23,11 +23,33 @@ import {
 import { cn } from '@/lib/utils'
 import { createDraft, fetchActiveRulebook } from '@/rulebook/api'
 import {
+  dryRunWorkingCopy,
   fetchBuilderStatus,
   sendBuilderMessages,
+  type BuilderDryRunOutcome,
   type BuilderMessage,
 } from '@/rulebook/builder-api'
 import type { ServiceDeclaration } from '@/rulebook/types'
+
+/** The optional constraint-ish fields the AI can set, summarised so an operator sees
+ * a restriction (a proposition, a group, an area, a size limit) it added before
+ * saving - the flat columns alone would hide it. */
+function restrictions(service: ServiceDeclaration): string {
+  const parts: string[] = []
+  if (service.propositions.length > 0)
+    parts.push(`propositions: ${service.propositions.join(', ')}`)
+  if (service.service_groups.length > 0)
+    parts.push(`groups: ${service.service_groups.join(', ')}`)
+  if (service.areas_served !== null)
+    parts.push(`areas served: ${service.areas_served.join(', ')}`)
+  if (service.areas_blocked.length > 0)
+    parts.push(`areas blocked: ${service.areas_blocked.join(', ')}`)
+  if (service.max_dimension_cm !== null)
+    parts.push(`max dim ${service.max_dimension_cm}cm`)
+  if (service.max_girth_cm !== null)
+    parts.push(`max girth ${service.max_girth_cm}cm`)
+  return parts.join('; ')
+}
 
 function WorkingCopyTable({ services }: { services: ServiceDeclaration[] }) {
   if (services.length === 0) {
@@ -47,21 +69,28 @@ function WorkingCopyTable({ services }: { services: ServiceDeclaration[] }) {
           <TableHead>Countries</TableHead>
           <TableHead>Cost</TableHead>
           <TableHead>Tie-break</TableHead>
+          <TableHead>Restrictions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {services.map((service) => (
-          <TableRow key={service.code}>
-            <TableCell className="font-mono">{service.code}</TableCell>
-            <TableCell>{service.carrier}</TableCell>
-            <TableCell>
-              {service.weight_min_kg} to {service.weight_max_kg}
-            </TableCell>
-            <TableCell>{service.countries.join(', ')}</TableCell>
-            <TableCell>{service.cost}</TableCell>
-            <TableCell>{service.tie_break_order}</TableCell>
-          </TableRow>
-        ))}
+        {services.map((service) => {
+          const summary = restrictions(service)
+          return (
+            <TableRow key={service.code}>
+              <TableCell className="font-mono">{service.code}</TableCell>
+              <TableCell>{service.carrier}</TableCell>
+              <TableCell>
+                {service.weight_min_kg} to {service.weight_max_kg}
+              </TableCell>
+              <TableCell>{service.countries.join(', ')}</TableCell>
+              <TableCell>{service.cost}</TableCell>
+              <TableCell>{service.tie_break_order}</TableCell>
+              <TableCell className="text-xs text-muted-foreground">
+                {summary === '' ? '-' : summary}
+              </TableCell>
+            </TableRow>
+          )
+        })}
       </TableBody>
     </Table>
   )
@@ -87,6 +116,9 @@ export function BuilderPage() {
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [dryRun, setDryRun] = useState<BuilderDryRunOutcome | null>(null)
+  const [dryRunning, setDryRunning] = useState(false)
+  const [dryRunError, setDryRunError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -129,6 +161,9 @@ export function BuilderPage() {
         const turn = await sendBuilderMessages(withUser, services)
         setMessages([...withUser, { role: 'assistant', content: turn.reply }])
         setServices(turn.services)
+        // The prior preview is stale once the copy changes.
+        setDryRun(null)
+        setDryRunError(null)
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught))
       } finally {
@@ -137,6 +172,20 @@ export function BuilderPage() {
     },
     [messages, services],
   )
+
+  async function preview() {
+    if (services === null) return
+    setDryRunning(true)
+    setDryRunError(null)
+    try {
+      setDryRun(await dryRunWorkingCopy(services))
+    } catch (caught) {
+      setDryRun(null)
+      setDryRunError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setDryRunning(false)
+    }
+  }
 
   const authorError =
     author.trim() === ''
@@ -249,6 +298,51 @@ export function BuilderPage() {
               </p>
             ) : (
               <WorkingCopyTable services={services} />
+            )}
+
+            {services !== null && (
+              <div className="flex flex-col gap-2 border-t pt-4">
+                <div className="flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void preview()}
+                    disabled={services.length === 0 || dryRunning}
+                  >
+                    {dryRunning ? 'Previewing…' : 'Preview impact'}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Replay recent orders through this working copy.
+                  </span>
+                </div>
+                {dryRunError !== null && (
+                  <p className="text-sm text-destructive" role="alert">
+                    {dryRunError}
+                  </p>
+                )}
+                {dryRun !== null && (
+                  <div className="flex flex-col gap-1">
+                    <p className="text-sm font-medium">
+                      {dryRun.changed} of {dryRun.total} recent order
+                      {dryRun.total === 1 ? '' : 's'} would change service.
+                    </p>
+                    {dryRun.results
+                      .filter((result) => result.changed)
+                      .slice(0, 10)
+                      .map((result) => (
+                        <p
+                          key={result.order_number}
+                          className="text-xs text-muted-foreground"
+                        >
+                          <span className="font-mono">{result.order_number}</span>
+                          : {result.current_service ?? 'no allocation'} →{' '}
+                          {result.draft_service ?? 'no allocation'}
+                        </p>
+                      ))}
+                  </div>
+                )}
+              </div>
             )}
 
             <div className="mt-auto flex flex-col gap-3 border-t pt-4">

@@ -1,4 +1,4 @@
-import type { ServiceDeclaration } from '@/rulebook/types'
+import type { DryRunResult, ServiceDeclaration } from '@/rulebook/types'
 
 /** The AI rules builder edge (ADR 0017). Each turn posts the whole conversation and
  * the working copy so far; the reply carries the working copy after the model's
@@ -13,6 +13,14 @@ export interface BuilderMessage {
 export interface BuilderTurn {
   reply: string
   services: ServiceDeclaration[]
+}
+
+/** Impact of replaying the working copy over recent orders. No rulebook_version -
+ * the copy is unsaved. */
+export interface BuilderDryRunOutcome {
+  total: number
+  changed: number
+  results: DryRunResult[]
 }
 
 /** An API refusal with the server's explanation (FastAPI `detail`). */
@@ -75,5 +83,17 @@ export function sendBuilderMessages(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages, services }),
+  })
+}
+
+/** Preview the working copy's impact over recent orders before saving a draft. Pure
+ * allocation server-side - no model, so it works whether or not a key is configured. */
+export function dryRunWorkingCopy(
+  services: ServiceDeclaration[],
+): Promise<BuilderDryRunOutcome> {
+  return request('/api/rulebook/builder/dry-run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ services }),
   })
 }
