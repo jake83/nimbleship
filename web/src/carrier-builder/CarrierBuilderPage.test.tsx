@@ -212,6 +212,48 @@ describe('CarrierBuilderPage', () => {
     expect(screen.getByLabelText('Documentation')).toHaveValue('')
   })
 
+  it('shows the still-needed keys after storing a credential, and clears them when the chat moves to a new carrier', async () => {
+    // The PATCH response reports what the live definition still needs; a hint from
+    // one carrier must not survive into a session drafting another.
+    stubFetch({
+      'GET /api/carrier-builder/status': { body: { configured: true } },
+      'PATCH /api/carriers/acme/config': {
+        body: {
+          carrier: 'acme',
+          status: 'saved',
+          missing: ['config.trackingToken'],
+        },
+      },
+      'POST /api/carrier-builder/messages': {
+        body: {
+          reply: 'Started globex.',
+          definition: { carrier: 'globex', name: 'Globex' },
+        },
+      },
+      'POST /api/carrier-builder/check': { body: { valid: false, errors: [] } },
+      'GET /api/carrier-builder/blockers?carrier=globex': { body: [] },
+    })
+    renderPage()
+
+    await userEvent.type(screen.getByLabelText('Carrier code'), 'acme')
+    await userEvent.type(screen.getByLabelText('Name'), 'api_key')
+    await userEvent.type(screen.getByLabelText('Value'), 'sk-secret')
+    await userEvent.click(
+      screen.getByRole('button', { name: /store credential/i }),
+    )
+    expect(
+      await screen.findByText(/still needs: config.trackingToken/i),
+    ).toBeInTheDocument()
+
+    const input = screen.getByLabelText(/message the carrier builder/i)
+    await userEvent.type(input, 'onboard globex instead{Enter}')
+    await screen.findByText(/started globex/i)
+
+    expect(
+      screen.queryByText(/still needs: config.trackingToken/i),
+    ).not.toBeInTheDocument()
+  })
+
   it('shows the engineering handoffs the turn raised or consumed', async () => {
     // The operator sees what's parked without seeing definition guts: open reads
     // "waiting on engineering", resolved shows the engineer's answer.

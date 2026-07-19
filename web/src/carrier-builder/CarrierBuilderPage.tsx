@@ -130,6 +130,12 @@ export function CarrierBuilderPage() {
       // The turn may have raised or consumed a blocker; refresh what's parked.
       const turnCarrier = asString(turn.definition.carrier)
       if (turnCarrier !== null) {
+        if (turnCarrier !== asString(definition.carrier)) {
+          // The session moved to another carrier: credential hints from the previous
+          // one no longer describe what's on screen.
+          setCredsSaved([])
+          setCredsMissing([])
+        }
         setCredCarrier((current) => (current === '' ? turnCarrier : current))
         try {
           setBlockers(await fetchBlockers(turnCarrier))

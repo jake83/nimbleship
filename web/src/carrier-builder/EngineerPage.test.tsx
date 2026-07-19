@@ -125,6 +125,89 @@ describe('EngineerPage', () => {
     expect(screen.getByText(/needs a decision/i)).toBeInTheDocument()
   })
 
+  it('a hung resolve locks only its own button, not the whole queue', async () => {
+    const second = {
+      ...OPEN_BLOCKER,
+      id: 8,
+      kind: 'needs_decision',
+      plugin_name: null,
+      title: 'Which endpoint?',
+    }
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const key = `${init?.method ?? 'GET'} ${String(input)}`
+        if (key === 'GET /api/carrier-builder/blockers?carrier=acme')
+          return json([OPEN_BLOCKER, second])
+        if (key === 'POST /api/carrier-builder/blockers/7/resolve')
+          return new Promise<Response>(() => {}) // hangs
+        throw new Error(`unmocked fetch: ${key}`)
+      }),
+    )
+    renderPage()
+
+    await userEvent.type(screen.getByLabelText('Carrier'), 'acme')
+    await userEvent.click(screen.getByRole('button', { name: /load handoffs/i }))
+    await screen.findByText('HMAC signing')
+    const [first, next] = screen.getAllByLabelText(/resolution/i)
+    await userEvent.type(first!, 'shipping it')
+    await userEvent.type(next!, 'use live')
+
+    const buttons = screen.getAllByRole('button', { name: /^resolve$/i })
+    await userEvent.click(buttons[0]!)
+
+    // The first blocker's button is busy; the second stays workable.
+    expect(buttons[0]).toBeDisabled()
+    expect(buttons[1]).toBeEnabled()
+  })
+
+  it('does not attribute a stale resolve failure to a newly loaded carrier', async () => {
+    let rejectResolve: (value: Response) => void = () => {}
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const key = `${init?.method ?? 'GET'} ${String(input)}`
+        if (key === 'GET /api/carrier-builder/blockers?carrier=acme')
+          return json([OPEN_BLOCKER])
+        if (key === 'GET /api/carrier-builder/blockers?carrier=globex')
+          return json([])
+        if (key === 'POST /api/carrier-builder/blockers/7/resolve')
+          return new Promise<Response>((resolve) => {
+            rejectResolve = resolve
+          })
+        throw new Error(`unmocked fetch: ${key}`)
+      }),
+    )
+    renderPage()
+
+    await userEvent.type(screen.getByLabelText('Carrier'), 'acme')
+    await userEvent.click(screen.getByRole('button', { name: /load handoffs/i }))
+    await screen.findByText('HMAC signing')
+    await userEvent.type(screen.getByLabelText(/resolution/i), 'mine')
+    await userEvent.click(screen.getByRole('button', { name: /^resolve$/i }))
+
+    // The engineer moves to another carrier while the resolve is in flight...
+    await userEvent.clear(screen.getByLabelText('Carrier'))
+    await userEvent.type(screen.getByLabelText('Carrier'), 'globex')
+    await userEvent.click(screen.getByRole('button', { name: /load handoffs/i }))
+    await screen.findByText(/no handoffs for this carrier/i)
+
+    // ...then the stale resolve fails: the error must not appear under globex.
+    rejectResolve(json({ detail: 'blocker 7 is already resolved' }, 409))
+    await new Promise((settle) => setTimeout(settle, 0))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('shows an empty state when the carrier has no handoffs', async () => {
     stubFetch({
       'GET /api/carrier-builder/blockers?carrier=quiet': { body: [] },
