@@ -4,6 +4,7 @@ API. Edits mutate the working copy only; nothing is saved (the operator commits 
 draft through the definition rails)."""
 
 from collections.abc import Sequence
+from copy import deepcopy
 
 import pytest
 from fastapi import FastAPI
@@ -18,9 +19,13 @@ from nimbleship.carrier_builder.handoff import (
 from nimbleship.carrier_builder.tools import (
     check,
     list_blockers_tool,
+    put_mapping_entry,
     put_operation,
+    put_step,
     raise_blocker_tool,
+    remove_mapping_entry,
     remove_operation,
+    remove_step,
     run_carrier_builder_tool,
     set_auth,
     set_identity,
@@ -141,6 +146,182 @@ def test_put_operation_rejects_a_deeply_nested_misspelt_field() -> None:
     result = put_operation(state, {"name": "book", "operation": operation})
     assert "unknown field 'bogus'" in str(result["error"])
     assert state.operations() == {}
+
+
+def _op_with_book_step() -> WorkingDefinition:
+    state = WorkingDefinition()
+    put_operation(state, {"name": "book", "operation": deepcopy(_OPERATION)})
+    return state
+
+
+def test_put_mapping_entry_replaces_one_entry_and_keeps_the_rest() -> None:
+    state = _op_with_book_step()
+    put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step": "book",
+            "entry": {"target": "channel", "const": "nimbleship"},
+        },
+    )
+    result = put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step": "book",
+            "entry": {"target": "order", "source": "shipment.order_number"},
+        },
+    )
+    assert result == {"operation": "book", "target": "order"}
+    mapping = state.operations()["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
+    assert [e["target"] for e in mapping] == ["order", "channel"]
+
+
+def test_put_mapping_entry_rejects_an_invalid_entry_without_mutating() -> None:
+    state = _op_with_book_step()
+    # Two value origins on one entry is a shape the engine can't resolve.
+    result = put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step": "book",
+            "entry": {
+                "target": "order",
+                "source": "shipment.order_number",
+                "const": "x",
+            },
+        },
+    )
+    assert "error" in result
+    mapping = state.operations()["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
+    assert len(mapping) == 1  # unchanged
+
+
+def test_put_mapping_entry_rejects_a_misspelt_field_at_depth() -> None:
+    state = _op_with_book_step()
+    result = put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step": "book",
+            "entry": {"target": "x", "soruce": "shipment.order_number"},
+        },
+    )
+    assert "error" in result
+
+
+def test_remove_mapping_entry_drops_by_target() -> None:
+    state = _op_with_book_step()
+    put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step": "book",
+            "entry": {"target": "channel", "const": "nimbleship"},
+        },
+    )
+    assert remove_mapping_entry(
+        state, {"operation": "book", "step": "book", "target": "channel"}
+    ) == {"operation": "book", "removed": "channel"}
+    assert "no mapping entry" in str(
+        remove_mapping_entry(
+            state, {"operation": "book", "step": "book", "target": "channel"}
+        )["error"]
+    )
+
+
+def test_put_step_adds_and_replaces_by_name_keeping_siblings() -> None:
+    state = _op_with_book_step()
+    label_step = {
+        "name": "label",
+        "transport": "http",
+        "request": {
+            "method": "GET",
+            "url": "config.label_url",
+            "content_type": "json",
+            "mapping": [{"target": "ref", "source": "steps.book.tracking_reference"}],
+        },
+    }
+    assert put_step(state, {"operation": "book", "step": label_step}) == {
+        "operation": "book",
+        "step": "label",
+    }
+    steps = state.operations()["book"]["steps"]  # type: ignore[index]
+    assert [s["name"] for s in steps] == ["book", "label"]
+
+
+def test_remove_step_refuses_to_leave_an_invalid_operation() -> None:
+    # Removing the only step of an operation with no local_render label would leave
+    # an operation the engine can't run - remove the whole operation instead.
+    state = _op_with_book_step()
+    result = remove_step(state, {"operation": "book", "name": "book"})
+    assert "error" in result
+    assert "book" in state.operations()  # unchanged
+
+
+def test_granular_edits_refuse_an_ambiguous_duplicate_key() -> None:
+    # A whole-op put (or client seed) can carry two entries sharing a target; the
+    # granular tools address by that key, so the ambiguity is refused - removing all
+    # matches would silently delete more than asked, editing the first would strand
+    # the duplicate.
+    duplicated = {
+        "steps": [
+            {
+                "name": "book",
+                "transport": "http",
+                "request": {
+                    "method": "POST",
+                    "url": "config.url",
+                    "content_type": "json",
+                    "mapping": [
+                        {"target": "t", "const": "one"},
+                        {"target": "keep", "const": "kept"},
+                        {"target": "t", "const": "two"},
+                    ],
+                },
+            }
+        ]
+    }
+    state = WorkingDefinition(data={"operations": {"book": duplicated}})
+    removed = remove_mapping_entry(
+        state, {"operation": "book", "step": "book", "target": "t"}
+    )
+    assert "matches more than one mapping entry" in str(removed["error"])
+    replaced = put_mapping_entry(
+        state,
+        {"operation": "book", "step": "book", "entry": {"target": "t", "const": "x"}},
+    )
+    assert "matches more than one" in str(replaced["error"])
+    mapping = state.operations()["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
+    assert len(mapping) == 3  # nothing was deleted or edited
+
+
+def test_granular_edits_reject_a_malformed_client_seeded_base() -> None:
+    # An operation can arrive straight from the client's seed without ever passing
+    # the write gate; a malformed one must be a clean tool error, not a crash (500).
+    state = WorkingDefinition(data={"operations": {"book": {"steps": "not-a-list"}}})
+    step = {"name": "x", "transport": "local_render", "request": {}}
+    for result in (
+        put_step(state, {"operation": "book", "step": step}),
+        remove_step(state, {"operation": "book", "name": "x"}),
+        put_mapping_entry(
+            state, {"operation": "book", "step": "x", "entry": {"target": "t"}}
+        ),
+        remove_mapping_entry(state, {"operation": "book", "step": "x", "target": "t"}),
+    ):
+        assert "cannot edit" in str(result["error"])
+
+
+def test_granular_edits_report_unknown_operation_and_step() -> None:
+    state = _op_with_book_step()
+    assert "no operation" in str(
+        put_step(state, {"operation": "nope", "step": {"name": "x"}})["error"]
+    )
+    assert "no step" in str(
+        put_mapping_entry(
+            state, {"operation": "book", "step": "nope", "entry": {"target": "x"}}
+        )["error"]
+    )
 
 
 def test_remove_operation_drops_by_name() -> None:
