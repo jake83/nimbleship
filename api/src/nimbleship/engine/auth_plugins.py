@@ -31,9 +31,18 @@ class AuthPlugin(Protocol):
 AUTH_PLUGINS: dict[str, AuthPlugin] = {}
 
 
+def auth_plugin_names() -> set[str]:
+    """The registered auth plugin names, for authoring-time validation - a definition
+    naming an unregistered one fails at authoring (ADR 0018's handoff gate), the same
+    as a computed-field plugin."""
+    import nimbleship.engine.plugins  # noqa: F401  (fill the registry)
+
+    return set(AUTH_PLUGINS)
+
+
 def auth_plugin_config_keys(name: str) -> frozenset[str]:
-    # Empty for an unregistered name: an unknown plugin's config needs are
-    # unknowable here, and authoring does not yet require the plugin to exist.
+    # Empty for an unregistered name (defensive): the authoring validator already
+    # rejects an unknown plugin, so a published definition's plugin is registered.
     import nimbleship.engine.plugins  # noqa: F401  (fill the registry)
 
     plugin = AUTH_PLUGINS.get(name)

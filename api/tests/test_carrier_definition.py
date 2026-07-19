@@ -439,6 +439,58 @@ def test_unregistered_plugin_names_are_rejected_at_authoring() -> None:
         CarrierDefinition.model_validate(bad)
 
 
+def _with_auth(plugin: str) -> dict[str, object]:
+    return {
+        "carrier": "fedexlike",
+        "name": "FedEx-like",
+        "auth": {"scheme": "plugin", "plugin": plugin},
+        "operations": {
+            "book": {
+                "steps": [
+                    {
+                        "name": "save",
+                        "transport": "http",
+                        "request": {
+                            "method": "POST",
+                            "url": "config.ship_url",
+                            "content_type": "json",
+                            "mapping": [
+                                {"target": "order", "source": "shipment.order_number"}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+
+
+def test_a_registered_auth_plugin_validates_at_authoring() -> None:
+    definition = CarrierDefinition.model_validate(
+        _with_auth("oauth_client_credentials")
+    )
+    assert definition.auth.scheme == "plugin"
+
+
+def test_an_unregistered_auth_plugin_is_rejected_at_authoring() -> None:
+    # The defer-to-engineer handoff gate (ADR 0018): a draft naming an unimplemented
+    # auth plugin can't publish, the same as a computed-field plugin.
+    with pytest.raises(ValidationError, match="unknown auth plugin 'nonesuch'"):
+        CarrierDefinition.model_validate(_with_auth("nonesuch"))
+
+
+def test_an_unregistered_auth_plugin_is_rejected_on_load_too() -> None:
+    # Strict on load, like computed-field plugins: an unregistered auth plugin is a
+    # deploy bug the executor keeps loud (a bare re-raise, not a clean booking_failed),
+    # so it is not ADR 0009's skippable class - a stored definition naming one is
+    # rejected, not loaded and then 500'd at booking.
+    bad = _with_auth("nonesuch")
+
+    for construct in (CarrierDefinition.model_validate, CarrierDefinition.load):
+        with pytest.raises(ValidationError, match="unknown auth plugin"):
+            construct(bad)
+
+
 def test_plugin_is_exclusive_with_source_and_const(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -445,58 +445,52 @@ def test_a_local_render_step_transport_is_never_sent_to_the_wire() -> None:
     assert seen == []
 
 
+class _StampPlugin:
+    def required_config_keys(self) -> frozenset[str]:
+        return frozenset({"stamp"})
+
+    def apply(
+        self, request: RenderedRequest, config: dict[str, object]
+    ) -> RenderedRequest:
+        return request.model_copy(
+            update={"headers": {**request.headers, "X-Stamp": str(config["stamp"])}}
+        )
+
+
 @pytest.fixture
 def stamp_plugin() -> Iterator[None]:
-    class StampPlugin:
-        def required_config_keys(self) -> frozenset[str]:
-            return frozenset({"stamp"})
-
-        def apply(
-            self, request: RenderedRequest, config: dict[str, object]
-        ) -> RenderedRequest:
-            return request.model_copy(
-                update={
-                    "headers": {
-                        **request.headers,
-                        "X-Stamp": str(config["stamp"]),
-                    }
-                }
-            )
-
-    AUTH_PLUGINS["stamp"] = StampPlugin()
+    AUTH_PLUGINS["stamp"] = _StampPlugin()
     yield
     del AUTH_PLUGINS["stamp"]
 
 
-def _plugin_definition() -> CarrierDefinition:
-    return CarrierDefinition.model_validate(
-        {
-            "carrier": "fedex",
-            "name": "FedEx",
-            "auth": {"scheme": "plugin", "plugin": "stamp"},
-            "operations": {
-                "book": {
-                    "steps": [
-                        {
-                            "name": "ship",
-                            "transport": "http",
-                            "request": {
-                                "method": "POST",
-                                "url": "config.base_url",
-                                "content_type": "json",
-                                "mapping": [
-                                    {
-                                        "target": "order",
-                                        "source": "shipment.order_number",
-                                    }
-                                ],
-                            },
-                        }
-                    ],
+_PLUGIN_DEF_DATA: dict[str, object] = {
+    "carrier": "fedex",
+    "name": "FedEx",
+    "auth": {"scheme": "plugin", "plugin": "stamp"},
+    "operations": {
+        "book": {
+            "steps": [
+                {
+                    "name": "ship",
+                    "transport": "http",
+                    "request": {
+                        "method": "POST",
+                        "url": "config.base_url",
+                        "content_type": "json",
+                        "mapping": [
+                            {"target": "order", "source": "shipment.order_number"}
+                        ],
+                    },
                 }
-            },
+            ],
         }
-    )
+    },
+}
+
+
+def _plugin_definition() -> CarrierDefinition:
+    return CarrierDefinition.model_validate(_PLUGIN_DEF_DATA)
 
 
 def test_plugin_auth_is_applied_to_each_http_request(stamp_plugin: None) -> None:
@@ -518,7 +512,16 @@ def test_plugin_auth_is_applied_to_each_http_request(stamp_plugin: None) -> None
     assert request.headers["X-Stamp"] == "S-9"
 
 
-def test_unregistered_auth_plugin_fails_loudly() -> None:
+def test_auth_plugin_removed_after_load_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Authoring and load both reject an unregistered auth plugin, so the only way one
+    # reaches execute is removal after a valid definition was built (a deploy pulling
+    # a plugin a live carrier still references). The executor keeps that loud - a bare
+    # ValueError, not a silent skip - which is why the check stays strict on load.
+    monkeypatch.setitem(AUTH_PLUGINS, "stamp", _StampPlugin())
+    definition = CarrierDefinition.model_validate(_PLUGIN_DEF_DATA)
+    monkeypatch.delitem(AUTH_PLUGINS, "stamp")
     facts: dict[str, object] = {
         "shipment": {"order_number": "95000254580"},
         "config": {"base_url": "https://api.fedex.example", "stamp": "S-9"},
@@ -528,7 +531,7 @@ def test_unregistered_auth_plugin_fails_loudly() -> None:
         _client(httpx.MockTransport(lambda request: httpx.Response(200))) as client,
         pytest.raises(ValueError, match=r"auth plugin 'stamp' is not registered"),
     ):
-        execute_operation(_plugin_definition(), "book", facts, client)
+        execute_operation(definition, "book", facts, client)
 
 
 def test_form_step_with_a_collection_field_is_rejected() -> None:
@@ -775,12 +778,12 @@ def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None
     assert "530 Login incorrect" in record.response_body
 
 
-PLUGIN_AUTH_DEFINITION = CarrierDefinition.model_validate(
-    {
-        **FORM_DEFINITION.model_dump(mode="json"),
-        "auth": {"scheme": "plugin", "plugin": "stub_auth"},
-    }
-)
+# Built inside the test below, once stub_auth is registered: an unregistered auth
+# plugin is rejected at authoring and load alike, so the plugin must exist first.
+_PLUGIN_AUTH_DATA: dict[str, object] = {
+    **FORM_DEFINITION.model_dump(mode="json"),
+    "auth": {"scheme": "plugin", "plugin": "stub_auth"},
+}
 
 
 OAUTH_DEFINITION = CarrierDefinition.model_validate(
@@ -809,6 +812,7 @@ def test_an_auth_plugin_failure_is_a_carrier_call_error_not_a_crash(
     # The auth step runs outside the request's own error handling, so its failure
     # is covered separately.
     monkeypatch.setitem(AUTH_PLUGINS, "stub_auth", _FailingAuth())
+    definition = CarrierDefinition.model_validate(_PLUGIN_AUTH_DATA)
     sent: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -820,9 +824,7 @@ def test_an_auth_plugin_failure_is_a_carrier_call_error_not_a_crash(
         _client(httpx.MockTransport(handle)) as client,
         pytest.raises(CarrierCallError, match="save"),
     ):
-        execute_operation(
-            PLUGIN_AUTH_DEFINITION, "book", FACTS, client, record=records.append
-        )
+        execute_operation(definition, "book", FACTS, client, record=records.append)
     # Nothing was sent, so - like a render failure - no traffic is recorded.
     assert sent == []
     assert records == []
