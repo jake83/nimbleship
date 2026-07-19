@@ -56,6 +56,10 @@ class BuilderRequest(BaseModel):
     definition: dict[str, object] = Field(
         default_factory=dict, max_length=_DEFINITION_MAX_KEYS
     )
+    # The onboarding documentation (pasted text and text attachments), redacted of
+    # known stored config values before it reaches the model. Bounded so a request
+    # can't ask the model to ingest an unbounded blob.
+    packet: str = Field(default="", max_length=200_000)
 
 
 class BuilderReply(BaseModel):
@@ -95,7 +99,9 @@ def builder_messages(
         for message in request.messages
     ]
     try:
-        result = build(session, conversation, request.definition, llm=llm)
+        result = build(
+            session, conversation, request.definition, request.packet, llm=llm
+        )
     except anthropic.APIError as error:
         raise HTTPException(502, "the carrier builder is unavailable") from error
     return BuilderReply(reply=result.reply, definition=result.definition)

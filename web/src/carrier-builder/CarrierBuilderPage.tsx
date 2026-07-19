@@ -18,6 +18,7 @@ import {
   createDefinitionDraft,
   fetchBlockers,
   fetchBuilderStatus,
+  saveCredentials,
   sendBuilderMessages,
   type Blocker,
   type BuilderMessage,
@@ -86,6 +87,12 @@ export function CarrierBuilderPage() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
   const [blockers, setBlockers] = useState<Blocker[]>([])
+  const [packet, setPacket] = useState('')
+  const [credCarrier, setCredCarrier] = useState('')
+  const [credKey, setCredKey] = useState('')
+  const [credValue, setCredValue] = useState('')
+  const [credsSaved, setCredsSaved] = useState<string[]>([])
+  const [credError, setCredError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -110,7 +117,7 @@ export function CarrierBuilderPage() {
     setMessages(withUser)
     setPending(true)
     try {
-      const turn = await sendBuilderMessages(withUser, definition)
+      const turn = await sendBuilderMessages(withUser, definition, packet)
       setMessages([...withUser, { role: 'assistant', content: turn.reply }])
       setDefinition(turn.definition)
       setSaved(null) // the copy moved on; a prior save no longer describes it
@@ -122,6 +129,7 @@ export function CarrierBuilderPage() {
       // The turn may have raised or consumed a blocker; refresh what's parked.
       const turnCarrier = asString(turn.definition.carrier)
       if (turnCarrier !== null) {
+        setCredCarrier((current) => (current === '' ? turnCarrier : current))
         try {
           setBlockers(await fetchBlockers(turnCarrier))
         } catch {
@@ -132,6 +140,30 @@ export function CarrierBuilderPage() {
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally {
       setPending(false)
+    }
+  }
+
+  async function attachFile(file: File) {
+    // Text attachments only for now (a forwarded .eml, .txt, .md); read client-side
+    // and appended to the packet, so the server sees one text blob to redact.
+    const text = await file.text()
+    setPacket((current) =>
+      current === '' ? text : `${current}\n\n--- ${file.name} ---\n${text}`,
+    )
+  }
+
+  async function saveCredential() {
+    const key = credKey.trim()
+    const target = credCarrier.trim()
+    if (key === '' || credValue === '' || target === '') return
+    setCredError(null)
+    try {
+      await saveCredentials(target, { [key]: credValue })
+      setCredsSaved((current) => [...current, key])
+      setCredKey('')
+      setCredValue('')
+    } catch (caught) {
+      setCredError(caught instanceof Error ? caught.message : String(caught))
     }
   }
 
@@ -177,6 +209,110 @@ export function CarrierBuilderPage() {
           rails.
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Onboarding packet</CardTitle>
+          <CardDescription>
+            Paste or attach the carrier&apos;s documentation (a forwarded email is
+            fine). Enter credentials below, not in the documentation - they go
+            straight to the carrier&apos;s config, and any stored value that does
+            appear in the text is stripped before the builder reads it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid gap-1.5">
+            <Label htmlFor="packet-doc">Documentation</Label>
+            <textarea
+              id="packet-doc"
+              value={packet}
+              onChange={(event) => setPacket(event.target.value)}
+              rows={5}
+              className="w-full rounded-md border bg-transparent px-3 py-2 text-sm"
+              placeholder="Paste the carrier's API docs or the forwarded email here…"
+            />
+            <div>
+              <input
+                type="file"
+                accept=".txt,.md,.eml,.csv,.json,.xml,text/*"
+                aria-label="Attach a document"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file !== undefined) void attachFile(file)
+                  event.target.value = ''
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label>Credentials (stored, never sent to the AI)</Label>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="grid gap-1">
+                <Label
+                  htmlFor="cred-carrier"
+                  className="text-xs text-muted-foreground"
+                >
+                  Carrier code
+                </Label>
+                <Input
+                  id="cred-carrier"
+                  value={credCarrier}
+                  onChange={(event) => setCredCarrier(event.target.value)}
+                  placeholder="acme"
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="cred-key" className="text-xs text-muted-foreground">
+                  Name
+                </Label>
+                <Input
+                  id="cred-key"
+                  value={credKey}
+                  onChange={(event) => setCredKey(event.target.value)}
+                  placeholder="api_key"
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label
+                  htmlFor="cred-value"
+                  className="text-xs text-muted-foreground"
+                >
+                  Value
+                </Label>
+                <Input
+                  id="cred-value"
+                  type="password"
+                  value={credValue}
+                  onChange={(event) => setCredValue(event.target.value)}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void saveCredential()}
+                disabled={
+                  credCarrier.trim() === '' ||
+                  credKey.trim() === '' ||
+                  credValue === ''
+                }
+              >
+                Store credential
+              </Button>
+            </div>
+            {credsSaved.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Stored: {credsSaved.join(', ')}
+              </p>
+            )}
+            {credError !== null && (
+              <p className="text-sm text-destructive" role="alert">
+                {credError}
+              </p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="flex flex-col">

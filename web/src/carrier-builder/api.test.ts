@@ -6,6 +6,7 @@ import {
   fetchBlockers,
   fetchBuilderStatus,
   resolveBlocker,
+  saveCredentials,
   sendBuilderMessages,
 } from './api'
 
@@ -23,13 +24,29 @@ describe('carrier builder api', () => {
     })
     const messages = [{ role: 'user' as const, content: 'onboard acme' }]
 
-    const result = await sendBuilderMessages(messages, {})
+    const result = await sendBuilderMessages(messages, {}, 'Acme API docs.')
 
     expect(result.reply).toBe('Set the identity.')
     expect(result.definition).toEqual(edited)
     expect(sentBody(mock, 'POST /api/carrier-builder/messages')).toEqual({
       messages,
       definition: {},
+      packet: 'Acme API docs.',
+    })
+  })
+
+  it('stores a credential via the carrier config rails, never the packet', async () => {
+    const mock = stubFetch({
+      'PATCH /api/carriers/acme/config': {
+        body: { carrier: 'acme', status: 'saved', missing: [] },
+      },
+    })
+
+    const saved = await saveCredentials('acme', { api_key: 'sk-secret' })
+
+    expect(saved.status).toBe('saved')
+    expect(sentBody(mock, 'PATCH /api/carriers/acme/config')).toEqual({
+      api_key: 'sk-secret',
     })
   })
 
@@ -109,7 +126,7 @@ describe('carrier builder api', () => {
     })
 
     await expect(
-      sendBuilderMessages([{ role: 'user', content: 'x' }], {}),
+      sendBuilderMessages([{ role: 'user', content: 'x' }], {}, ''),
     ).rejects.toMatchObject({
       status: 503,
       message: 'the carrier builder is not configured',
