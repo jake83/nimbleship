@@ -7,7 +7,9 @@ it is legitimately incomplete."""
 from dataclasses import dataclass, field
 
 from pydantic import TypeAdapter, ValidationError
+from sqlalchemy.orm import Session
 
+from nimbleship.carrier_builder.handoff import blockers_for, raise_blocker
 from nimbleship.domain.carrier_definition import Auth, CarrierDefinition, Operation
 
 _AUTH_ADAPTER: TypeAdapter[Auth] = TypeAdapter(Auth)
@@ -133,6 +135,63 @@ def check(state: WorkingDefinition, tool_input: dict[str, object]) -> dict[str, 
     return {"valid": True}
 
 
+def raise_blocker_tool(
+    session: Session, state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """Park a technical gap for the engineer (ADR 0018): something the definition
+    vocabulary can't express (kind needs_plugin, naming the plugin to build) or a
+    question the docs don't answer (kind needs_decision). State what is needed and
+    what you already tried; then keep building everything else. The blocker is
+    durable - the engineer resolves it, possibly days later."""
+    carrier = state.data.get("carrier")
+    if not isinstance(carrier, str) or not carrier.strip():
+        return {"error": "set the carrier identity before raising a blocker"}
+    kind = tool_input.get("kind")
+    title = tool_input.get("title")
+    detail = tool_input.get("detail")
+    plugin_name = tool_input.get("plugin_name")
+    if (
+        not isinstance(kind, str)
+        or not isinstance(title, str)
+        or not isinstance(detail, str)
+    ):
+        return {"error": "raise_blocker needs 'kind', 'title' and 'detail' strings"}
+    if plugin_name is not None and not isinstance(plugin_name, str):
+        return {"error": "plugin_name must be a string when given"}
+    if kind == "needs_plugin" and plugin_name is None:
+        return {"error": "a needs_plugin blocker must name the plugin to build"}
+    try:
+        blocker = raise_blocker(session, carrier, kind, title, detail, plugin_name)
+    except ValueError as error:
+        return {"error": str(error)}
+    return {"blocker_id": blocker.id, "status": "open"}
+
+
+def list_blockers_tool(
+    session: Session, state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """This carrier's blockers, open and resolved. A resolved blocker carries the
+    engineer's answer - apply it to the working copy (e.g. set the now-shipped plugin)
+    and tell the operator what moved forward."""
+    carrier = state.data.get("carrier")
+    if not isinstance(carrier, str) or not carrier.strip():
+        return {"blockers": []}
+    return {
+        "blockers": [
+            {
+                "id": blocker.id,
+                "kind": blocker.kind,
+                "title": blocker.title,
+                "detail": blocker.detail,
+                "plugin_name": blocker.plugin_name,
+                "status": blocker.status,
+                "resolution": blocker.resolution,
+            }
+            for blocker in blockers_for(session, carrier)
+        ]
+    }
+
+
 def _schema(
     name: str, description: str, properties: dict[str, object]
 ) -> dict[str, object]:
@@ -183,14 +242,37 @@ TOOL_SCHEMAS: list[dict[str, object]] = [
         },
     ),
     _schema("check", check.__doc__ or "", {"type": "object", "properties": {}}),
+    _schema(
+        "raise_blocker",
+        raise_blocker_tool.__doc__ or "",
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["needs_plugin", "needs_decision"]},
+                "title": {"type": "string"},
+                "detail": {"type": "string"},
+                "plugin_name": {"type": "string"},
+            },
+            "required": ["kind", "title", "detail"],
+        },
+    ),
+    _schema(
+        "list_blockers",
+        list_blockers_tool.__doc__ or "",
+        {"type": "object", "properties": {}},
+    ),
 ]
 
 
 def run_carrier_builder_tool(
-    state: WorkingDefinition, name: str, tool_input: dict[str, object]
+    session: Session, state: WorkingDefinition, name: str, tool_input: dict[str, object]
 ) -> dict[str, object]:
     """Dispatch a model tool call against the working copy. An unknown tool returns an
     error rather than raising, so the loop hands it back to the model."""
+    if name == "raise_blocker":
+        return raise_blocker_tool(session, state, tool_input)
+    if name == "list_blockers":
+        return list_blockers_tool(session, state, tool_input)
     if name == "set_identity":
         return set_identity(state, tool_input)
     if name == "set_auth":

@@ -4,18 +4,25 @@ it fails closed (503 when no key is configured) and a test can inject a scripted
 The builder never publishes - it hands the working copy back for the operator to commit
 as a draft through the definition rails."""
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy.orm import Session
 
 from nimbleship.assistant import LlmClient, build_client
 from nimbleship.carrier_builder import build
+from nimbleship.carrier_builder.handoff import blockers_for, resolve_blocker
 from nimbleship.config import get_settings
+from nimbleship.db import get_session
 from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.models import HandoffBlocker
 
 router = APIRouter(prefix="/carrier-builder", tags=["carrier-builder"])
+
+SessionDep = Annotated[Session, Depends(get_session)]
 
 
 def get_llm_client() -> LlmClient | None:
@@ -71,7 +78,9 @@ def builder_status(llm: LlmDep) -> dict[str, bool]:
 
 
 @router.post("/messages")
-def builder_messages(request: BuilderRequest, llm: LlmDep) -> BuilderReply:
+def builder_messages(
+    request: BuilderRequest, session: SessionDep, llm: LlmDep
+) -> BuilderReply:
     if llm is None:
         raise HTTPException(503, "the carrier builder is not configured")
     if not request.messages:
@@ -81,10 +90,62 @@ def builder_messages(request: BuilderRequest, llm: LlmDep) -> BuilderReply:
         for message in request.messages
     ]
     try:
-        result = build(conversation, request.definition, llm=llm)
+        result = build(session, conversation, request.definition, llm=llm)
     except anthropic.APIError as error:
         raise HTTPException(502, "the carrier builder is unavailable") from error
     return BuilderReply(reply=result.reply, definition=result.definition)
+
+
+class BlockerOut(BaseModel):
+    id: int
+    carrier: str
+    kind: str
+    title: str
+    detail: str
+    plugin_name: str | None
+    status: str
+    resolution: str | None
+    created_at: datetime
+    resolved_at: datetime | None
+
+
+def _blocker_out(blocker: HandoffBlocker) -> BlockerOut:
+    return BlockerOut(
+        id=blocker.id,
+        carrier=blocker.carrier,
+        kind=blocker.kind,
+        title=blocker.title,
+        detail=blocker.detail,
+        plugin_name=blocker.plugin_name,
+        status=blocker.status,
+        resolution=blocker.resolution,
+        created_at=blocker.created_at,
+        resolved_at=blocker.resolved_at,
+    )
+
+
+class ResolveIn(BaseModel):
+    # The engineer's answer: a decision, or "shipped in vX" for a plugin.
+    resolution: str = Field(min_length=1, max_length=10_000)
+
+
+@router.get("/blockers")
+def list_blockers(carrier: str, session: SessionDep) -> list[BlockerOut]:
+    """A carrier's Handoff blockers, open and resolved - the engineer's queue and the
+    onboarding's audit trail (ADR 0018). No model involved; needs no API key."""
+    return [_blocker_out(blocker) for blocker in blockers_for(session, carrier)]
+
+
+@router.post("/blockers/{blocker_id}/resolve")
+def resolve(blocker_id: int, payload: ResolveIn, session: SessionDep) -> BlockerOut:
+    """Record the engineer's answer and close the blocker. The next builder turn for
+    the carrier consumes it (the model reads resolutions via its list_blockers tool)."""
+    try:
+        blocker = resolve_blocker(session, blocker_id, payload.resolution)
+    except ValueError as error:
+        detail = str(error)
+        raise HTTPException(404 if "no blocker" in detail else 409, detail) from error
+    return _blocker_out(blocker)
 
 
 @router.post("/check")
