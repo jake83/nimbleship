@@ -91,8 +91,14 @@ export function CarrierBuilderPage() {
   const [credCarrier, setCredCarrier] = useState('')
   const [credKey, setCredKey] = useState('')
   const [credValue, setCredValue] = useState('')
-  const [credsSaved, setCredsSaved] = useState<string[]>([])
-  const [credsMissing, setCredsMissing] = useState<string[]>([])
+  // Self-labelled with its carrier: the credential target (credCarrier) is freely
+  // editable and can diverge from the carrier being drafted, so an unlabelled hint
+  // could describe a different carrier than the board on screen.
+  const [credNote, setCredNote] = useState<{
+    carrier: string
+    saved: string[]
+    missing: string[]
+  } | null>(null)
   const [credError, setCredError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -130,12 +136,6 @@ export function CarrierBuilderPage() {
       // The turn may have raised or consumed a blocker; refresh what's parked.
       const turnCarrier = asString(turn.definition.carrier)
       if (turnCarrier !== null) {
-        if (turnCarrier !== asString(definition.carrier)) {
-          // The session moved to another carrier: credential hints from the previous
-          // one no longer describe what's on screen.
-          setCredsSaved([])
-          setCredsMissing([])
-        }
         setCredCarrier((current) => (current === '' ? turnCarrier : current))
         try {
           setBlockers(await fetchBlockers(turnCarrier))
@@ -166,8 +166,14 @@ export function CarrierBuilderPage() {
     setCredError(null)
     try {
       const saved = await saveCredentials(target, { [key]: credValue })
-      setCredsSaved((current) => [...current, key])
-      setCredsMissing(saved.missing)
+      setCredNote((current) => ({
+        carrier: target,
+        saved:
+          current !== null && current.carrier === target
+            ? [...current.saved, key]
+            : [key],
+        missing: saved.missing,
+      }))
       setCredKey('')
       setCredValue('')
     } catch (caught) {
@@ -308,11 +314,11 @@ export function CarrierBuilderPage() {
                 Store credential
               </Button>
             </div>
-            {credsSaved.length > 0 && (
+            {credNote !== null && (
               <p className="text-xs text-muted-foreground">
-                Stored: {credsSaved.join(', ')}
-                {credsMissing.length > 0 &&
-                  ` - the live definition still needs: ${credsMissing.join(', ')}`}
+                Stored for {credNote.carrier}: {credNote.saved.join(', ')}
+                {credNote.missing.length > 0 &&
+                  ` - ${credNote.carrier}'s definition still needs: ${credNote.missing.join(', ')}`}
               </p>
             )}
             {credError !== null && (
