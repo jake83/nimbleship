@@ -59,8 +59,11 @@ class BuilderRequest(BaseModel):
     # Bounded so a request can't ask the model to ingest an unbounded blob.
     packet: str = Field(default="", max_length=200_000)
     # Board capability -> reason the AI pruned it (rides the working copy like the
-    # definition; the build normalises it to the prunable frame).
-    not_applicable: dict[str, str] = Field(default_factory=dict, max_length=8)
+    # definition; the build normalises it to the prunable frame). Reasons are bounded
+    # like this model's other user-supplied strings.
+    not_applicable: dict[str, Annotated[str, Field(max_length=500)]] = Field(
+        default_factory=dict, max_length=8
+    )
 
 
 class BuilderReply(BaseModel):

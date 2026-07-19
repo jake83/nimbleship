@@ -15,8 +15,7 @@ from nimbleship.domain.carrier_definition import Auth, CarrierDefinition, Operat
 
 _AUTH_ADAPTER: TypeAdapter[Auth] = TypeAdapter(Auth)
 
-# The board capabilities the AI may prune to N/A (ADR 0018). Book is deliberately
-# absent: an integration that cannot book is not an integration.
+# Book excluded: an integration that cannot book is not an integration (ADR 0018).
 PRUNABLE_CAPABILITIES = ("label", "manifest")
 
 
@@ -138,15 +137,17 @@ def put_operation(
         return {"error": problem}
     state.operations()[name] = operation
     result: dict[str, object] = {"operation": name}
-    # Drafting a capability is decisive evidence it applies: clear a stale N/A mark
-    # (the operation's own name, and label when this operation carries a label spec)
-    # rather than leave the board contradicting the definition.
-    drafted = [name] + (["label"] if operation.get("label") else [])
+    # Drafting a capability is decisive evidence it applies: clear any stale N/A mark
+    # this edit contradicted, judged by the same drafted-ness rule the mark's own
+    # refusal uses - an operation merely *named* "label" without a label spec drafts
+    # nothing, so its mark must survive (refuter, PR #134).
     cleared = [
         capability
-        for capability in drafted
-        if state.not_applicable.pop(capability, None) is not None
+        for capability in list(state.not_applicable)
+        if _capability_drafted(state, capability)
     ]
+    for capability in cleared:
+        del state.not_applicable[capability]
     if cleared:
         result["cleared_not_applicable"] = cleared
     return result

@@ -391,6 +391,17 @@ def test_put_operation_clears_a_stale_not_applicable_mark() -> None:
     assert state.not_applicable == {}
 
 
+def test_an_operation_merely_named_label_does_not_clear_the_label_mark() -> None:
+    # Label is spec-keyed, never name-keyed: an operation named "label" with no label
+    # spec drafts nothing, so the documented mark must survive the edit intact.
+    state = WorkingDefinition()
+    mark_not_applicable(state, {"capability": "label", "reason": "no label of its own"})
+    result = put_operation(state, {"name": "label", "operation": _OPERATION})
+    assert result["operation"] == "label"
+    assert "cleared_not_applicable" not in result
+    assert state.not_applicable == {"label": "no label of its own"}
+
+
 def test_a_malformed_not_applicable_seed_is_normalised_not_crashed() -> None:
     # The mark rides each turn from the client like the rest of the working copy:
     # junk keys and blank reasons are dropped rather than trusted or crashed on.
@@ -423,6 +434,23 @@ def test_run_tool_reports_an_unknown_tool(app: FastAPI) -> None:
                 "error"
             ]
         )
+
+
+def test_the_applicability_tools_dispatch_by_name(app: FastAPI) -> None:
+    state = WorkingDefinition()
+    with app.state.session_factory() as session:
+        marked = run_carrier_builder_tool(
+            session,
+            state,
+            "mark_not_applicable",
+            {"capability": "manifest", "reason": "no end-of-day"},
+        )
+        assert marked == {"not_applicable": "manifest"}
+        cleared = run_carrier_builder_tool(
+            session, state, "mark_applicable", {"capability": "manifest"}
+        )
+        assert cleared == {"applicable": "manifest"}
+    assert state.not_applicable == {}
 
 
 def test_raise_and_resolve_a_blocker(app: FastAPI) -> None:
