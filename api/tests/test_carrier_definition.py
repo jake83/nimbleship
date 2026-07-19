@@ -467,13 +467,21 @@ def _with_auth(plugin: str) -> dict[str, object]:
 
 def test_a_blank_identity_is_rejected_on_both_paths() -> None:
     # A blank carrier is a rails key nothing can route to; /check must not call such
-    # a definition valid. Structural, so load rejects it too. Same for the name.
+    # a definition valid. Structural, so load rejects it too. Same for the name, and
+    # whitespace-only is exactly as unroutable as empty.
     for field in ("carrier", "name"):
-        blank = _with_auth("oauth_client_credentials")
-        blank[field] = ""
-        for construct in (CarrierDefinition.model_validate, CarrierDefinition.load):
-            with pytest.raises(ValidationError, match="at least 1 character"):
-                construct(blank)
+        for value, message in (
+            ("", "at least 1 character"),
+            ("   ", "must not be blank"),
+        ):
+            blank = _with_auth("oauth_client_credentials")
+            blank[field] = value
+            for construct in (
+                CarrierDefinition.model_validate,
+                CarrierDefinition.load,
+            ):
+                with pytest.raises(ValidationError, match=message):
+                    construct(blank)
 
 
 def test_a_registered_auth_plugin_validates_at_authoring() -> None:
