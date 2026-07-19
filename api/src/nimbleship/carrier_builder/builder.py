@@ -26,11 +26,13 @@ MAX_TURNS = 24
 
 @dataclass(frozen=True)
 class BuildResult:
-    """The builder's turn: its reply, and the working definition after its edits -
-    which the surface shows and sends back on the next turn."""
+    """The builder's turn: its reply, and the working copy after its edits - the
+    definition plus the board's not-applicable marks - which the surface shows and
+    sends back on the next turn."""
 
     reply: str
     definition: dict[str, object]
+    not_applicable: dict[str, str]
 
 
 def build(
@@ -39,6 +41,7 @@ def build(
     definition: dict[str, object],
     packet: str = "",
     *,
+    not_applicable: dict[str, str] | None = None,
     llm: LlmClient,
 ) -> BuildResult:
     """Run one builder turn against the working `definition`, grounded in `packet`
@@ -51,7 +54,9 @@ def build(
     value is replaced with its config.* path (ADR 0018 - secrets never reach the
     model). This is the single point where packet text enters the prompt, so every
     ingestion mode inherits the scrub."""
-    state = WorkingDefinition(data=dict(definition))
+    state = WorkingDefinition(
+        data=dict(definition), not_applicable=dict(not_applicable or {})
+    )
     system = BUILDER_SYSTEM_PROMPT
     if packet.strip():
         redacted = redact_packet(session, packet)
@@ -71,4 +76,6 @@ def build(
         max_turns=MAX_TURNS,
         exhausted=EXHAUSTED_REPLY,
     )
-    return BuildResult(reply=reply, definition=state.data)
+    return BuildResult(
+        reply=reply, definition=state.data, not_applicable=state.not_applicable
+    )

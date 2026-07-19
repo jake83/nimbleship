@@ -15,14 +15,30 @@ from nimbleship.domain.carrier_definition import Auth, CarrierDefinition, Operat
 
 _AUTH_ADAPTER: TypeAdapter[Auth] = TypeAdapter(Auth)
 
+# The board capabilities the AI may prune to N/A (ADR 0018). Book is deliberately
+# absent: an integration that cannot book is not an integration.
+PRUNABLE_CAPABILITIES = ("label", "manifest")
+
 
 @dataclass
 class WorkingDefinition:
     """The carrier definition being co-authored, assembled key by key. Starts empty
     for a new carrier (onboarding); saved as a draft only when the operator commits,
-    through the existing definition rails."""
+    through the existing definition rails. `not_applicable` is board state, never
+    definition state: capability -> reason marks the AI pruned from the docs (a
+    carrier with no manifest shows N/A, not forever-missing)."""
 
     data: dict[str, object] = field(default_factory=dict)
+    not_applicable: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # The marks ride each turn from the client; keep only prunable capabilities
+        # with a real reason rather than trusting the seed.
+        self.not_applicable = {
+            capability: reason
+            for capability, reason in self.not_applicable.items()
+            if capability in PRUNABLE_CAPABILITIES and reason.strip()
+        }
 
     def operations(self) -> dict[str, object]:
         # The copy rides each turn from the client, so operations may be absent or, on
@@ -121,7 +137,72 @@ def put_operation(
     if problem is not None:
         return {"error": problem}
     state.operations()[name] = operation
-    return {"operation": name}
+    result: dict[str, object] = {"operation": name}
+    # Drafting a capability is decisive evidence it applies: clear a stale N/A mark
+    # (the operation's own name, and label when this operation carries a label spec)
+    # rather than leave the board contradicting the definition.
+    drafted = [name] + (["label"] if operation.get("label") else [])
+    cleared = [
+        capability
+        for capability in drafted
+        if state.not_applicable.pop(capability, None) is not None
+    ]
+    if cleared:
+        result["cleared_not_applicable"] = cleared
+    return result
+
+
+def _capability_drafted(state: WorkingDefinition, capability: str) -> bool:
+    # Label is an operation's label spec, not an operation of its own.
+    if capability == "label":
+        return any(
+            isinstance(operation, dict) and operation.get("label")
+            for operation in state.operations().values()
+        )
+    return capability in state.operations()
+
+
+def mark_not_applicable(
+    state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """Record that this carrier simply doesn't offer a board capability, per its
+    documentation, so the board shows N/A instead of forever-missing. Only label and
+    manifest can be pruned - every carrier books - and a drafted capability refuses
+    the mark (remove the operation first if it really doesn't apply)."""
+    capability = tool_input.get("capability")
+    reason = tool_input.get("reason")
+    if not isinstance(capability, str) or not isinstance(reason, str):
+        return {"error": "mark_not_applicable needs 'capability' and 'reason' strings"}
+    if capability not in PRUNABLE_CAPABILITIES:
+        return {
+            "error": "only "
+            + " or ".join(PRUNABLE_CAPABILITIES)
+            + " can be not applicable - the engine invokes nothing else, and every"
+            " carrier books"
+        }
+    if not reason.strip():
+        return {"error": "give the reason the documentation shows it isn't offered"}
+    if _capability_drafted(state, capability):
+        return {
+            "error": f"'{capability}' is already drafted - remove it first if the"
+            " carrier really doesn't offer it"
+        }
+    state.not_applicable[capability] = reason
+    return {"not_applicable": capability}
+
+
+def mark_applicable(
+    state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """Clear a not-applicable mark when the carrier turns out to offer the capability
+    after all."""
+    capability = tool_input.get("capability")
+    if not isinstance(capability, str):
+        return {"error": "mark_applicable needs a 'capability'"}
+    if capability not in state.not_applicable:
+        return {"error": f"'{capability}' is not marked not applicable"}
+    del state.not_applicable[capability]
+    return {"applicable": capability}
 
 
 def _existing_operation(
@@ -484,6 +565,29 @@ TOOL_SCHEMAS: list[dict[str, object]] = [
             "required": ["operation", "step", "target"],
         },
     ),
+    _schema(
+        "mark_not_applicable",
+        mark_not_applicable.__doc__ or "",
+        {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string", "enum": list(PRUNABLE_CAPABILITIES)},
+                "reason": {"type": "string"},
+            },
+            "required": ["capability", "reason"],
+        },
+    ),
+    _schema(
+        "mark_applicable",
+        mark_applicable.__doc__ or "",
+        {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string", "enum": list(PRUNABLE_CAPABILITIES)},
+            },
+            "required": ["capability"],
+        },
+    ),
     _schema("check", check.__doc__ or "", {"type": "object", "properties": {}}),
     _schema(
         "raise_blocker",
@@ -532,6 +636,10 @@ def run_carrier_builder_tool(
         return put_operation(state, tool_input)
     if name == "remove_operation":
         return remove_operation(state, tool_input)
+    if name == "mark_not_applicable":
+        return mark_not_applicable(state, tool_input)
+    if name == "mark_applicable":
+        return mark_applicable(state, tool_input)
     if name == "check":
         return check(state, tool_input)
     return {"error": f"unknown tool '{name}'"}

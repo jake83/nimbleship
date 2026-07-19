@@ -19,6 +19,8 @@ from nimbleship.carrier_builder.handoff import (
 from nimbleship.carrier_builder.tools import (
     check,
     list_blockers_tool,
+    mark_applicable,
+    mark_not_applicable,
     put_mapping_entry,
     put_operation,
     put_step,
@@ -331,6 +333,73 @@ def test_remove_operation_drops_by_name() -> None:
     assert "no operation" in str(remove_operation(state, {"name": "book"})["error"])
 
 
+def test_mark_not_applicable_records_and_mark_applicable_clears() -> None:
+    state = WorkingDefinition()
+    result = mark_not_applicable(
+        state, {"capability": "manifest", "reason": "no end-of-day process"}
+    )
+    assert result == {"not_applicable": "manifest"}
+    assert state.not_applicable == {"manifest": "no end-of-day process"}
+    assert mark_applicable(state, {"capability": "manifest"}) == {
+        "applicable": "manifest"
+    }
+    assert state.not_applicable == {}
+
+
+def test_mark_not_applicable_is_bounded_to_the_prunable_frame() -> None:
+    state = WorkingDefinition()
+    # A status for something the engine cannot invoke is meaningless (ADR 0018).
+    assert "error" in mark_not_applicable(
+        state, {"capability": "webhooks", "reason": "x"}
+    )
+    # An integration that cannot book is not an integration.
+    assert "error" in mark_not_applicable(state, {"capability": "book", "reason": "x"})
+    assert "error" in mark_not_applicable(
+        state, {"capability": "manifest", "reason": " "}
+    )
+    assert "error" in mark_applicable(state, {"capability": "manifest"})  # not marked
+    assert state.not_applicable == {}
+
+
+def test_mark_not_applicable_refuses_a_drafted_capability() -> None:
+    # A capability can't be both drafted and N/A; the draft wins.
+    state = _complete()
+    put_operation(state, {"name": "manifest", "operation": _OPERATION})
+    assert "drafted" in str(
+        mark_not_applicable(state, {"capability": "manifest", "reason": "none"})[
+            "error"
+        ]
+    )
+    # Label lives on an operation's label spec, not as an operation of its own.
+    labelled = deepcopy(_OPERATION)
+    labelled["label"] = {"source": "local_render", "template": "labels/acme"}
+    put_operation(state, {"name": "book", "operation": labelled})
+    assert "drafted" in str(
+        mark_not_applicable(state, {"capability": "label", "reason": "none"})["error"]
+    )
+    assert state.not_applicable == {}
+
+
+def test_put_operation_clears_a_stale_not_applicable_mark() -> None:
+    # Drafting the capability is decisive evidence it applies; the mark clears with
+    # the edit rather than leaving the board contradicting the definition.
+    state = WorkingDefinition()
+    mark_not_applicable(state, {"capability": "manifest", "reason": "assumed absent"})
+    result = put_operation(state, {"name": "manifest", "operation": _OPERATION})
+    assert result["operation"] == "manifest"
+    assert result["cleared_not_applicable"] == ["manifest"]
+    assert state.not_applicable == {}
+
+
+def test_a_malformed_not_applicable_seed_is_normalised_not_crashed() -> None:
+    # The mark rides each turn from the client like the rest of the working copy:
+    # junk keys and blank reasons are dropped rather than trusted or crashed on.
+    state = WorkingDefinition(
+        not_applicable={"webhooks": "x", "book": "x", "label": " ", "manifest": "real"}
+    )
+    assert state.not_applicable == {"manifest": "real"}
+
+
 def test_check_reports_incomplete_then_valid() -> None:
     state = WorkingDefinition(data={"carrier": "acme", "name": "Acme"})
     incomplete = check(state, {})
@@ -531,3 +600,38 @@ def test_build_can_raise_a_durable_blocker_and_keep_building(app: FastAPI) -> No
         assert blocker.kind == "needs_plugin"
         assert blocker.plugin_name == "acme_hmac"
         assert blocker.status == "open"
+
+
+def test_build_round_trips_the_not_applicable_marks(app: FastAPI) -> None:
+    # The marks ride each turn with the working copy: the seed survives the turn and
+    # the model's new mark comes back with it, so the board never loses a pruning.
+    llm = _FakeLlm(
+        [
+            LlmReply(
+                stop_reason="tool_use",
+                text="",
+                tool_uses=(
+                    ToolUse(
+                        "t1",
+                        "mark_not_applicable",
+                        {"capability": "label", "reason": "paperwork only"},
+                    ),
+                ),
+            ),
+            LlmReply(stop_reason="end_turn", text="Pruned the board.", tool_uses=()),
+        ]
+    )
+
+    with app.state.session_factory() as session:
+        result = build(
+            session,
+            [{"role": "user", "content": "they have no labels"}],
+            {},
+            not_applicable={"manifest": "no end-of-day process"},
+            llm=llm,
+        )
+
+    assert result.not_applicable == {
+        "manifest": "no end-of-day process",
+        "label": "paperwork only",
+    }

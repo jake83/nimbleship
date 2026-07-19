@@ -44,8 +44,8 @@ class BuilderMessage(BaseModel):
 
 
 # A definition has a handful of top-level keys; this caps them as a light structural
-# guard. It does not bound the nested payload size - overall request-body limiting is
-# an app-level concern (there is no body-size middleware yet).
+# guard. It does not bound the nested payload size - the app-wide body-size middleware
+# (nimbleship.middleware) bounds the bytes.
 _DEFINITION_MAX_KEYS = 50
 
 
@@ -58,11 +58,15 @@ class BuilderRequest(BaseModel):
     )
     # Bounded so a request can't ask the model to ingest an unbounded blob.
     packet: str = Field(default="", max_length=200_000)
+    # Board capability -> reason the AI pruned it (rides the working copy like the
+    # definition; the build normalises it to the prunable frame).
+    not_applicable: dict[str, str] = Field(default_factory=dict, max_length=8)
 
 
 class BuilderReply(BaseModel):
     reply: str
     definition: dict[str, object]
+    not_applicable: dict[str, str]
 
 
 class CheckRequest(BaseModel):
@@ -98,11 +102,20 @@ def builder_messages(
     ]
     try:
         result = build(
-            session, conversation, request.definition, request.packet, llm=llm
+            session,
+            conversation,
+            request.definition,
+            request.packet,
+            not_applicable=request.not_applicable,
+            llm=llm,
         )
     except anthropic.APIError as error:
         raise HTTPException(502, "the carrier builder is unavailable") from error
-    return BuilderReply(reply=result.reply, definition=result.definition)
+    return BuilderReply(
+        reply=result.reply,
+        definition=result.definition,
+        not_applicable=result.not_applicable,
+    )
 
 
 class BlockerOut(BaseModel):
