@@ -146,6 +146,8 @@ describe('EngineerPage', () => {
           return json([OPEN_BLOCKER, second])
         if (key === 'POST /api/carrier-builder/blockers/7/resolve')
           return new Promise<Response>(() => {}) // hangs
+        if (key === 'POST /api/carrier-builder/blockers/8/resolve')
+          return json({ ...second, status: 'resolved', resolution: 'use live' })
         throw new Error(`unmocked fetch: ${key}`)
       }),
     )
@@ -164,6 +166,12 @@ describe('EngineerPage', () => {
     // The first blocker's button is busy; the second stays workable.
     expect(buttons[0]).toBeDisabled()
     expect(buttons[1]).toBeEnabled()
+
+    // The second blocker resolving must not free the first's still-in-flight
+    // button (a scalar busy id would - the double-submit the guard exists for).
+    await userEvent.click(buttons[1]!)
+    await screen.findByText(/resolved: use live/i)
+    expect(buttons[0]).toBeDisabled()
   })
 
   it('does not attribute a stale resolve failure to a newly loaded carrier', async () => {

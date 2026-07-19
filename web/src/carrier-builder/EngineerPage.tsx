@@ -27,7 +27,9 @@ export function EngineerPage() {
   const [resolutions, setResolutions] = useState<Record<number, string>>({})
   const [resolveError, setResolveError] = useState<string | null>(null)
   // Per-blocker, so a hung resolve locks only its own button, not the whole queue.
-  const [busyId, setBusyId] = useState<number | null>(null)
+  // A set, not a scalar: several resolves can be in flight, and one settling must
+  // not free another's still-busy button.
+  const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set())
   // Two loads can race (retype the carrier, click again before the first lands);
   // only the latest may apply, or a slow response shows the wrong carrier's queue.
   const loadSeq = useRef(0)
@@ -51,7 +53,7 @@ export function EngineerPage() {
     const resolution = (resolutions[blocker.id] ?? '').trim()
     if (resolution === '') return
     const seq = loadSeq.current
-    setBusyId(blocker.id)
+    setBusyIds((current) => new Set(current).add(blocker.id))
     setResolveError(null)
     try {
       const updated = await resolveBlocker(blocker.id, resolution)
@@ -66,7 +68,11 @@ export function EngineerPage() {
         setResolveError(caught instanceof Error ? caught.message : String(caught))
       }
     } finally {
-      setBusyId((current) => (current === blocker.id ? null : current))
+      setBusyIds((current) => {
+        const next = new Set(current)
+        next.delete(blocker.id)
+        return next
+      })
     }
   }
 
@@ -161,7 +167,7 @@ export function EngineerPage() {
                       type="button"
                       onClick={() => void resolve(blocker)}
                       disabled={
-                        busyId === blocker.id ||
+                        busyIds.has(blocker.id) ||
                         (resolutions[blocker.id] ?? '').trim() === ''
                       }
                     >
