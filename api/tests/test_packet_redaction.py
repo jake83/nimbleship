@@ -34,6 +34,20 @@ def test_redact_replaces_a_stored_value_with_its_config_path(app: FastAPI) -> No
     assert "443" in redacted
 
 
+def test_redact_is_case_insensitive(app: FastAPI) -> None:
+    # Forwarded emails routinely re-case text (an upper-cased header line,
+    # HTML-to-text conversion); a re-cased secret is still the secret.
+    _store(app, "acme", {"api_key": "sk-hunter22secret"})
+    packet = "AUTH KEY: SK-HUNTER22SECRET goes in the header."
+
+    with app.state.session_factory() as session:
+        redacted = redact_packet(session, packet)
+
+    assert "SK-HUNTER22SECRET" not in redacted
+    assert "hunter22" not in redacted.lower()
+    assert "[use config.api_key]" in redacted
+
+
 def test_redact_handles_nested_config_and_containment(app: FastAPI) -> None:
     # Longest-first: a URL embedding a token is consumed whole before the token
     # alone could split it, and the nested path names the leaf.

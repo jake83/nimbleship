@@ -6,6 +6,8 @@ stored values are KNOWN, so exact occurrences are replaced with their config.* p
 This is defence in depth for the doc text; the primary channel is the credentials
 intake, which routes values straight to config and never into the packet at all."""
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -47,10 +49,15 @@ def known_secrets(session: Session) -> list[tuple[str, str]]:
 
 def redact_packet(session: Session, packet: str) -> str:
     """Replace every occurrence of a known stored config value in `packet` with its
-    config.* path, longest values first so a secret that contains another (a URL
-    embedding a token) is consumed whole before the shorter match can split it."""
+    config.* path. Longest values first, so a secret that contains another (a URL
+    embedding a token) is consumed whole before the shorter match can split it.
+    Case-insensitive: forwarded emails routinely re-case text (an upper-cased header
+    line, HTML-to-text conversion), and a re-cased secret is still the secret."""
     for path, value in sorted(
         known_secrets(session), key=lambda pair: len(pair[1]), reverse=True
     ):
-        packet = packet.replace(value, f"[use {path}]")
+        # Backslashes doubled so the substituted text is never interpreted for group
+        # references, whatever characters a config path carries.
+        replacement = f"[use {path}]".replace("\\", "\\\\")
+        packet = re.sub(re.escape(value), replacement, packet, flags=re.IGNORECASE)
     return packet
