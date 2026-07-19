@@ -1,6 +1,6 @@
 """The carrier builder route (ADR 0018): fails closed without a key, runs the edit loop
 over a scripted fake injected through the dependency, and returns the edited working
-definition. The onboarding packet rides the request as grounding for the model."""
+definition."""
 
 from collections.abc import Sequence
 
