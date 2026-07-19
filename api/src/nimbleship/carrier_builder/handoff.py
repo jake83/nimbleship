@@ -44,6 +44,11 @@ def raise_blocker(
         raise ValueError(f"unknown blocker kind '{kind}'")
     if kind == "needs_plugin" and (plugin_name is None or not plugin_name.strip()):
         raise ValueError("a needs_plugin blocker must name the plugin to build")
+    # A blank brief makes the queue entry and the publish-refusal message contentless,
+    # and there is no edit path - only resolve. Text columns accept "" on both engines,
+    # so the invariant lives here (refuter, PR #127).
+    if not title.strip() or not detail.strip():
+        raise ValueError("title and detail must not be blank")
     if len(carrier) > CARRIER_MAX:
         raise ValueError(f"carrier must be {CARRIER_MAX} characters or fewer")
     if len(title) > TITLE_MAX:

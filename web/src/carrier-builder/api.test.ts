@@ -3,7 +3,9 @@ import { sentBody, stubFetch } from '@/test/rulebook'
 import {
   checkDefinition,
   createDefinitionDraft,
+  fetchBlockers,
   fetchBuilderStatus,
+  resolveBlocker,
   sendBuilderMessages,
 } from './api'
 
@@ -60,6 +62,36 @@ describe('carrier builder api', () => {
       definition,
       author: 'jake',
     })
+  })
+
+  it('fetches a carrier blockers queue and resolves one', async () => {
+    const blocker = {
+      id: 7,
+      carrier: 'acme',
+      kind: 'needs_plugin',
+      title: 'HMAC signing',
+      detail: 'No plugin.',
+      plugin_name: 'acme_hmac',
+      status: 'open',
+      resolution: null,
+      created_at: '2026-07-19T10:00:00Z',
+      resolved_at: null,
+    }
+    const mock = stubFetch({
+      'GET /api/carrier-builder/blockers?carrier=acme': { body: [blocker] },
+      'POST /api/carrier-builder/blockers/7/resolve': {
+        body: { ...blocker, status: 'resolved', resolution: 'Shipped in v2.' },
+      },
+    })
+
+    const queue = await fetchBlockers('acme')
+    expect(queue[0]!.title).toBe('HMAC signing')
+
+    const resolved = await resolveBlocker(7, 'Shipped in v2.')
+    expect(resolved.status).toBe('resolved')
+    expect(sentBody(mock, 'POST /api/carrier-builder/blockers/7/resolve')).toEqual(
+      { resolution: 'Shipped in v2.' },
+    )
   })
 
   it('reads the configured status', async () => {
