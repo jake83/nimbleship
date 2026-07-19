@@ -202,6 +202,21 @@ def test_raise_blocker_rejects_an_unknown_kind(app: FastAPI) -> None:
         raise_blocker(session, "acme", "needs_coffee", "t", "d")
 
 
+def test_raise_blocker_enforces_its_invariants_at_the_domain(app: FastAPI) -> None:
+    # Enforced where the row is built, not just in the tool wrapper: a needs_plugin
+    # blocker names its plugin, and over-column-length values are refused here rather
+    # than passing SQLite silently and 500ing on Postgres at flush.
+    with app.state.session_factory() as session:
+        with pytest.raises(ValueError, match="must name the plugin"):
+            raise_blocker(session, "acme", "needs_plugin", "t", "d")
+        with pytest.raises(ValueError, match="title must be"):
+            raise_blocker(session, "acme", "needs_decision", "x" * 256, "d")
+        with pytest.raises(ValueError, match="plugin_name must be"):
+            raise_blocker(
+                session, "acme", "needs_plugin", "t", "d", plugin_name="p" * 65
+            )
+
+
 def test_raise_blocker_tool_requires_identity_and_plugin_name(app: FastAPI) -> None:
     with app.state.session_factory() as session:
         # No carrier identity yet: the blocker would be unkeyed - refused.

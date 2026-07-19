@@ -158,9 +158,9 @@ def raise_blocker_tool(
         return {"error": "raise_blocker needs 'kind', 'title' and 'detail' strings"}
     if plugin_name is not None and not isinstance(plugin_name, str):
         return {"error": "plugin_name must be a string when given"}
-    if kind == "needs_plugin" and plugin_name is None:
-        return {"error": "a needs_plugin blocker must name the plugin to build"}
     try:
+        # The domain enforces the rest (known kind, needs_plugin names its plugin,
+        # column-length bounds) where the row is built.
         blocker = raise_blocker(session, carrier, kind, title, detail, plugin_name)
     except ValueError as error:
         return {"error": str(error)}

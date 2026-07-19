@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 
 from nimbleship.assistant import LlmClient, build_client
 from nimbleship.carrier_builder import build
-from nimbleship.carrier_builder.handoff import blockers_for, resolve_blocker
+from nimbleship.carrier_builder.handoff import (
+    BlockerAlreadyResolved,
+    UnknownBlocker,
+    blockers_for,
+    resolve_blocker,
+)
 from nimbleship.config import get_settings
 from nimbleship.db import get_session
 from nimbleship.domain.carrier_definition import CarrierDefinition
@@ -142,9 +147,10 @@ def resolve(blocker_id: int, payload: ResolveIn, session: SessionDep) -> Blocker
     the carrier consumes it (the model reads resolutions via its list_blockers tool)."""
     try:
         blocker = resolve_blocker(session, blocker_id, payload.resolution)
-    except ValueError as error:
-        detail = str(error)
-        raise HTTPException(404 if "no blocker" in detail else 409, detail) from error
+    except UnknownBlocker as error:
+        raise HTTPException(404, str(error)) from error
+    except BlockerAlreadyResolved as error:
+        raise HTTPException(409, str(error)) from error
     return _blocker_out(blocker)
 
 

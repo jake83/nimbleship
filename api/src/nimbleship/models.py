@@ -446,12 +446,8 @@ class TrackingEvent(Base):
 
 
 class HandoffBlocker(Base):
-    """A Handoff (CONTEXT.md, ADR 0018): a technical gap in a carrier onboarding the
-    non-technical operator cannot close, parked for the engineer - a needed plugin or a
-    decision the docs do not answer. Durable and carrier-keyed (a plugin is a PR and a
-    deploy, so resolution is days later, outliving any browser session); the
-    conversation that raised it stays ephemeral. A carrier with an open blocker cannot
-    publish a definition."""
+    """A Handoff row (CONTEXT.md, ADR 0018): a technical gap parked for the engineer.
+    The invariants and lifecycle live in carrier_builder/handoff.py."""
 
     __tablename__ = "handoff_blockers"
 
