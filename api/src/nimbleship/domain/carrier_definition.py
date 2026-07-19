@@ -488,16 +488,14 @@ class PluginAuth(BaseModel):
     plugin: str
 
     @model_validator(mode="after")
-    def _plugin_is_registered(self, info: ValidationInfo) -> "PluginAuth":
-        # Reject an unregistered auth plugin at authoring, so a draft naming an
-        # unimplemented one can't publish - the publish gate is the defer-to-engineer
-        # handoff gate (ADR 0018), matching computed-field plugins. Skipped on load:
-        # auth is applied at execute time, not render, so a stored definition naming a
-        # now-unknown plugin fails cleanly at booking (ADR 0009's skippable class), and
-        # re-enforcing it on load would only strand a live carrier.
-        if _is_lenient(info):
-            return self
-        # Lazy: auth_plugins pulls in the render module (see referenced_config_keys).
+    def _plugin_is_registered(self) -> "PluginAuth":
+        # Reject an unregistered auth plugin so a draft naming an unimplemented one
+        # can't publish - the publish gate is the defer-to-engineer handoff gate (ADR
+        # 0018). Strict on load too, like computed-field plugins: an unregistered
+        # plugin is a deploy bug the executor keeps loud (execute.py re-raises the
+        # ValueError bare, not a clean booking_failed), so it is not ADR 0009's
+        # skippable class - a stored definition whose plugin was removed is broken.
+        # Lazy import to avoid a cycle (auth_plugins imports the render module).
         from nimbleship.engine.auth_plugins import auth_plugin_names
 
         if self.plugin not in auth_plugin_names():

@@ -445,25 +445,21 @@ def test_a_local_render_step_transport_is_never_sent_to_the_wire() -> None:
     assert seen == []
 
 
+class _StampPlugin:
+    def required_config_keys(self) -> frozenset[str]:
+        return frozenset({"stamp"})
+
+    def apply(
+        self, request: RenderedRequest, config: dict[str, object]
+    ) -> RenderedRequest:
+        return request.model_copy(
+            update={"headers": {**request.headers, "X-Stamp": str(config["stamp"])}}
+        )
+
+
 @pytest.fixture
 def stamp_plugin() -> Iterator[None]:
-    class StampPlugin:
-        def required_config_keys(self) -> frozenset[str]:
-            return frozenset({"stamp"})
-
-        def apply(
-            self, request: RenderedRequest, config: dict[str, object]
-        ) -> RenderedRequest:
-            return request.model_copy(
-                update={
-                    "headers": {
-                        **request.headers,
-                        "X-Stamp": str(config["stamp"]),
-                    }
-                }
-            )
-
-    AUTH_PLUGINS["stamp"] = StampPlugin()
+    AUTH_PLUGINS["stamp"] = _StampPlugin()
     yield
     del AUTH_PLUGINS["stamp"]
 
@@ -516,16 +512,21 @@ def test_plugin_auth_is_applied_to_each_http_request(stamp_plugin: None) -> None
     assert request.headers["X-Stamp"] == "S-9"
 
 
-def test_unregistered_auth_plugin_fails_loudly() -> None:
-    # An unknown auth plugin is now rejected at authoring, but a stored definition
-    # whose plugin was later removed still loads (lenient) and must fail loudly at
-    # execute rather than silently skip auth - so this loads the definition.
+def test_auth_plugin_removed_after_load_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Authoring and load both reject an unregistered auth plugin, so the only way one
+    # reaches execute is removal after a valid definition was built (a deploy pulling
+    # a plugin a live carrier still references). The executor keeps that loud - a bare
+    # ValueError, not a silent skip - which is why the check stays strict on load.
+    monkeypatch.setitem(AUTH_PLUGINS, "stamp", _StampPlugin())
+    definition = CarrierDefinition.model_validate(_PLUGIN_DEF_DATA)
+    monkeypatch.delitem(AUTH_PLUGINS, "stamp")
     facts: dict[str, object] = {
         "shipment": {"order_number": "95000254580"},
         "config": {"base_url": "https://api.fedex.example", "stamp": "S-9"},
     }
 
-    definition = CarrierDefinition.load(_PLUGIN_DEF_DATA)
     with (
         _client(httpx.MockTransport(lambda request: httpx.Response(200))) as client,
         pytest.raises(ValueError, match=r"auth plugin 'stamp' is not registered"),
@@ -777,14 +778,12 @@ def test_a_failed_ftp_upload_is_a_carrier_call_error_with_traffic_kept() -> None
     assert "530 Login incorrect" in record.response_body
 
 
-# Loaded, not authored: the executor runs on loaded definitions, and stub_auth is
-# registered only inside the test below - authoring would reject the unknown name.
-PLUGIN_AUTH_DEFINITION = CarrierDefinition.load(
-    {
-        **FORM_DEFINITION.model_dump(mode="json"),
-        "auth": {"scheme": "plugin", "plugin": "stub_auth"},
-    }
-)
+# Built inside the test below, once stub_auth is registered: an unregistered auth
+# plugin is rejected at authoring and load alike, so the plugin must exist first.
+_PLUGIN_AUTH_DATA: dict[str, object] = {
+    **FORM_DEFINITION.model_dump(mode="json"),
+    "auth": {"scheme": "plugin", "plugin": "stub_auth"},
+}
 
 
 OAUTH_DEFINITION = CarrierDefinition.model_validate(
@@ -813,6 +812,7 @@ def test_an_auth_plugin_failure_is_a_carrier_call_error_not_a_crash(
     # The auth step runs outside the request's own error handling, so its failure
     # is covered separately.
     monkeypatch.setitem(AUTH_PLUGINS, "stub_auth", _FailingAuth())
+    definition = CarrierDefinition.model_validate(_PLUGIN_AUTH_DATA)
     sent: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -824,9 +824,7 @@ def test_an_auth_plugin_failure_is_a_carrier_call_error_not_a_crash(
         _client(httpx.MockTransport(handle)) as client,
         pytest.raises(CarrierCallError, match="save"),
     ):
-        execute_operation(
-            PLUGIN_AUTH_DEFINITION, "book", FACTS, client, record=records.append
-        )
+        execute_operation(definition, "book", FACTS, client, record=records.append)
     # Nothing was sent, so - like a render failure - no traffic is recorded.
     assert sent == []
     assert records == []
