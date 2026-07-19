@@ -4,6 +4,7 @@ these mutate the working copy only in memory; nothing is saved. The copy is a pa
 definition dict, validated as a whole CarrierDefinition only at check/save - mid-build
 it is legitimately incomplete."""
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from pydantic import TypeAdapter, ValidationError
@@ -41,8 +42,8 @@ def set_identity(
     name = tool_input.get("name")
     if not isinstance(carrier, str) or not isinstance(name, str):
         return {"error": "set_identity needs 'carrier' and 'name' strings"}
-    # A blank identity would pass whole-definition validation (no min_length) but is
-    # meaningless as a rails key and unsaveable in the surface - reject it here.
+    # The model rejects a blank identity too; checking here as well gives the model
+    # an immediate, retryable tool error instead of a failure surfacing only at check.
     if not carrier.strip() or not name.strip():
         return {"error": "carrier and name must not be blank"}
     state.data["carrier"] = carrier
@@ -88,27 +89,194 @@ def _dropped_key(provided: object, kept: object) -> str | None:
     return None
 
 
+def _operation_error(name: str, operation: dict[str, object]) -> str | None:
+    """The reason `operation` can't be stored, or None: malformed, or carrying a
+    misspelt field pydantic would silently drop. The single gate for every write path
+    into an operation - whole-operation and granular edits alike."""
+    try:
+        validated = Operation.model_validate(operation)
+    except ValidationError as error:
+        return f"invalid operation '{name}': {error}"
+    kept = validated.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    dropped = _dropped_key(operation, kept)
+    if dropped is not None:
+        return f"unknown field '{dropped}' - check the spelling"
+    return None
+
+
 def put_operation(
     state: WorkingDefinition, tool_input: dict[str, object]
 ) -> dict[str, object]:
-    """Add or replace one named operation (book, manifest, ...) with its steps. Rejects
-    a malformed operation, or one carrying a misspelt field, without changing anything.
+    """Add or replace one named operation (book, manifest, ...) with its steps. For a
+    small change to an existing operation, prefer put_step or put_mapping_entry -
+    re-sending the whole operation risks perturbing the untouched parts. Rejects a
+    malformed operation, or one carrying a misspelt field, without changing anything.
     Cross-operation rules (e.g. fan_out only on a manifest) are checked by `check`,
     which validates the whole definition."""
     name = tool_input.get("name")
     operation = tool_input.get("operation")
     if not isinstance(name, str) or not isinstance(operation, dict):
         return {"error": "put_operation needs a 'name' and an 'operation' object"}
-    try:
-        validated = Operation.model_validate(operation)
-    except ValidationError as error:
-        return {"error": f"invalid operation '{name}': {error}"}
-    kept = validated.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    dropped = _dropped_key(operation, kept)
-    if dropped is not None:
-        return {"error": f"unknown field '{dropped}' - check the spelling"}
+    problem = _operation_error(name, operation)
+    if problem is not None:
+        return {"error": problem}
     state.operations()[name] = operation
     return {"operation": name}
+
+
+def _existing_operation(
+    state: WorkingDefinition, name: object
+) -> tuple[str, dict[str, object]] | str:
+    """The (name, deep copy) of an existing operation to edit, or an error string. A
+    copy, so a rejected granular edit never leaves a half-applied operation behind."""
+    if not isinstance(name, str):
+        return "an 'operation' name is required"
+    operation = state.operations().get(name)
+    if not isinstance(operation, dict):
+        return f"no operation '{name}'"
+    return name, deepcopy(operation)
+
+
+def _steps_of(operation: dict[str, object]) -> list[dict[str, object]]:
+    steps = operation.setdefault("steps", [])
+    assert isinstance(steps, list)  # _operation_error validated any stored operation
+    return steps
+
+
+def put_step(
+    state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """Add or replace one named step within an existing operation, keeping its other
+    steps untouched. Rejects an invalid result without changing anything."""
+    found = _existing_operation(state, tool_input.get("operation"))
+    if isinstance(found, str):
+        return {"error": found}
+    operation_name, candidate = found
+    step = tool_input.get("step")
+    if not isinstance(step, dict) or not isinstance(step.get("name"), str):
+        return {"error": "put_step needs a 'step' object with a 'name'"}
+    steps = _steps_of(candidate)
+    index = next(
+        (i for i, s in enumerate(steps) if s.get("name") == step["name"]), None
+    )
+    if index is None:
+        steps.append(step)
+    else:
+        steps[index] = step
+    problem = _operation_error(operation_name, candidate)
+    if problem is not None:
+        return {"error": problem}
+    state.operations()[operation_name] = candidate
+    return {"operation": operation_name, "step": step["name"]}
+
+
+def remove_step(
+    state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """Remove one named step from an existing operation. Rejects a removal that leaves
+    the operation invalid (e.g. its only step, with no local_render label) - remove the
+    whole operation instead."""
+    found = _existing_operation(state, tool_input.get("operation"))
+    if isinstance(found, str):
+        return {"error": found}
+    operation_name, candidate = found
+    name = tool_input.get("name")
+    if not isinstance(name, str):
+        return {"error": "remove_step needs a 'name'"}
+    steps = _steps_of(candidate)
+    remaining = [s for s in steps if s.get("name") != name]
+    if len(remaining) == len(steps):
+        return {"error": f"no step '{name}' in operation '{operation_name}'"}
+    candidate["steps"] = remaining
+    problem = _operation_error(operation_name, candidate)
+    if problem is not None:
+        return {"error": problem}
+    state.operations()[operation_name] = candidate
+    return {"operation": operation_name, "removed": name}
+
+
+def _step_in(
+    candidate: dict[str, object], operation_name: str, step_name: object
+) -> dict[str, object] | str:
+    if not isinstance(step_name, str):
+        return "a 'step' name is required"
+    step = next((s for s in _steps_of(candidate) if s.get("name") == step_name), None)
+    if step is None:
+        return f"no step '{step_name}' in operation '{operation_name}'"
+    return step
+
+
+def put_mapping_entry(
+    state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """Add or replace one mapping entry (keyed by its target field) in a step's
+    request, keeping every other entry untouched - the granular edit for tweaking one
+    field of a large request. Rejects an invalid result without changing anything."""
+    found = _existing_operation(state, tool_input.get("operation"))
+    if isinstance(found, str):
+        return {"error": found}
+    operation_name, candidate = found
+    step = _step_in(candidate, operation_name, tool_input.get("step"))
+    if isinstance(step, str):
+        return {"error": step}
+    entry = tool_input.get("entry")
+    if not isinstance(entry, dict) or not isinstance(entry.get("target"), str):
+        return {"error": "put_mapping_entry needs an 'entry' object with a 'target'"}
+    request = step.setdefault("request", {})
+    if not isinstance(request, dict):
+        return {"error": f"step '{step.get('name')}' has no request object"}
+    mapping = request.setdefault("mapping", [])
+    if not isinstance(mapping, list):
+        return {"error": f"step '{step.get('name')}' has no mapping list"}
+    index = next(
+        (
+            i
+            for i, e in enumerate(mapping)
+            if isinstance(e, dict) and e.get("target") == entry["target"]
+        ),
+        None,
+    )
+    if index is None:
+        mapping.append(entry)
+    else:
+        mapping[index] = entry
+    problem = _operation_error(operation_name, candidate)
+    if problem is not None:
+        return {"error": problem}
+    state.operations()[operation_name] = candidate
+    return {"operation": operation_name, "target": entry["target"]}
+
+
+def remove_mapping_entry(
+    state: WorkingDefinition, tool_input: dict[str, object]
+) -> dict[str, object]:
+    """Remove one mapping entry (by its target field) from a step's request."""
+    found = _existing_operation(state, tool_input.get("operation"))
+    if isinstance(found, str):
+        return {"error": found}
+    operation_name, candidate = found
+    step = _step_in(candidate, operation_name, tool_input.get("step"))
+    if isinstance(step, str):
+        return {"error": step}
+    target = tool_input.get("target")
+    if not isinstance(target, str):
+        return {"error": "remove_mapping_entry needs a 'target'"}
+    request = step.get("request")
+    mapping = request.get("mapping") if isinstance(request, dict) else None
+    if not isinstance(mapping, list):
+        return {"error": f"step '{step.get('name')}' has no mapping list"}
+    remaining = [
+        e for e in mapping if not (isinstance(e, dict) and e.get("target") == target)
+    ]
+    if len(remaining) == len(mapping):
+        return {"error": f"no mapping entry targeting '{target}'"}
+    assert isinstance(request, dict)  # mapping came from it above
+    request["mapping"] = remaining
+    problem = _operation_error(operation_name, candidate)
+    if problem is not None:
+        return {"error": problem}
+    state.operations()[operation_name] = candidate
+    return {"operation": operation_name, "removed": target}
 
 
 def remove_operation(
@@ -241,6 +409,56 @@ TOOL_SCHEMAS: list[dict[str, object]] = [
             "required": ["name"],
         },
     ),
+    _schema(
+        "put_step",
+        put_step.__doc__ or "",
+        {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string"},
+                "step": {"type": "object"},
+            },
+            "required": ["operation", "step"],
+        },
+    ),
+    _schema(
+        "remove_step",
+        remove_step.__doc__ or "",
+        {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["operation", "name"],
+        },
+    ),
+    _schema(
+        "put_mapping_entry",
+        put_mapping_entry.__doc__ or "",
+        {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string"},
+                "step": {"type": "string"},
+                "entry": {"type": "object"},
+            },
+            "required": ["operation", "step", "entry"],
+        },
+    ),
+    _schema(
+        "remove_mapping_entry",
+        remove_mapping_entry.__doc__ or "",
+        {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string"},
+                "step": {"type": "string"},
+                "target": {"type": "string"},
+            },
+            "required": ["operation", "step", "target"],
+        },
+    ),
     _schema("check", check.__doc__ or "", {"type": "object", "properties": {}}),
     _schema(
         "raise_blocker",
@@ -277,6 +495,14 @@ def run_carrier_builder_tool(
         return set_identity(state, tool_input)
     if name == "set_auth":
         return set_auth(state, tool_input)
+    if name == "put_step":
+        return put_step(state, tool_input)
+    if name == "remove_step":
+        return remove_step(state, tool_input)
+    if name == "put_mapping_entry":
+        return put_mapping_entry(state, tool_input)
+    if name == "remove_mapping_entry":
+        return remove_mapping_entry(state, tool_input)
     if name == "put_operation":
         return put_operation(state, tool_input)
     if name == "remove_operation":

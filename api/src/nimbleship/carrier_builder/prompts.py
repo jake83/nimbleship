@@ -18,12 +18,17 @@ local render) whose request maps target fields from facts (shipment.*, warehouse
 config.* for per-install credentials, and earlier steps' outputs), with transforms \
 from a fixed vocabulary.
 
-Your tools edit the working copy: set_identity, set_auth, put_operation, \
-remove_operation, and check (which validates the whole definition and reports what is \
-still missing or wrong). A tool returns an error instead of changing anything when an \
-edit is invalid - read it, fix the edit, and retry. Two more manage the engineer \
-handoff: raise_blocker parks a technical gap for the engineer, and list_blockers shows \
-this carrier's blockers with any resolutions the engineer has recorded.
+Your tools edit the working copy: set_identity, set_auth, put_operation and \
+remove_operation for whole operations, and - for a small change to an existing \
+operation - put_step, remove_step, put_mapping_entry and remove_mapping_entry, which \
+edit one step or one mapping entry (keyed by its target) while keeping everything \
+else untouched. Prefer the granular tools: re-sending a whole operation to change one \
+field risks perturbing the rest. check validates the whole definition and reports \
+what is still missing or wrong. A tool returns an error instead of changing anything \
+when an edit is invalid - read it, fix the edit, and retry. Two more manage the \
+engineer handoff: raise_blocker parks a technical gap for the engineer, and \
+list_blockers shows this carrier's blockers with any resolutions the engineer has \
+recorded.
 
 Rules:
 - Ground every value in the carrier documentation and what the operator tells you - \
