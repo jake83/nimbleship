@@ -60,6 +60,28 @@ _REQUIRED_FIELDS = [
 ]
 
 
+# Banded pricing is out of the builder's scope by nature (ADR 0017): it's a rate
+# card managed elsewhere, influencing routing only through the cheapest tie-break.
+# It's absent from the tool schema, but a model could still put it in a raw tool
+# input, so the scope is enforced here too - not left to the model's goodwill.
+_PRICING_FIELDS = ("cost_bands", "charge_bands")
+
+
+def _authors_pricing(fields: dict[str, object]) -> str | None:
+    """The reason model-authored `fields` reach outside the builder's scope, or None.
+    Only the model's own input is checked - a service seeded from the live rulebook
+    keeps its existing bands untouched, which is preservation, not authoring. Any
+    mention of a band field is out of scope, including a null that would clear an
+    existing band (a pricing change with routing impact the builder must not make)."""
+    named = [field for field in _PRICING_FIELDS if field in fields]
+    if named:
+        return (
+            f"{' and '.join(named)}: banded pricing is managed elsewhere; the builder "
+            "sets only the flat cost"
+        )
+    return None
+
+
 def working_copy_error(services: list[ServiceDeclaration]) -> str | None:
     """The reason `services` can't be a working copy, or None: a duplicate code or
     tie-break. These are the same cross-service invariants Rulebook enforces (a
@@ -86,6 +108,9 @@ def add_service(state: WorkingCopy, tool_input: dict[str, object]) -> dict[str, 
     service = tool_input.get("service")
     if not isinstance(service, dict):
         return {"error": "add_service needs a 'service' object"}
+    pricing = _authors_pricing(service)
+    if pricing is not None:
+        return {"error": pricing}
     try:
         declaration = ServiceDeclaration.model_validate(service)
     except ValidationError as error:
@@ -108,6 +133,9 @@ def update_service(
     changes = tool_input.get("changes")
     if not isinstance(code, str) or not isinstance(changes, dict):
         return {"error": "update_service needs a 'code' and a 'changes' object"}
+    pricing = _authors_pricing(changes)
+    if pricing is not None:
+        return {"error": pricing}
     current = state.find(code)
     if current is None:
         return {"error": f"no service with code '{code}'"}

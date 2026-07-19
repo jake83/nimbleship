@@ -109,6 +109,55 @@ def test_update_service_rejects_a_clashing_tie_break() -> None:
     assert [s.tie_break_order for s in state.services] == [1, 2]
 
 
+_BAND = {
+    "cost_type": "consignment_weight",
+    "min_weight_kg": "0",
+    "max_weight_kg": "999",
+    "charge": "0.01",
+}
+
+
+def test_add_service_rejects_banded_pricing_fields() -> None:
+    # Banded pricing is out of scope (ADR 0017) - a rate card managed elsewhere. A
+    # tool call that carries it (a model hallucination, free-text steering) is
+    # rejected, so a band can't be silently attached to the working copy.
+    state = WorkingCopy()
+    result = add_service(state, {"service": {**_DROPOUT, "cost_bands": [_BAND]}})
+    assert "banded pricing is managed elsewhere" in str(result["error"])
+    assert state.services == []
+
+
+def test_update_service_rejects_authoring_banded_pricing() -> None:
+    state = _copy(_DROPOUT)
+    result = update_service(
+        state, {"code": "DROPOUT-STD", "changes": {"charge_bands": [_BAND]}}
+    )
+    assert "banded pricing is managed elsewhere" in str(result["error"])
+    assert state.services[0].charge_bands is None
+
+
+def test_update_service_rejects_clearing_bands_with_a_null() -> None:
+    # A null band field is still out of scope: clearing an existing band is a pricing
+    # change with routing impact, so it's rejected, not silently applied.
+    state = _copy({**_DROPOUT, "cost_bands": [_BAND]})
+    result = update_service(
+        state, {"code": "DROPOUT-STD", "changes": {"cost_bands": None}}
+    )
+    assert "banded pricing is managed elsewhere" in str(result["error"])
+    assert state.services[0].cost_bands is not None  # unchanged
+
+
+def test_update_service_preserves_a_seeded_services_existing_bands() -> None:
+    # A real service seeded from the live rulebook may carry bands; editing a flat
+    # field keeps them byte-for-byte (the builder preserves what it doesn't author).
+    state = _copy({**_DROPOUT, "cost_bands": [_BAND]})
+    result = update_service(state, {"code": "DROPOUT-STD", "changes": {"cost": "9.99"}})
+    assert result["updated"] == "DROPOUT-STD"
+    assert str(state.services[0].cost) == "9.99"
+    dumped = state.services[0].model_dump(mode="json")["cost_bands"]
+    assert dumped is not None and dumped[0]["charge"] == "0.01"
+
+
 def test_remove_service_drops_by_code() -> None:
     state = _copy(_DROPOUT)
     assert remove_service(state, {"code": "DROPOUT-STD"})["removed"] == "DROPOUT-STD"
