@@ -18,7 +18,7 @@ from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
 from nimbleship.domain.dry_run import DEFAULT_LIMIT, dry_run_rulebook
 from nimbleship.domain.rulebook import active_rulebook
 from nimbleship.routers.rulebook import DryRunResultOut
-from nimbleship.rules_builder import InvalidWorkingCopy, build
+from nimbleship.rules_builder import InvalidWorkingCopy, build, suggest_rationale
 
 router = APIRouter(prefix="/rulebook/builder", tags=["rulebook"])
 
@@ -67,6 +67,15 @@ class BuilderDryRunOut(BaseModel):
     total: int
     changed: int
     results: list[DryRunResultOut]
+
+
+class BuilderRationaleRequest(BaseModel):
+    services: list[ServiceDeclaration] = Field(max_length=SERVICES_MAX)
+
+
+class BuilderRationaleOut(BaseModel):
+    # null when the working copy matches the live rulebook (nothing to describe).
+    rationale: str | None
 
 
 @router.get("/status")
@@ -129,3 +138,20 @@ def builder_dry_run(
             for result in report.results
         ],
     )
+
+
+@router.post("/rationale")
+def builder_rationale(
+    request: BuilderRationaleRequest, session: SessionDep, llm: LlmDep
+) -> BuilderRationaleOut:
+    """Suggest a one-line rationale for how the working copy changes the live
+    rulebook, for the draft description (ADR 0017) - the operator edits it before
+    saving. Needs the model (unlike dry-run), so it fails closed without a key."""
+    if llm is None:
+        raise HTTPException(503, "the rules builder is not configured")
+    active = active_rulebook(session).services
+    try:
+        rationale = suggest_rationale(active, request.services, llm=llm)
+    except anthropic.APIError as error:
+        raise HTTPException(502, "the rules builder is unavailable") from error
+    return BuilderRationaleOut(rationale=rationale)

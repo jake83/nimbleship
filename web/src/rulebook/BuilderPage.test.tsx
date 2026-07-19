@@ -104,6 +104,56 @@ describe('BuilderPage', () => {
     expect(screen.queryByText(/A2/)).not.toBeInTheDocument()
   })
 
+  it('pre-fills the description with an AI-suggested rationale after a change', async () => {
+    const added = service({ code: 'FR-NEXT', carrier: 'zip', tie_break_order: 2 })
+    stubFetch({
+      'GET /api/rulebook/builder/status': { body: { configured: true } },
+      'GET /api/rulebook/active': { body: ACTIVE },
+      'POST /api/rulebook/builder/messages': {
+        body: { reply: 'Added it.', services: [...ACTIVE.services, added] },
+      },
+      'POST /api/rulebook/builder/rationale': {
+        body: { rationale: 'Added FR-NEXT for France.' },
+      },
+    })
+    renderPage()
+
+    const input = await screen.findByLabelText(/message the rules builder/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'add france{Enter}')
+    await screen.findByText(/added it/i)
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/description/i)).toHaveValue(
+        'Added FR-NEXT for France.',
+      ),
+    )
+  })
+
+  it('does not overwrite a description the operator has typed', async () => {
+    const added = service({ code: 'FR-NEXT', carrier: 'zip', tie_break_order: 2 })
+    stubFetch({
+      'GET /api/rulebook/builder/status': { body: { configured: true } },
+      'GET /api/rulebook/active': { body: ACTIVE },
+      'POST /api/rulebook/builder/messages': {
+        body: { reply: 'Added it.', services: [...ACTIVE.services, added] },
+      },
+      'POST /api/rulebook/builder/rationale': {
+        body: { rationale: 'Added FR-NEXT for France.' },
+      },
+    })
+    renderPage()
+
+    await screen.findByText('DROPOUT-STD')
+    await userEvent.type(screen.getByLabelText(/description/i), 'My own note')
+    const input = screen.getByLabelText(/message the rules builder/i)
+    await userEvent.type(input, 'add france{Enter}')
+    await screen.findByText(/added it/i)
+
+    // The suggestion must not clobber what the operator wrote.
+    expect(screen.getByLabelText(/description/i)).toHaveValue('My own note')
+  })
+
   it('seeds the working copy from the live rulebook and applies an edit', async () => {
     const added = service({ code: 'FR-NEXT-DAY', carrier: 'zip' })
     stubFetch({

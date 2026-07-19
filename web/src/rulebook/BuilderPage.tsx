@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { ChatInput } from '@/assistant/ChatInput'
@@ -26,6 +26,7 @@ import {
   dryRunWorkingCopy,
   fetchBuilderStatus,
   sendBuilderMessages,
+  suggestRationale,
   type BuilderDryRunOutcome,
   type BuilderMessage,
 } from '@/rulebook/builder-api'
@@ -119,6 +120,9 @@ export function BuilderPage() {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [author, setAuthor] = useState('')
   const [description, setDescription] = useState('')
+  // Once the operator types their own description, stop auto-filling the AI's
+  // suggestion over it. A ref so the async suggestion callback reads the live value.
+  const descriptionEdited = useRef(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [dryRun, setDryRun] = useState<BuilderDryRunOutcome | null>(null)
@@ -169,14 +173,31 @@ export function BuilderPage() {
         // The prior preview is stale once the copy changes.
         setDryRun(null)
         setDryRunError(null)
+        // Suggest a description for the change, unless the operator has taken it over.
+        const changed = JSON.stringify(services) !== JSON.stringify(turn.services)
+        if (configured === true && changed && !descriptionEdited.current) {
+          void suggestDescription(turn.services)
+        }
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught))
       } finally {
         setPending(false)
       }
     },
-    [messages, services],
+    [messages, services, configured],
   )
+
+  async function suggestDescription(current: ServiceDeclaration[]) {
+    try {
+      const { rationale } = await suggestRationale(current)
+      // Re-check: the operator may have started typing while this was in flight.
+      if (rationale !== null && !descriptionEdited.current) {
+        setDescription(rationale)
+      }
+    } catch {
+      // Non-fatal: the operator can still write the description themselves.
+    }
+  }
 
   async function preview() {
     if (services === null) return
@@ -369,8 +390,14 @@ export function BuilderPage() {
                   id="builder-description"
                   value={description}
                   maxLength={280}
-                  onChange={(event) => setDescription(event.target.value)}
+                  onChange={(event) => {
+                    descriptionEdited.current = true
+                    setDescription(event.target.value)
+                  }}
                 />
+                <p className="text-xs text-muted-foreground">
+                  The builder suggests this from your changes; edit it before saving.
+                </p>
               </div>
               {saveError !== null && (
                 <p className="text-sm text-destructive" role="alert">
