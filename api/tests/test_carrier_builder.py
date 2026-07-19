@@ -259,6 +259,22 @@ def test_remove_step_refuses_to_leave_an_invalid_operation() -> None:
     assert "book" in state.operations()  # unchanged
 
 
+def test_granular_edits_reject_a_malformed_client_seeded_base() -> None:
+    # An operation can arrive straight from the client's seed without ever passing
+    # the write gate; a malformed one must be a clean tool error, not a crash (500).
+    state = WorkingDefinition(data={"operations": {"book": {"steps": "not-a-list"}}})
+    step = {"name": "x", "transport": "local_render", "request": {}}
+    for result in (
+        put_step(state, {"operation": "book", "step": step}),
+        remove_step(state, {"operation": "book", "name": "x"}),
+        put_mapping_entry(
+            state, {"operation": "book", "step": "x", "entry": {"target": "t"}}
+        ),
+        remove_mapping_entry(state, {"operation": "book", "step": "x", "target": "t"}),
+    ):
+        assert "cannot edit" in str(result["error"])
+
+
 def test_granular_edits_report_unknown_operation_and_step() -> None:
     state = _op_with_book_step()
     assert "no operation" in str(

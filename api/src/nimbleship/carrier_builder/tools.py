@@ -128,18 +128,25 @@ def _existing_operation(
     state: WorkingDefinition, name: object
 ) -> tuple[str, dict[str, object]] | str:
     """The (name, deep copy) of an existing operation to edit, or an error string. A
-    copy, so a rejected granular edit never leaves a half-applied operation behind."""
+    copy, so a rejected granular edit never leaves a half-applied operation behind.
+    The base is validated before editing: an operation can arrive straight from the
+    client's seed without ever passing _operation_error, so a malformed one (e.g.
+    steps that isn't a list) must be a clean tool error - re-put the whole operation -
+    not a crash inside the edit."""
     if not isinstance(name, str):
         return "an 'operation' name is required"
     operation = state.operations().get(name)
     if not isinstance(operation, dict):
         return f"no operation '{name}'"
+    problem = _operation_error(name, operation)
+    if problem is not None:
+        return f"cannot edit: {problem} - re-put the whole operation instead"
     return name, deepcopy(operation)
 
 
 def _steps_of(operation: dict[str, object]) -> list[dict[str, object]]:
     steps = operation.setdefault("steps", [])
-    assert isinstance(steps, list)  # _operation_error validated any stored operation
+    assert isinstance(steps, list)  # _existing_operation validated the base
     return steps
 
 
