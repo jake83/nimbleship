@@ -94,13 +94,28 @@ export function fetchBuilderStatus(): Promise<{ configured: boolean }> {
   return request('/api/carrier-builder/status')
 }
 
-/** Run one builder turn against the working definition and return the reply plus the
- * edited copy. */
+/** Run one builder turn against the working definition, grounded in the onboarding
+ * packet (documentation text; the server redacts known stored credentials before the
+ * model sees it), and return the reply plus the edited copy. */
 export function sendBuilderMessages(
   messages: BuilderMessage[],
   definition: WorkingDefinition,
+  packet: string,
 ): Promise<BuilderTurn> {
-  return post('/api/carrier-builder/messages', { messages, definition })
+  return post('/api/carrier-builder/messages', { messages, definition, packet })
+}
+
+/** Store credentials for a carrier - straight to Carrier Config, never into the
+ * packet or the model (ADR 0018). Merges, so adding a key keeps the rest. */
+export function saveCredentials(
+  carrier: string,
+  entries: Record<string, string>,
+): Promise<{ carrier: string; status: string }> {
+  return request(`/api/carriers/${encodeURIComponent(carrier)}/config`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entries),
+  })
 }
 
 /** Validate the working definition and report what remains - the capability board's

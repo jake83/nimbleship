@@ -145,6 +145,73 @@ describe('CarrierBuilderPage', () => {
     expect(screen.getByRole('button', { name: /save as draft/i })).toBeDisabled()
   })
 
+  it('sends the pasted documentation packet with each turn', async () => {
+    const mock = stubFetch({
+      'GET /api/carrier-builder/status': { body: { configured: true } },
+      'POST /api/carrier-builder/messages': {
+        body: { reply: 'Read the docs.', definition: {} },
+      },
+      'POST /api/carrier-builder/check': { body: { valid: false, errors: [] } },
+    })
+    renderPage()
+
+    await userEvent.type(
+      screen.getByLabelText('Documentation'),
+      'Acme API: POST /book',
+    )
+    const input = await screen.findByLabelText(/message the carrier builder/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'onboard acme{Enter}')
+    await screen.findByText(/read the docs/i)
+
+    const body = sentBody(mock, 'POST /api/carrier-builder/messages') as {
+      packet: string
+    }
+    expect(body.packet).toBe('Acme API: POST /book')
+  })
+
+  it('attaches a text file into the packet', async () => {
+    stubFetch({
+      'GET /api/carrier-builder/status': { body: { configured: true } },
+    })
+    renderPage()
+
+    const file = new File(['Attached spec: GET /labels'], 'spec.txt', {
+      type: 'text/plain',
+    })
+    await userEvent.upload(screen.getByLabelText(/attach a document/i), file)
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Documentation')).toHaveValue(
+        'Attached spec: GET /labels',
+      ),
+    )
+  })
+
+  it('stores a credential to carrier config, never the packet', async () => {
+    const mock = stubFetch({
+      'GET /api/carrier-builder/status': { body: { configured: true } },
+      'PATCH /api/carriers/acme/config': {
+        body: { carrier: 'acme', status: 'saved', missing: [] },
+      },
+    })
+    renderPage()
+
+    await userEvent.type(screen.getByLabelText('Carrier code'), 'acme')
+    await userEvent.type(screen.getByLabelText('Name'), 'api_key')
+    await userEvent.type(screen.getByLabelText('Value'), 'sk-secret')
+    await userEvent.click(
+      screen.getByRole('button', { name: /store credential/i }),
+    )
+
+    expect(await screen.findByText(/stored: api_key/i)).toBeInTheDocument()
+    expect(sentBody(mock, 'PATCH /api/carriers/acme/config')).toEqual({
+      api_key: 'sk-secret',
+    })
+    // The secret never entered the packet.
+    expect(screen.getByLabelText('Documentation')).toHaveValue('')
+  })
+
   it('shows the engineering handoffs the turn raised or consumed', async () => {
     // The operator sees what's parked without seeing definition guts: open reads
     // "waiting on engineering", resolved shows the engineer's answer.
