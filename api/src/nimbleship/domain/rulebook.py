@@ -114,7 +114,7 @@ def get_version(session: Session, version: int) -> RulebookVersion | None:
 def description_of(row: RulebookVersion) -> str | None:
     """The version's optional rationale note (ADR 0017), stored in the data blob -
     provenance an operator reads instead of reverse-engineering the diff."""
-    value = (row.data or {}).get("description")
+    value = row.data.get("description")
     return value if isinstance(value, str) else None
 
 
