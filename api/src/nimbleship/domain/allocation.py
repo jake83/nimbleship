@@ -16,6 +16,7 @@ from nimbleship.domain.model import (
     ServiceDeclaration,
     ServiceResult,
     Shipment,
+    duplicate_service_field,
 )
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "ServiceResult",
     "Shipment",
     "allocate",
+    "duplicate_service_field",
 ]
 
 

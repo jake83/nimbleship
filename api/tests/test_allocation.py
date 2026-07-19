@@ -8,6 +8,7 @@ from nimbleship.domain.allocation import (
     ServiceDeclaration,
     Shipment,
     allocate,
+    duplicate_service_field,
 )
 
 
@@ -176,6 +177,20 @@ def test_duplicate_tie_break_orders_are_rejected() -> None:
 def test_a_rulebook_must_declare_at_least_one_service() -> None:
     with pytest.raises(ValidationError, match="at least 1 item"):
         Rulebook(version=1, services=[])
+
+
+def test_duplicate_service_field_reports_the_shared_invariant() -> None:
+    # The one definition of the uniqueness invariant, used by Rulebook and the rules
+    # builder's working copy. Unlike Rulebook it allows an empty list (None), which is
+    # what lets the builder hold an empty mid-edit copy a saved rulebook can't be.
+    a = service(code="A", tie_break_order=1)
+    b = service(code="B", tie_break_order=2)
+    assert duplicate_service_field([]) is None
+    assert duplicate_service_field([a, b]) is None
+    same_code = service(code="A", tie_break_order=3)
+    assert "duplicate service code" in str(duplicate_service_field([a, same_code]))
+    same_order = service(code="C", tie_break_order=1)
+    assert "duplicate tie-break order" in str(duplicate_service_field([a, same_order]))
 
 
 def test_old_stored_rulebooks_still_validate() -> None:

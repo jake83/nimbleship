@@ -46,6 +46,26 @@ class ServiceDeclaration(BaseModel):
     charge_bands: list[ChargeBand] | None = None
 
 
+def duplicate_service_field(services: list[ServiceDeclaration]) -> str | None:
+    """The first duplicate service code or tie-break order among `services`, or None.
+    Selection must be order-blind (a duplicate code makes the winner ambiguous) and
+    its tie-break deterministic (a duplicate order lets JSON order decide a cost tie),
+    so both must be unique. The single definition of that invariant, shared by
+    Rulebook (which raises on it) and the rules builder's working copy (which reports
+    it while still allowing an empty copy - a legal mid-edit state a saved rulebook
+    is not)."""
+    seen_codes: set[str] = set()
+    seen_orders: set[int] = set()
+    for service in services:
+        if service.code in seen_codes:
+            return f"duplicate service code: {service.code}"
+        if service.tie_break_order in seen_orders:
+            return f"duplicate tie-break order: {service.tie_break_order}"
+        seen_codes.add(service.code)
+        seen_orders.add(service.tie_break_order)
+    return None
+
+
 class Rulebook(BaseModel):
     version: int
     # Non-empty: a live rulebook with zero services would silently reject
@@ -54,21 +74,9 @@ class Rulebook(BaseModel):
 
     @model_validator(mode="after")
     def _codes_and_tie_breaks_are_unique(self) -> "Rulebook":
-        """Selection must be order-blind: same rulebook version, same
-        shipment, same answer, always. Duplicate codes would make winner
-        lookup ambiguous; duplicate tie-break orders would let JSON order
-        decide a cost tie."""
-        seen_codes: set[str] = set()
-        seen_orders: set[int] = set()
-        for service in self.services:
-            if service.code in seen_codes:
-                raise ValueError(f"duplicate service code: {service.code}")
-            if service.tie_break_order in seen_orders:
-                raise ValueError(
-                    f"duplicate tie-break order: {service.tie_break_order}"
-                )
-            seen_codes.add(service.code)
-            seen_orders.add(service.tie_break_order)
+        problem = duplicate_service_field(self.services)
+        if problem is not None:
+            raise ValueError(problem)
         return self
 
 

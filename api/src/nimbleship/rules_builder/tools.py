@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from nimbleship.domain.allocation import Rulebook, ServiceDeclaration
+from nimbleship.domain.allocation import (
+    Rulebook,
+    ServiceDeclaration,
+    duplicate_service_field,
+)
 from nimbleship.domain.dry_run import dry_run_rulebook
 
 _DRY_RUN_SAMPLE = 10
@@ -74,19 +78,10 @@ def _unsettable_fields(fields: dict[str, object]) -> str | None:
 
 
 def working_copy_error(services: list[ServiceDeclaration]) -> str | None:
-    """The reason `services` can't be a working copy (duplicate code or tie-break),
-    or None - the same invariant Rulebook enforces, minus its min-length (an empty
-    copy is a legal mid-edit state, a saved rulebook is not)."""
-    seen_codes: set[str] = set()
-    seen_orders: set[int] = set()
-    for service in services:
-        if service.code in seen_codes:
-            return f"duplicate service code: {service.code}"
-        if service.tie_break_order in seen_orders:
-            return f"duplicate tie-break order: {service.tie_break_order}"
-        seen_codes.add(service.code)
-        seen_orders.add(service.tie_break_order)
-    return None
+    """The reason `services` can't be a working copy, or None: the same cross-service
+    invariant Rulebook enforces (unique code and tie-break), minus its min-length -
+    an empty copy is a legal mid-edit state, a saved rulebook is not."""
+    return duplicate_service_field(services)
 
 
 def add_service(state: WorkingCopy, tool_input: dict[str, object]) -> dict[str, object]:
