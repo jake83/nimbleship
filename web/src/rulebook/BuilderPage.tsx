@@ -31,9 +31,10 @@ import {
 } from '@/rulebook/builder-api'
 import type { ServiceDeclaration } from '@/rulebook/types'
 
-/** The optional constraint-ish fields the AI can set, summarised so an operator sees
- * a restriction (a proposition, a group, an area, a size limit) it added before
- * saving - the flat columns alone would hide it. */
+/** Summarises the AI's optional restrictions (propositions, groups, areas, size
+ * limits) so one is visible before saving instead of hidden behind the flat columns.
+ * areas_served is null when unrestricted (anywhere) and [] when restricted to no area
+ * at all - the most severe value - so [] must read as such, not as a blank label. */
 function restrictions(service: ServiceDeclaration): string {
   const parts: string[] = []
   if (service.propositions.length > 0)
@@ -41,7 +42,11 @@ function restrictions(service: ServiceDeclaration): string {
   if (service.service_groups.length > 0)
     parts.push(`groups: ${service.service_groups.join(', ')}`)
   if (service.areas_served !== null)
-    parts.push(`areas served: ${service.areas_served.join(', ')}`)
+    parts.push(
+      service.areas_served.length === 0
+        ? 'areas served: none - blocked everywhere'
+        : `areas served: ${service.areas_served.join(', ')}`,
+    )
   if (service.areas_blocked.length > 0)
     parts.push(`areas blocked: ${service.areas_blocked.join(', ')}`)
   if (service.max_dimension_cm !== null)

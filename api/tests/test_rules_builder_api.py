@@ -232,6 +232,13 @@ def test_dry_run_rejects_an_invalid_working_copy(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_dry_run_rejects_an_empty_working_copy(client: TestClient) -> None:
+    # Nothing to allocate against: Rulebook's min_length makes it a 422, not a 500 -
+    # the case the docstring calls out.
+    response = client.post("/api/rulebook/builder/dry-run", json={"services": []})
+    assert response.status_code == 422
+
+
 def test_dry_run_over_the_cap_is_rejected(client: TestClient) -> None:
     too_many = [{**_DROPOUT, "code": f"S{i}", "tie_break_order": i} for i in range(501)]
     response = client.post("/api/rulebook/builder/dry-run", json={"services": too_many})

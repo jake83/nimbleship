@@ -51,6 +51,21 @@ describe('BuilderPage', () => {
     expect(screen.getByText(/propositions: SIGNATURE_REQUIRED/i)).toBeInTheDocument()
   })
 
+  it('reads an empty areas-served list as blocked everywhere, not blank', async () => {
+    // areas_served null = anywhere, [] = nowhere (the most severe value). [] must
+    // read legibly, not as a blank "areas served: " that looks like a glitch.
+    const blocked = service({ code: 'DROPOUT-STD', areas_served: [] })
+    stubFetch({
+      'GET /api/rulebook/builder/status': { body: { configured: true } },
+      'GET /api/rulebook/active': { body: { version: 1, services: [blocked] } },
+    })
+    renderPage()
+
+    expect(
+      await screen.findByText(/areas served: none - blocked everywhere/i),
+    ).toBeInTheDocument()
+  })
+
   it('previews the working copy impact over recent orders', async () => {
     stubFetch({
       'GET /api/rulebook/builder/status': { body: { configured: true } },

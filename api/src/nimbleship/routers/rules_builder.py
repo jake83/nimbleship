@@ -108,10 +108,9 @@ def builder_messages(
 def builder_dry_run(
     request: BuilderDryRunRequest, session: SessionDep
 ) -> BuilderDryRunOut:
-    """Replay the working copy over historical orders and report what would reroute,
-    so the operator previews impact before saving a draft (ADR 0017). Pure allocation,
-    no model - so it needs no API key. An invalid working copy (duplicate code or
-    tie-break, or empty) is a bad request, not a server error."""
+    """Replay the working copy over historical orders as a pre-save preview (ADR
+    0017); pure allocation, no model needed. An invalid copy (duplicate code or
+    tie-break, or empty) is a 422, not a 500."""
     try:
         rulebook = Rulebook(version=0, services=request.services)
     except ValidationError as error:

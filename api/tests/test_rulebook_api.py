@@ -269,6 +269,26 @@ def test_overlong_author_is_rejected_not_a_server_error(client: TestClient) -> N
     assert response.status_code == 422
 
 
+def test_a_draft_over_the_services_cap_is_rejected(client: TestClient) -> None:
+    base: dict[str, object] = {
+        "code": "S",
+        "carrier": "c",
+        "name": "S",
+        "weight_min_kg": "0",
+        "weight_max_kg": "999",
+        "countries": ["GB"],
+        "cost": "1.00",
+        "tie_break_order": 1,
+    }
+    too_many = [{**base, "code": f"S{i}", "tie_break_order": i} for i in range(501)]
+
+    response = client.post(
+        "/api/rulebook/drafts", json={"author": "j", "services": too_many}
+    )
+
+    assert response.status_code == 422
+
+
 def test_an_empty_draft_is_rejected(client: TestClient) -> None:
     response = client.post(
         "/api/rulebook/drafts", json={"author": "ops", "services": []}
