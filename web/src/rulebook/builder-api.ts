@@ -97,3 +97,15 @@ export function dryRunWorkingCopy(
     body: JSON.stringify({ services }),
   })
 }
+
+/** A suggested one-line description of how the working copy changes the live rulebook,
+ * or null when nothing changed. The operator edits it before saving. Needs the model. */
+export function suggestRationale(
+  services: ServiceDeclaration[],
+): Promise<{ rationale: string | null }> {
+  return request('/api/rulebook/builder/rationale', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ services }),
+  })
+}

@@ -4,6 +4,13 @@ copy against historical orders. It never publishes - the operator commits the co
 as a draft and publishes it through the existing rulebook rails."""
 
 from nimbleship.rules_builder.builder import BuildResult, InvalidWorkingCopy, build
+from nimbleship.rules_builder.rationale import suggest_rationale
 from nimbleship.rules_builder.tools import WorkingCopy
 
-__all__ = ["BuildResult", "InvalidWorkingCopy", "WorkingCopy", "build"]
+__all__ = [
+    "BuildResult",
+    "InvalidWorkingCopy",
+    "WorkingCopy",
+    "build",
+    "suggest_rationale",
+]

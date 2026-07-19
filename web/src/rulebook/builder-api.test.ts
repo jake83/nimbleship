@@ -4,6 +4,7 @@ import {
   dryRunWorkingCopy,
   fetchBuilderStatus,
   sendBuilderMessages,
+  suggestRationale,
 } from './builder-api'
 
 afterEach(() => {
@@ -43,6 +44,22 @@ describe('rules builder api', () => {
 
     expect(outcome).toEqual({ total: 2, changed: 1, results: [] })
     expect(sentBody(mock, 'POST /api/rulebook/builder/dry-run')).toEqual({
+      services,
+    })
+  })
+
+  it('posts the working copy for a rationale suggestion', async () => {
+    const mock = stubFetch({
+      'POST /api/rulebook/builder/rationale': {
+        body: { rationale: 'Added a cheaper option.' },
+      },
+    })
+    const services = [service()]
+
+    const result = await suggestRationale(services)
+
+    expect(result).toEqual({ rationale: 'Added a cheaper option.' })
+    expect(sentBody(mock, 'POST /api/rulebook/builder/rationale')).toEqual({
       services,
     })
   })

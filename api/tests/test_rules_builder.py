@@ -11,7 +11,12 @@ from fastapi.testclient import TestClient
 
 from nimbleship.assistant import LlmReply, ToolUse
 from nimbleship.domain.allocation import ServiceDeclaration
-from nimbleship.rules_builder import InvalidWorkingCopy, WorkingCopy, build
+from nimbleship.rules_builder import (
+    InvalidWorkingCopy,
+    WorkingCopy,
+    build,
+    suggest_rationale,
+)
 from nimbleship.rules_builder.tools import (
     _SERVICE_PROPERTIES,
     add_service,
@@ -249,6 +254,87 @@ class _FakeLlm:
         tools: Sequence[dict[str, object]],
     ) -> LlmReply:
         return self._replies.pop(0)
+
+
+class _CapturingLlm:
+    """Records the diff text the rationale suggester feeds it, so a test can pin that
+    the one-liner is grounded in the real change, not guessed."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.seen: list[list[Message]] = []
+
+    def reply(
+        self,
+        *,
+        system: str,
+        messages: list[Message],
+        tools: Sequence[dict[str, object]],
+    ) -> LlmReply:
+        self.seen.append(messages)
+        return LlmReply(stop_reason="end_turn", text=self.text, tool_uses=())
+
+
+def test_suggest_rationale_grounds_a_one_liner_in_the_computed_diff() -> None:
+    active = [ServiceDeclaration.model_validate(_DROPOUT)]
+    added = ServiceDeclaration.model_validate(
+        {**_DROPOUT, "code": "FR-NEXT", "tie_break_order": 2, "countries": ["FR"]}
+    )
+    llm = _CapturingLlm("Added FR-NEXT for France.")
+
+    result = suggest_rationale(active, [*active, added], llm=llm)
+
+    assert result == "Added FR-NEXT for France."
+    # The model was handed the actual added service, not left to guess.
+    assert "FR-NEXT" in str(llm.seen[0])
+
+
+def test_suggest_rationale_is_none_and_calls_nothing_when_unchanged() -> None:
+    # An unchanged copy has nothing to describe - and must not spend a model call
+    # (the fake has no replies, so a call would raise).
+    active = [ServiceDeclaration.model_validate(_DROPOUT)]
+    assert suggest_rationale(active, list(active), llm=_FakeLlm([])) is None
+
+
+def test_suggest_rationale_ignores_a_formatting_only_decimal_restatement() -> None:
+    # A real edit (name) bundled with a Decimal restated in a different form (cost
+    # 4.50 -> 4.5, numerically equal) must not report cost as changed - that would put
+    # a false edit in the durable rationale.
+    active = [ServiceDeclaration.model_validate({**_DROPOUT, "cost": "4.50"})]
+    edited = ServiceDeclaration.model_validate(
+        {**_DROPOUT, "name": "Drop Out Plus", "cost": "4.5"}
+    )
+    llm = _CapturingLlm("Renamed it.")
+
+    suggest_rationale(active, [edited], llm=llm)
+
+    diff = str(llm.seen[0])
+    assert "name" in diff
+    assert "cost" not in diff
+
+
+def test_suggest_rationale_caps_a_verbose_reply_to_the_description_limit() -> None:
+    # The suggestion's only consumer is the 280-char draft description; a long reply
+    # is trimmed to fit rather than pre-filling a value that only fails at save.
+    active = [ServiceDeclaration.model_validate(_DROPOUT)]
+    added = ServiceDeclaration.model_validate(
+        {**_DROPOUT, "code": "FR-NEXT", "tie_break_order": 2}
+    )
+    llm = _FakeLlm([LlmReply(stop_reason="end_turn", text="word " * 100, tool_uses=())])
+
+    result = suggest_rationale(active, [*active, added], llm=llm)
+
+    assert result is not None
+    assert len(result) <= 280
+
+
+def test_suggest_rationale_rejects_an_invalid_working_copy() -> None:
+    # An invalid draft would collapse in the code-keyed diff (describing a copy never
+    # sent), so it is rejected like the edit and dry-run paths - before any model call.
+    active = [ServiceDeclaration.model_validate(_DROPOUT)]
+    clash = ServiceDeclaration.model_validate({**_DROPOUT, "code": "OTHER"})
+    with pytest.raises(InvalidWorkingCopy, match="duplicate tie-break order"):
+        suggest_rationale(active, [active[0], clash], llm=_FakeLlm([]))
 
 
 def test_build_applies_an_edit_and_returns_the_working_copy(app: FastAPI) -> None:
