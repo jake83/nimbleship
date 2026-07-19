@@ -211,6 +211,10 @@ def test_raise_blocker_enforces_its_invariants_at_the_domain(app: FastAPI) -> No
             raise_blocker(session, "acme", "needs_plugin", "t", "d")
         with pytest.raises(ValueError, match="carrier must be"):
             raise_blocker(session, "c" * 65, "needs_decision", "t", "d")
+        with pytest.raises(ValueError, match="must not be blank"):
+            raise_blocker(session, "acme", "needs_decision", "  ", "d")
+        with pytest.raises(ValueError, match="must not be blank"):
+            raise_blocker(session, "acme", "needs_decision", "t", "")
         with pytest.raises(ValueError, match="title must be"):
             raise_blocker(session, "acme", "needs_decision", "x" * 256, "d")
         with pytest.raises(ValueError, match="plugin_name must be"):

@@ -16,8 +16,10 @@ import { cn } from '@/lib/utils'
 import {
   checkDefinition,
   createDefinitionDraft,
+  fetchBlockers,
   fetchBuilderStatus,
   sendBuilderMessages,
+  type Blocker,
   type BuilderMessage,
   type CheckOutcome,
   type WorkingDefinition,
@@ -83,6 +85,7 @@ export function CarrierBuilderPage() {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
+  const [blockers, setBlockers] = useState<Blocker[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -115,6 +118,15 @@ export function CarrierBuilderPage() {
         setCheckOutcome(await checkDefinition(turn.definition))
       } catch {
         setCheckOutcome(null) // non-fatal: the board just omits the signal
+      }
+      // The turn may have raised or consumed a blocker; refresh what's parked.
+      const turnCarrier = asString(turn.definition.carrier)
+      if (turnCarrier !== null) {
+        try {
+          setBlockers(await fetchBlockers(turnCarrier))
+        } catch {
+          // Non-fatal: the panel just goes stale until the next turn.
+        }
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
@@ -256,6 +268,37 @@ export function CarrierBuilderPage() {
               <p className="text-sm font-medium">
                 The definition is complete and ready to save.
               </p>
+            )}
+
+            {blockers.length > 0 && (
+              <div className="flex flex-col gap-2 border-t pt-4 text-sm">
+                <p className="font-medium">Engineering handoffs</p>
+                <ul className="flex flex-col gap-2">
+                  {blockers.map((blocker) => (
+                    <li key={blocker.id} className="flex items-start gap-2">
+                      <Badge
+                        variant={
+                          blocker.status === 'open' ? 'destructive' : 'default'
+                        }
+                      >
+                        {blocker.status === 'open'
+                          ? 'waiting on engineering'
+                          : 'answered'}
+                      </Badge>
+                      <span>
+                        {blocker.title}
+                        {blocker.status === 'resolved' &&
+                          blocker.resolution !== null && (
+                            <span className="text-muted-foreground">
+                              {' '}
+                              - {blocker.resolution}
+                            </span>
+                          )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
 
             <div className="mt-auto flex flex-col gap-3 border-t pt-4">

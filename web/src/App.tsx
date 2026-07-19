@@ -12,6 +12,7 @@ import { fetchAssistantStatus } from '@/assistant/api'
 import { AssistantPage } from '@/assistant/AssistantPage'
 import { ChatInput } from '@/assistant/ChatInput'
 import { CarrierBuilderPage } from '@/carrier-builder/CarrierBuilderPage'
+import { EngineerPage } from '@/carrier-builder/EngineerPage'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { BuilderPage } from '@/rulebook/BuilderPage'
@@ -41,6 +42,9 @@ function Layout() {
           </NavLink>
           <NavLink to="/carriers/builder" className={navLinkClass}>
             Carrier builder
+          </NavLink>
+          <NavLink to="/carriers/handoffs" className={navLinkClass}>
+            Handoffs
           </NavLink>
         </nav>
       </header>
@@ -116,6 +120,7 @@ function App() {
         <Route index element={<Home />} />
         <Route path="/assistant" element={<AssistantPage />} />
         <Route path="/carriers/builder" element={<CarrierBuilderPage />} />
+        <Route path="/carriers/handoffs" element={<EngineerPage />} />
         <Route path="/rulebook" element={<VersionsPage />} />
         <Route path="/rulebook/builder" element={<BuilderPage />} />
         <Route path="/rulebook/versions/:version" element={<VersionPage />} />

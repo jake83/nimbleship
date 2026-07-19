@@ -22,6 +22,20 @@ export interface CheckOutcome {
   errors: string[]
 }
 
+/** A Handoff blocker (ADR 0018): a technical gap parked for the engineer. */
+export interface Blocker {
+  id: number
+  carrier: string
+  kind: 'needs_plugin' | 'needs_decision'
+  title: string
+  detail: string
+  plugin_name: string | null
+  status: 'open' | 'resolved'
+  resolution: string | null
+  created_at: string
+  resolved_at: string | null
+}
+
 /** An API refusal with the server's explanation (FastAPI `detail`). */
 export class BuilderError extends Error {
   readonly status: number
@@ -108,4 +122,21 @@ export function createDefinitionDraft(
     definition,
     author,
   })
+}
+
+/** A carrier's Handoff blockers, open and resolved - the engineer's queue and the
+ * onboarding's audit trail. No model, no key needed. */
+export function fetchBlockers(carrier: string): Promise<Blocker[]> {
+  return request(
+    `/api/carrier-builder/blockers?carrier=${encodeURIComponent(carrier)}`,
+  )
+}
+
+/** Record the engineer's answer and close a blocker. A second resolve is refused
+ * (409) rather than silently overwriting the recorded answer. */
+export function resolveBlocker(
+  blockerId: number,
+  resolution: string,
+): Promise<Blocker> {
+  return post(`/api/carrier-builder/blockers/${blockerId}/resolve`, { resolution })
 }

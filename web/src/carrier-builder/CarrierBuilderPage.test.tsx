@@ -145,6 +145,58 @@ describe('CarrierBuilderPage', () => {
     expect(screen.getByRole('button', { name: /save as draft/i })).toBeDisabled()
   })
 
+  it('shows the engineering handoffs the turn raised or consumed', async () => {
+    // The operator sees what's parked without seeing definition guts: open reads
+    // "waiting on engineering", resolved shows the engineer's answer.
+    stubFetch({
+      'GET /api/carrier-builder/status': { body: { configured: true } },
+      'POST /api/carrier-builder/messages': {
+        body: { reply: 'Parked the signing.', definition: DRAFTED },
+      },
+      'POST /api/carrier-builder/check': { body: { valid: true, errors: [] } },
+      'GET /api/carrier-builder/blockers?carrier=acme': {
+        body: [
+          {
+            id: 1,
+            carrier: 'acme',
+            kind: 'needs_plugin',
+            title: 'HMAC signing',
+            detail: 'No plugin.',
+            plugin_name: 'acme_hmac',
+            status: 'open',
+            resolution: null,
+            created_at: '2026-07-19T10:00:00Z',
+            resolved_at: null,
+          },
+          {
+            id: 2,
+            carrier: 'acme',
+            kind: 'needs_decision',
+            title: 'Which endpoint?',
+            detail: 'Two listed.',
+            plugin_name: null,
+            status: 'resolved',
+            resolution: 'Use live.',
+            created_at: '2026-07-19T09:00:00Z',
+            resolved_at: '2026-07-19T11:00:00Z',
+          },
+        ],
+      },
+    })
+    renderPage()
+
+    const input = await screen.findByLabelText(/message the carrier builder/i)
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'onboard acme{Enter}')
+    await screen.findByText(/parked the signing/i)
+
+    expect(await screen.findByText(/engineering handoffs/i)).toBeInTheDocument()
+    expect(screen.getByText('waiting on engineering')).toBeInTheDocument()
+    expect(screen.getByText('HMAC signing')).toBeInTheDocument()
+    expect(screen.getByText('answered')).toBeInTheDocument()
+    expect(screen.getByText(/use live/i)).toBeInTheDocument()
+  })
+
   it('disables save while a turn is in flight', async () => {
     // Saving mid-turn would persist the pre-turn definition while confirming
     // success - the copy on screen is about to be superseded.
