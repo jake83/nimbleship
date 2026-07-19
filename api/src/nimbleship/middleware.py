@@ -1,12 +1,8 @@
-"""Request-body size limiting for the whole app. Per-field caps (services lists, the
-onboarding packet) bound shapes, not bytes - a deeply nested JSON blob passes them all
-while costing full parse time, so the byte ceiling lives here, once, ahead of parsing.
-
-A declared Content-Length over the cap is refused with a clean 413 before any body is
-read (uvicorn's h11 layer rejects a body exceeding its declaration, so the declaration
-is trustworthy). A body without a declaration (chunked) is counted as it streams and
-cut off at the cap - that surfaces as an aborted request rather than a tidy 413, which
-is acceptable for the only senders that hit it (no browser or httpx JSON call does)."""
+"""App-wide request-body byte ceiling: per-field caps bound shapes, not bytes, so an
+oversized payload is refused here, once, before parsing - always as a clean 413. A
+declared Content-Length over the cap is refused before any body is read; an undeclared
+(chunked) body is buffered up to the cap ahead of the app, so the cap tripping cannot
+reach the framework's body-parsing layer (which would misreport it as a 400)."""
 
 from collections.abc import Awaitable, Callable, MutableMapping
 
@@ -16,13 +12,10 @@ Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 AsgiApp = Callable[[Scope, Receive, Send], Awaitable[None]]
 
-# Generous headroom over the largest legitimate payload (the ~200k-char onboarding
-# packet plus a working definition, far under 1 MB as JSON).
-MAX_BODY_BYTES = 2 * 1024 * 1024
-
-
-class BodyTooLarge(RuntimeError):
-    """An undeclared (chunked) body exceeded the cap mid-stream."""
+# A backstop strictly above every deliberate per-edge ceiling - the legacy WMS edge
+# accepts consignment batches up to its own 5 MB cap (legacy/router.py), which this
+# must not silently undercut; a relationship test pins that ordering.
+MAX_BODY_BYTES = 6 * 1024 * 1024
 
 
 class BodySizeLimitMiddleware:
@@ -35,23 +28,56 @@ class BodySizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
         declared = self._content_length(scope)
-        if declared is not None and declared > self.max_bytes:
-            await _too_large(send)
+        if declared is not None:
+            if declared > self.max_bytes:
+                await _too_large(send)
+                return
+            # Within the declared cap: pass through untouched (uvicorn's h11 layer
+            # rejects a body exceeding its declaration, so no counting is needed).
+            await self.app(scope, receive, send)
             return
+        await self._buffered(scope, receive, send)
 
+    async def _buffered(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """No declared length (chunked): buffer up to the cap before the app runs, so
+        an over-cap body is a clean 413 and an under-cap one replays unchanged. Every
+        route here reads its body whole anyway, so buffering adds no new cost."""
+        chunks: list[bytes] = []
         received = 0
-
-        async def counting_receive() -> Message:
-            nonlocal received
+        interrupted: Message | None = None
+        while True:
             message = await receive()
-            if message.get("type") == "http.request":
-                body = message.get("body", b"")
-                received += len(body) if isinstance(body, bytes) else 0
+            if message.get("type") != "http.request":
+                # A disconnect ends the body incomplete: replay only the disconnect,
+                # never the truncated chunks dressed up as a whole body.
+                interrupted = message
+                break
+            body = message.get("body", b"")
+            if isinstance(body, bytes):
+                received += len(body)
                 if received > self.max_bytes:
-                    raise BodyTooLarge(f"request body exceeded {self.max_bytes} bytes")
-            return message
+                    await _too_large(send)
+                    return
+                chunks.append(body)
+            if not message.get("more_body"):
+                break
 
-        await self.app(scope, counting_receive, send)
+        replayed = False
+
+        async def replay_receive() -> Message:
+            nonlocal replayed
+            if interrupted is not None:
+                return interrupted
+            if not replayed:
+                replayed = True
+                return {
+                    "type": "http.request",
+                    "body": b"".join(chunks),
+                    "more_body": False,
+                }
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
 
     def _content_length(self, scope: Scope) -> int | None:
         headers = scope.get("headers")
