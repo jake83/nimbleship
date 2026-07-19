@@ -1,12 +1,19 @@
-"""The app-wide request-body byte ceiling: per-field caps bound shapes, not bytes, so
-an oversized blob is refused here, once, before any parsing - always as a clean 413."""
+"""Tests for the app-wide body-byte cap (nimbleship.middleware)."""
 
+import asyncio
 from collections.abc import Iterator
 
 from fastapi.testclient import TestClient
 
 from nimbleship.legacy.router import _MAX_BODY_BYTES as LEGACY_MAX_BODY_BYTES
-from nimbleship.middleware import MAX_BODY_BYTES
+from nimbleship.middleware import (
+    MAX_BODY_BYTES,
+    BodySizeLimitMiddleware,
+    Message,
+    Receive,
+    Scope,
+    Send,
+)
 
 
 def test_the_global_cap_sits_above_every_per_edge_ceiling() -> None:
@@ -26,12 +33,51 @@ def test_an_over_declared_body_is_a_clean_413(client: TestClient) -> None:
     assert "too large" in response.text
 
 
+def test_a_lying_declaration_cannot_smuggle_an_over_cap_body() -> None:
+    # Content-Length is sender-controlled: a real server rejects a mismatch at its
+    # framing layer, but the cap must hold without trusting that. The lie is only
+    # expressible at the ASGI layer, so forge it there.
+    reached: list[bytes] = []
+
+    async def recording_app(scope: Scope, receive: Receive, send: Send) -> None:
+        while True:
+            message = await receive()
+            body = message.get("body", b"")
+            reached.append(body if isinstance(body, bytes) else b"")
+            if not message.get("more_body"):
+                break
+
+    guarded = BodySizeLimitMiddleware(recording_app, max_bytes=1024)
+    scope: Scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [(b"content-length", b"10")],
+    }
+    body_iter = iter(
+        [
+            {"type": "http.request", "body": b"x" * 2048, "more_body": False},
+        ]
+    )
+
+    async def receive() -> Message:
+        return dict(next(body_iter))
+
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    asyncio.run(guarded(scope, receive, send))
+    assert not reached  # the over-cap body never reaches the app
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert starts and starts[0]["status"] == 413
+
+
 def test_an_undeclared_chunked_body_over_the_cap_is_a_clean_413(
     client: TestClient,
 ) -> None:
-    # A generator body sends chunked with no Content-Length; the cap must surface as
-    # the same 413 through the real app - not the framework's misleading body-parse
-    # 400 - which is why the middleware buffers ahead of the app.
+    # A generator body sends chunked with no Content-Length, so there is no
+    # declaration to pre-check - only the buffered count can trip the cap.
     def chunks() -> Iterator[bytes]:
         sent = 0
         while sent <= MAX_BODY_BYTES:
@@ -66,16 +112,8 @@ def test_an_undeclared_body_under_the_cap_replays_to_the_app(
 
 
 def test_a_large_but_legal_body_passes(client: TestClient) -> None:
-    # Between the old per-field intuitions and the cap: ~3 MB of packet text must go
-    # through untouched (the cap is a backstop, not a squeeze on real payloads).
+    # The cap is a backstop, not a squeeze on real payloads: ~3 MB must go through.
     big_packet = "x" * (3 * 1024 * 1024)
-    response = client.post(
-        "/api/carrier-builder/check",
-        json={"definition": {"carrier": "acme", "name": big_packet[:200]}},
-        headers={"X-Padding": "unused"},
-    )
-    assert response.status_code == 200
-    # And the raw size itself is the point - send the whole blob as a body.
     raw = ('{"definition": {"carrier": "' + big_packet + '"}}').encode()
     assert len(raw) > 2 * 1024 * 1024
     big = client.post(

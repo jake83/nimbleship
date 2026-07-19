@@ -1,8 +1,9 @@
 """App-wide request-body byte ceiling: per-field caps bound shapes, not bytes, so an
 oversized payload is refused here, once, before parsing - always as a clean 413. A
-declared Content-Length over the cap is refused before any body is read; an undeclared
-(chunked) body is buffered up to the cap ahead of the app, so the cap tripping cannot
-reach the framework's body-parsing layer (which would misreport it as a 400)."""
+declared Content-Length over the cap is refused before any body is read; every other
+body is buffered up to the cap ahead of the app, so the cap holds without trusting
+the declaration and its tripping cannot reach the framework's body-parsing layer
+(which would misreport it as a 400)."""
 
 from collections.abc import Awaitable, Callable, MutableMapping
 
@@ -12,9 +13,8 @@ Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 AsgiApp = Callable[[Scope, Receive, Send], Awaitable[None]]
 
-# A backstop strictly above every deliberate per-edge ceiling - the legacy WMS edge
-# accepts consignment batches up to its own 5 MB cap (legacy/router.py), which this
-# must not silently undercut; a relationship test pins that ordering.
+# Strictly above the legacy WMS edge's own 5 MB cap (legacy/router.py) - a
+# relationship test pins the ordering.
 MAX_BODY_BYTES = 6 * 1024 * 1024
 
 
@@ -28,20 +28,14 @@ class BodySizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
         declared = self._content_length(scope)
-        if declared is not None:
-            if declared > self.max_bytes:
-                await _too_large(send)
-                return
-            # Within the declared cap: pass through untouched (uvicorn's h11 layer
-            # rejects a body exceeding its declaration, so no counting is needed).
-            await self.app(scope, receive, send)
+        if declared is not None and declared > self.max_bytes:
+            await _too_large(send)
             return
         await self._buffered(scope, receive, send)
 
     async def _buffered(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """No declared length (chunked): buffer up to the cap before the app runs, so
-        an over-cap body is a clean 413 and an under-cap one replays unchanged. Every
-        route here reads its body whole anyway, so buffering adds no new cost."""
+        """Counts every body for real - a declared length is never trusted. Every
+        route reads its body whole anyway, so buffering adds no new cost."""
         chunks: list[bytes] = []
         received = 0
         interrupted: Message | None = None
