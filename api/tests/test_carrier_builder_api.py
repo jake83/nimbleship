@@ -257,3 +257,39 @@ def test_messages_502_when_the_model_is_unavailable(
         json={"messages": [{"role": "user", "content": "onboard acme"}]},
     )
     assert response.status_code == 502
+
+
+def test_messages_round_trips_the_not_applicable_marks(
+    app: FastAPI, client: TestClient
+) -> None:
+    # The marks ride the request like the definition; junk keys in the seed are
+    # normalised away rather than echoed back.
+    _use(
+        app,
+        [
+            LlmReply(
+                stop_reason="tool_use",
+                text="",
+                tool_uses=(
+                    ToolUse(
+                        "t1",
+                        "mark_not_applicable",
+                        {"capability": "label", "reason": "paperwork only"},
+                    ),
+                ),
+            ),
+            LlmReply(stop_reason="end_turn", text="Pruned.", tool_uses=()),
+        ],
+    )
+    response = client.post(
+        "/api/carrier-builder/messages",
+        json={
+            "messages": [{"role": "user", "content": "no labels"}],
+            "not_applicable": {"manifest": "no end-of-day", "webhooks": "junk"},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["not_applicable"] == {
+        "manifest": "no end-of-day",
+        "label": "paperwork only",
+    }

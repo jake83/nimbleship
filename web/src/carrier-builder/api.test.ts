@@ -24,7 +24,9 @@ describe('carrier builder api', () => {
     })
     const messages = [{ role: 'user' as const, content: 'onboard acme' }]
 
-    const result = await sendBuilderMessages(messages, {}, 'Acme API docs.')
+    const result = await sendBuilderMessages(messages, {}, 'Acme API docs.', {
+      manifest: 'no end-of-day process',
+    })
 
     expect(result.reply).toBe('Set the identity.')
     expect(result.definition).toEqual(edited)
@@ -32,6 +34,7 @@ describe('carrier builder api', () => {
       messages,
       definition: {},
       packet: 'Acme API docs.',
+      not_applicable: { manifest: 'no end-of-day process' },
     })
   })
 
@@ -126,7 +129,7 @@ describe('carrier builder api', () => {
     })
 
     await expect(
-      sendBuilderMessages([{ role: 'user', content: 'x' }], {}, ''),
+      sendBuilderMessages([{ role: 'user', content: 'x' }], {}, '', {}),
     ).rejects.toMatchObject({
       status: 503,
       message: 'the carrier builder is not configured',

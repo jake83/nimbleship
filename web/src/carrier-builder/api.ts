@@ -15,6 +15,9 @@ export interface BuilderMessage {
 export interface BuilderTurn {
   reply: string
   definition: WorkingDefinition
+  /** Board capability -> reason the builder pruned it as not offered (ADR 0018).
+   * Board state, never definition state - it rides the working copy each turn. */
+  not_applicable?: Record<string, string>
 }
 
 export interface CheckOutcome {
@@ -101,8 +104,14 @@ export function sendBuilderMessages(
   messages: BuilderMessage[],
   definition: WorkingDefinition,
   packet: string,
+  notApplicable: Record<string, string>,
 ): Promise<BuilderTurn> {
-  return post('/api/carrier-builder/messages', { messages, definition, packet })
+  return post('/api/carrier-builder/messages', {
+    messages,
+    definition,
+    packet,
+    not_applicable: notApplicable,
+  })
 }
 
 /** Store credentials for a carrier - straight to Carrier Config, never into the
