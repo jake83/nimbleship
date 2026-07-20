@@ -66,6 +66,27 @@ describe('ShippingActivity', () => {
     )
   })
 
+  it('keeps the failure chart when calls exist but no consignments do', async () => {
+    // A retrying manifest makes carrier calls on a morning with no new orders;
+    // the failure chart must not vanish behind "no shipments" (refuter, PR #139).
+    stubFetch({
+      'GET /api/dashboard/shipping-stats?range=7d': {
+        body: {
+          ...SEVEN_DAY,
+          volume: [],
+          success_failure: { success: [0, 2], failed: [0, 2] },
+        },
+      },
+    })
+    render(<ShippingActivity />)
+
+    expect(await screen.findByText(/no shipments in this period/i)).toBeInTheDocument()
+    expect(screen.getByText(/success vs failure/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/no carrier calls in this period/i),
+    ).not.toBeInTheDocument()
+  })
+
   it('reads as quiet, not broken, on a fresh install', async () => {
     stubFetch({
       'GET /api/dashboard/shipping-stats?range=7d': {
@@ -88,6 +109,7 @@ describe('ShippingActivity', () => {
     render(<ShippingActivity />)
 
     expect(await screen.findByText(/no shipments in this period/i)).toBeInTheDocument()
+    expect(screen.getByText(/no carrier calls in this period/i)).toBeInTheDocument()
     expect(screen.getAllByText('–').length).toBeGreaterThan(0) // absent rate, not 0%
   })
 })

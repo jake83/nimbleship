@@ -98,7 +98,14 @@ export function ShippingActivity() {
   }
 
   const { kpis, manifest_queue: queue } = stats
-  const empty = stats.volume.length === 0
+  // Volume (consignments) and outcomes (carrier calls) are independent series:
+  // a retrying manifest makes calls on a morning with no new orders, so each
+  // chart goes quiet on its own - one shared flag would claim "no shipments"
+  // right under a live failure badge.
+  const noVolume = stats.volume.length === 0
+  const noCalls =
+    stats.success_failure.success.every((count) => count === 0) &&
+    stats.success_failure.failed.every((count) => count === 0)
   const volumeConfig: ChartConfig = Object.fromEntries(
     stats.volume.map((series, index) => [
       series.carrier,
@@ -168,18 +175,18 @@ export function ShippingActivity() {
         )}
       </div>
 
-      {empty ? (
-        <p className="text-sm text-muted-foreground">
-          No shipments in this period.
-        </p>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <CardTitle>Volume by carrier</CardTitle>
-              <CardDescription>Consignments created</CardDescription>
-            </CardHeader>
-            <CardContent>
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Volume by carrier</CardTitle>
+            <CardDescription>Consignments created</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {noVolume ? (
+              <p className="text-sm text-muted-foreground">
+                No shipments in this period.
+              </p>
+            ) : (
               <ChartContainer config={volumeConfig} className="h-48 w-full">
                 <BarChart data={volumeRows}>
                   <CartesianGrid vertical={false} />
@@ -195,14 +202,20 @@ export function ShippingActivity() {
                   ))}
                 </BarChart>
               </ChartContainer>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Success vs failure</CardTitle>
-              <CardDescription>Carrier calls</CardDescription>
-            </CardHeader>
-            <CardContent>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Success vs failure</CardTitle>
+            <CardDescription>Carrier calls</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {noCalls ? (
+              <p className="text-sm text-muted-foreground">
+                No carrier calls in this period.
+              </p>
+            ) : (
               <ChartContainer config={outcomeConfig} className="h-48 w-full">
                 <LineChart data={outcomeRows}>
                   <CartesianGrid vertical={false} />
@@ -225,10 +238,10 @@ export function ShippingActivity() {
                   />
                 </LineChart>
               </ChartContainer>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }
