@@ -84,7 +84,11 @@ export function CarriersPage() {
                     nativeButton={false}
                     variant="outline"
                     size="sm"
-                    render={<Link to={`/carriers/${row.carrier}/config`} />}
+                    render={
+                      <Link
+                        to={`/carriers/${encodeURIComponent(row.carrier)}/config`}
+                      />
+                    }
                   >
                     Config
                   </Button>

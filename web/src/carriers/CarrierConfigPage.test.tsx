@@ -32,6 +32,42 @@ function renderConfig(carrier: string) {
 }
 
 describe('CarriersPage', () => {
+  it('encodes the carrier code in the config link', async () => {
+    // Nothing constrains a carrier code to URL-safe characters; a raw '#'
+    // would become a fragment and dead-end the route (refuter, PR #137 round 6).
+    stubFetch({
+      'GET /api/carriers': {
+        body: [{ carrier: 'weird#name', active_version: null }],
+      },
+    })
+    render(
+      <MemoryRouter initialEntries={['/carriers']}>
+        <Routes>
+          <Route path="/carriers" element={<CarriersPage />} />
+          <Route
+            path="/carriers/:carrier/config"
+            element={<CarrierConfigPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    )
+    stubFetch({
+      'GET /api/carriers': {
+        body: [{ carrier: 'weird#name', active_version: null }],
+      },
+      'GET /api/carriers/weird%23name/config': {
+        body: { carrier: 'weird#name', config: {}, missing: [] },
+      },
+    })
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: /config/i }),
+    )
+    expect(
+      await screen.findByRole('heading', { name: /weird#name config/i }),
+    ).toBeInTheDocument()
+  })
+
   it('lists carriers with their active version and a config link', async () => {
     stubFetch({
       'GET /api/carriers': {
