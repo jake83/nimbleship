@@ -24,6 +24,16 @@ class ShippingAreaFields(BaseModel):
     country: str = Field(min_length=2, max_length=3)
     prefixes: list[str] = Field(min_length=1)
 
+    @field_validator("name")
+    @classmethod
+    def _trim_name(cls, value: str) -> str:
+        # The server owns normalisation for every field; a whitespace-only name
+        # would otherwise pass min_length and read as blank everywhere.
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("a shipping area needs a name")
+        return trimmed
+
     @field_validator("country")
     @classmethod
     def _normalise_country(cls, value: str) -> str:
@@ -104,6 +114,18 @@ def create_shipping_area(
         raise HTTPException(
             409, "a shipping area already exists with this code"
         ) from error
+    return _area_out(area)
+
+
+@router.get("/{code}")
+def get_shipping_area(code: str, session: SessionDep) -> ShippingAreaOut:
+    area = session.execute(
+        select(ShippingArea)
+        .options(selectinload(ShippingArea.prefixes))
+        .where(ShippingArea.code == code)
+    ).scalar_one_or_none()
+    if area is None:
+        raise HTTPException(404, "no shipping area with this code")
     return _area_out(area)
 
 

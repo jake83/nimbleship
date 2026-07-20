@@ -59,6 +59,10 @@ export function fetchShippingAreas(): Promise<ShippingArea[]> {
   return request('/api/shipping-areas')
 }
 
+export function fetchShippingArea(code: string): Promise<ShippingArea> {
+  return request(`/api/shipping-areas/${encodeURIComponent(code)}`)
+}
+
 export function createShippingArea(area: ShippingArea): Promise<ShippingArea> {
   return request('/api/shipping-areas', {
     method: 'POST',

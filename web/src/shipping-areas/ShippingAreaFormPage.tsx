@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   createShippingArea,
-  fetchShippingAreas,
+  fetchShippingArea,
   updateShippingArea,
 } from '@/shipping-areas/api'
 
@@ -41,16 +41,11 @@ export function ShippingAreaFormPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!editing) return
+    if (!editing || code === undefined) return
     let cancelled = false
-    fetchShippingAreas()
-      .then((areas) => {
+    fetchShippingArea(code)
+      .then((area) => {
         if (cancelled) return
-        const area = areas.find((candidate) => candidate.code === code)
-        if (area === undefined) {
-          setError(`No shipping area '${code}'.`)
-          return
-        }
         setName(area.name)
         setCountry(area.country)
         setPrefixText(area.prefixes.join(', '))

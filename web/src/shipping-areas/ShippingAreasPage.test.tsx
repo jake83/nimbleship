@@ -118,7 +118,7 @@ describe('ShippingAreasPage', () => {
 
   it('edits an existing area with its code fixed', async () => {
     const mock = stubFetch({
-      'GET /api/shipping-areas': { body: AREAS },
+      'GET /api/shipping-areas/london': { body: AREAS[1] },
       'PUT /api/shipping-areas/london': {
         body: {
           code: 'london',

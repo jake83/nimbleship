@@ -130,8 +130,7 @@ def test_a_blank_prefix_is_rejected(client: TestClient) -> None:
 
 
 def test_the_code_new_is_reserved(client: TestClient) -> None:
-    # The admin surface routes /shipping-areas/new to its create form, so an area
-    # coded "new" could never be reached for editing - refuse it at creation.
+    # "new" is reserved so the surface's create route is never shadowed.
     response = client.post("/api/shipping-areas", json={**HIGHLANDS, "code": "new"})
     assert response.status_code == 422
     assert "reserved" in response.text
@@ -141,3 +140,23 @@ def test_the_code_new_is_reserved(client: TestClient) -> None:
         ).status_code
         == 422
     )
+
+
+def test_reading_one_area_by_code(client: TestClient) -> None:
+    client.post("/api/shipping-areas", json=HIGHLANDS)
+    response = client.get("/api/shipping-areas/HIGHLANDS")
+    assert response.status_code == 200
+    assert response.json()["prefixes"] == ["IV", "KW", "PH19"]
+    assert client.get("/api/shipping-areas/nonesuch").status_code == 404
+
+
+def test_the_name_is_trimmed_like_every_other_field(client: TestClient) -> None:
+    created = client.post(
+        "/api/shipping-areas",
+        json={**HIGHLANDS, "name": "  Scottish Highlands  "},
+    )
+    assert created.json()["name"] == "Scottish Highlands"
+    blank = client.post(
+        "/api/shipping-areas", json={**HIGHLANDS, "code": "B", "name": "   "}
+    )
+    assert blank.status_code == 422
