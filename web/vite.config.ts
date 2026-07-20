@@ -15,7 +15,7 @@ export default defineConfig({
   server: {
     // Mirrors the ingress routing (infra/chart): the app calls /api same-origin.
     proxy: {
-      '/api': 'http://localhost:8001',
+      '/api': 'http://localhost:8000',
     },
   },
   test: {
