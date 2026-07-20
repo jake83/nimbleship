@@ -49,6 +49,15 @@ class ShippingAreaIn(ShippingAreaFields):
     # rulebook data (areas_served/areas_blocked) and must stay URL-safe.
     code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
+    @field_validator("code")
+    @classmethod
+    def _code_is_not_route_reserved(cls, value: str) -> str:
+        # The admin surface routes /shipping-areas/new to its create form; an
+        # area coded "new" would shadow that segment and never be editable.
+        if value.lower() == "new":
+            raise ValueError("'new' is reserved and cannot be an area code")
+        return value
+
 
 class ShippingAreaOut(BaseModel):
     code: str
