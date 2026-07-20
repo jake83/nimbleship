@@ -13,6 +13,8 @@ import { AssistantPage } from '@/assistant/AssistantPage'
 import { ChatInput } from '@/assistant/ChatInput'
 import { CarrierBuilderPage } from '@/carrier-builder/CarrierBuilderPage'
 import { EngineerPage } from '@/carrier-builder/EngineerPage'
+import { CarrierConfigPage } from '@/carriers/CarrierConfigPage'
+import { CarriersPage } from '@/carriers/CarriersPage'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { BuilderPage } from '@/rulebook/BuilderPage'
@@ -41,6 +43,9 @@ function Layout() {
           </NavLink>
           <NavLink to="/rulebook" className={navLinkClass}>
             Rulebook
+          </NavLink>
+          <NavLink to="/carriers" end className={navLinkClass}>
+            Carriers
           </NavLink>
           <NavLink to="/carriers/builder" className={navLinkClass}>
             Carrier builder
@@ -124,7 +129,9 @@ function App() {
       <Route element={<Layout />}>
         <Route index element={<Home />} />
         <Route path="/assistant" element={<AssistantPage />} />
+        <Route path="/carriers" element={<CarriersPage />} />
         <Route path="/carriers/builder" element={<CarrierBuilderPage />} />
+        <Route path="/carriers/:carrier/config" element={<CarrierConfigPage />} />
         <Route path="/carriers/handoffs" element={<EngineerPage />} />
         <Route path="/rulebook" element={<VersionsPage />} />
         <Route path="/rulebook/builder" element={<BuilderPage />} />

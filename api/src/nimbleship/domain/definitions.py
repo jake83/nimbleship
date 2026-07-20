@@ -182,6 +182,32 @@ def publish(
     return row
 
 
+def carrier_catalog(session: Session) -> list[tuple[str, int | None]]:
+    """Every known carrier - any definition version or a stored config - with its
+    active (highest published) version, None when nothing is published. Config-only
+    carriers are real: credentials may be stored before a definition exists (the
+    onboarding order)."""
+    _seed_dropout_if_fresh(session)
+    published: dict[str, int | None] = {
+        carrier: version
+        for carrier, version in session.execute(
+            select(
+                CarrierDefinitionVersion.carrier,
+                func.max(CarrierDefinitionVersion.version),
+            )
+            .where(CarrierDefinitionVersion.status == "published")
+            .group_by(CarrierDefinitionVersion.carrier)
+        )
+    }
+    for (carrier,) in session.execute(
+        select(CarrierDefinitionVersion.carrier).distinct()
+    ):
+        published.setdefault(carrier, None)
+    for (carrier,) in session.execute(select(CarrierConfig.carrier)):
+        published.setdefault(carrier, None)
+    return sorted(published.items())
+
+
 def carrier_config(session: Session, carrier: str) -> dict[str, object]:
     row = session.get(CarrierConfig, carrier)
     return row.data if row is not None else {}

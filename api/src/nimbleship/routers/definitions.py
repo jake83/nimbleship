@@ -447,6 +447,24 @@ def golden_replay(
     )
 
 
+class ConfigReadOut(BaseModel):
+    carrier: str
+    config: dict[str, object]
+    # config.* keys the active definition references but the stored config lacks.
+    missing: list[str]
+
+
+@router.get("/config")
+def get_config(carrier: str, session: SessionDep) -> ConfigReadOut:
+    """The stored config and what the active definition still lacks - the config
+    surface's read. An unknown carrier reads empty rather than 404: config may
+    precede everything else (the onboarding order)."""
+    config = carrier_config(session, carrier)
+    active = active_definition(session, carrier)
+    missing = missing_config_keys(active, config) if active is not None else []
+    return ConfigReadOut(carrier=carrier, config=config, missing=missing)
+
+
 class ConfigSaveOut(BaseModel):
     carrier: str
     status: str
