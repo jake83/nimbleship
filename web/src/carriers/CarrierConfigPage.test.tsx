@@ -170,6 +170,27 @@ describe('CarrierConfigPage', () => {
     expect(screen.getByLabelText('api_key')).toHaveAttribute('type', 'password')
   })
 
+  it('refuses a dotted New key, naming the containing key', async () => {
+    // The renderer resolves dots as nesting: a literal 'depot.code' top-level
+    // key is unreachable junk, even typed by hand (refuter, PR #137 round 4).
+    stubFetch({
+      'GET /api/carriers/acme/config': {
+        body: { carrier: 'acme', config: {}, missing: ['depot.code'] },
+      },
+    })
+    renderConfig('acme')
+    await screen.findByText(/nothing stored yet/i)
+
+    await userEvent.type(screen.getByLabelText('New key'), 'depot.code')
+    await userEvent.type(screen.getByLabelText('New value'), 'MAN1')
+    await userEvent.click(screen.getByRole('button', { name: /add/i }))
+
+    expect(
+      await screen.findByText(/nests inside 'depot'/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText('depot.code')).not.toBeInTheDocument()
+  })
+
   it('masks values until revealed', async () => {
     stubFetch({
       'GET /api/carriers/acme/config': {

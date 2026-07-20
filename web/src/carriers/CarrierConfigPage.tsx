@@ -139,6 +139,14 @@ export function CarrierConfigPage() {
       setError(`'${key}' is already listed.`)
       return
     }
+    // The renderer resolves dots as nesting, so a literal dotted top-level key
+    // is unreachable junk in every case - refuse it with the way out.
+    if (key.includes('.')) {
+      setError(
+        `'${key}' nests inside '${key.split('.')[0] ?? ''}' - add that key with a JSON value instead.`,
+      )
+      return
+    }
     setError(null)
     setSaved(false)
     // Default from the shape, but only as a default - the toggle on the row
