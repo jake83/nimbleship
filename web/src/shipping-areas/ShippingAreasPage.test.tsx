@@ -148,6 +148,20 @@ describe('ShippingAreasPage', () => {
     )
   })
 
+  it('shows the server 404 when editing an unknown code', async () => {
+    stubFetch({
+      'GET /api/shipping-areas/gone': {
+        status: 404,
+        body: { detail: 'no shipping area with this code' },
+      },
+    })
+    renderForm('/shipping-areas/gone')
+
+    expect(
+      await screen.findByText(/no shipping area with this code/i),
+    ).toBeInTheDocument()
+  })
+
   it('surfaces a server refusal on the form', async () => {
     stubFetch({
       'GET /api/shipping-areas': { body: [] },

@@ -121,8 +121,7 @@ def create_shipping_area(
     return _area_out(area)
 
 
-@router.get("/{code}")
-def get_shipping_area(code: str, session: SessionDep) -> ShippingAreaOut:
+def _get_area(session: Session, code: str) -> ShippingArea:
     area = session.execute(
         select(ShippingArea)
         .options(selectinload(ShippingArea.prefixes))
@@ -130,7 +129,12 @@ def get_shipping_area(code: str, session: SessionDep) -> ShippingAreaOut:
     ).scalar_one_or_none()
     if area is None:
         raise HTTPException(404, "no shipping area with this code")
-    return _area_out(area)
+    return area
+
+
+@router.get("/{code}")
+def get_shipping_area(code: str, session: SessionDep) -> ShippingAreaOut:
+    return _area_out(_get_area(session, code))
 
 
 @router.put("/{code}")
@@ -139,13 +143,7 @@ def update_shipping_area(
 ) -> ShippingAreaOut:
     """Replace name, country, and the full prefix list. The code is the
     area's identity (rulebook declarations reference it) and never changes."""
-    area = session.execute(
-        select(ShippingArea)
-        .options(selectinload(ShippingArea.prefixes))
-        .where(ShippingArea.code == code)
-    ).scalar_one_or_none()
-    if area is None:
-        raise HTTPException(404, "no shipping area with this code")
+    area = _get_area(session, code)
     area.name = payload.name
     area.country = payload.country
     # Flush the orphaned rows away before inserting the replacements: in one
