@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from nimbleship.db import get_session
@@ -152,16 +152,17 @@ def shipping_stats(
 
     busiest = max(week_carriers.items(), key=lambda item: item[1], default=None)
 
-    manifest_pending = 0
-    manifest_failed = 0
-    manifest_sent_today = 0
-    for status, sent_at in session.execute(select(Manifest.status, Manifest.sent_at)):
-        if status == "pending":
-            manifest_pending += 1
-        elif status == "failed":
-            manifest_failed += 1
-        elif status == "sent" and sent_at is not None and _aware(sent_at) >= today:
-            manifest_sent_today += 1
+    # Counted in SQL and bounded - the only unbounded set here is pending+failed,
+    # which the queue keeps small by design; the sent history is windowed.
+    manifest_pending = session.execute(
+        select(func.count()).where(Manifest.status == "pending")
+    ).scalar_one()
+    manifest_failed = session.execute(
+        select(func.count()).where(Manifest.status == "failed")
+    ).scalar_one()
+    manifest_sent_today = session.execute(
+        select(func.count()).where(Manifest.status == "sent", Manifest.sent_at >= today)
+    ).scalar_one()
 
     return StatsOut(
         range=stats_range,
