@@ -20,9 +20,23 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 
 class ShippingAreaFields(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    # Bounded inside the validator so the limit applies to the trimmed value -
+    # a Field constraint would run first, wrongly rejecting a padded legal name.
+    name: str
     country: str = Field(min_length=2, max_length=3)
     prefixes: list[str] = Field(min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def _trim_name(cls, value: str) -> str:
+        # The server owns normalisation for every field; an untrimmed name would
+        # otherwise read as blank (whitespace-only) or store padding.
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("a shipping area needs a name")
+        if len(trimmed) > 255:
+            raise ValueError("a shipping area name is at most 255 characters")
+        return trimmed
 
     @field_validator("country")
     @classmethod
@@ -107,12 +121,7 @@ def create_shipping_area(
     return _area_out(area)
 
 
-@router.put("/{code}")
-def update_shipping_area(
-    code: str, payload: ShippingAreaFields, session: SessionDep
-) -> ShippingAreaOut:
-    """Replace name, country, and the full prefix list. The code is the
-    area's identity (rulebook declarations reference it) and never changes."""
+def _get_area(session: Session, code: str) -> ShippingArea:
     area = session.execute(
         select(ShippingArea)
         .options(selectinload(ShippingArea.prefixes))
@@ -120,6 +129,21 @@ def update_shipping_area(
     ).scalar_one_or_none()
     if area is None:
         raise HTTPException(404, "no shipping area with this code")
+    return area
+
+
+@router.get("/{code}")
+def get_shipping_area(code: str, session: SessionDep) -> ShippingAreaOut:
+    return _area_out(_get_area(session, code))
+
+
+@router.put("/{code}")
+def update_shipping_area(
+    code: str, payload: ShippingAreaFields, session: SessionDep
+) -> ShippingAreaOut:
+    """Replace name, country, and the full prefix list. The code is the
+    area's identity (rulebook declarations reference it) and never changes."""
+    area = _get_area(session, code)
     area.name = payload.name
     area.country = payload.country
     # Flush the orphaned rows away before inserting the replacements: in one

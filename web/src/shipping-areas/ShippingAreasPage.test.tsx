@@ -118,7 +118,7 @@ describe('ShippingAreasPage', () => {
 
   it('edits an existing area with its code fixed', async () => {
     const mock = stubFetch({
-      'GET /api/shipping-areas': { body: AREAS },
+      'GET /api/shipping-areas/london': { body: AREAS[1] },
       'PUT /api/shipping-areas/london': {
         body: {
           code: 'london',
@@ -146,6 +146,20 @@ describe('ShippingAreasPage', () => {
         prefixes: ['E', 'EC', 'N'],
       }),
     )
+  })
+
+  it('shows the server 404 when editing an unknown code', async () => {
+    stubFetch({
+      'GET /api/shipping-areas/gone': {
+        status: 404,
+        body: { detail: 'no shipping area with this code' },
+      },
+    })
+    renderForm('/shipping-areas/gone')
+
+    expect(
+      await screen.findByText(/no shipping area with this code/i),
+    ).toBeInTheDocument()
   })
 
   it('surfaces a server refusal on the form', async () => {
