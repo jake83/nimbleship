@@ -20,18 +20,22 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 
 class ShippingAreaFields(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    # Bounded inside the validator so the limit applies to the trimmed value -
+    # a Field constraint would run first, wrongly rejecting a padded legal name.
+    name: str
     country: str = Field(min_length=2, max_length=3)
     prefixes: list[str] = Field(min_length=1)
 
     @field_validator("name")
     @classmethod
     def _trim_name(cls, value: str) -> str:
-        # The server owns normalisation for every field; a whitespace-only name
-        # would otherwise pass min_length and read as blank everywhere.
+        # The server owns normalisation for every field; an untrimmed name would
+        # otherwise read as blank (whitespace-only) or store padding.
         trimmed = value.strip()
         if not trimmed:
             raise ValueError("a shipping area needs a name")
+        if len(trimmed) > 255:
+            raise ValueError("a shipping area name is at most 255 characters")
         return trimmed
 
     @field_validator("country")

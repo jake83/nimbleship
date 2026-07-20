@@ -160,3 +160,22 @@ def test_the_name_is_trimmed_like_every_other_field(client: TestClient) -> None:
         "/api/shipping-areas", json={**HIGHLANDS, "code": "B", "name": "   "}
     )
     assert blank.status_code == 422
+
+
+def test_a_padded_name_at_the_length_boundary_is_trimmed_not_rejected(
+    client: TestClient,
+) -> None:
+    # The bound applies to the trimmed value; padding must not push a legal
+    # name over it (refuter, PR #138).
+    name_255 = "A" * 255
+    created = client.post(
+        "/api/shipping-areas",
+        json={**HIGHLANDS, "code": "PADDED", "name": "  " + name_255 + "  "},
+    )
+    assert created.status_code == 201
+    assert created.json()["name"] == name_255
+    over = client.post(
+        "/api/shipping-areas",
+        json={**HIGHLANDS, "code": "OVER", "name": "A" * 256},
+    )
+    assert over.status_code == 422
