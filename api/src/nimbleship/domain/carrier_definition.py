@@ -419,6 +419,19 @@ class AllocationSpec(BaseModel):
         return self
 
 
+def _validate_mapping_targets(entries: list[MappingEntry], where: str) -> None:
+    # Dry-run the targets so structural conflicts fail at authoring time, not
+    # when the first booking renders.
+    probe: dict[str, object] = {}
+    for entry in entries:
+        try:
+            insert_at_target(probe, entry.target, None)
+        except ValueError as error:
+            raise ValueError(f"{where}: {error}") from error
+        if entry.each:
+            _validate_mapping_targets(entry.each, where)
+
+
 class Operation(BaseModel):
     steps: list[Step] = []
     label: LabelSpec | None = None
@@ -439,6 +452,18 @@ class Operation(BaseModel):
             raise ValueError(
                 "an operation needs at least one step or a local_render label"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _targets_never_conflict(self) -> "Operation":
+        # Structural, so strict even on load: a mapping-target conflict is a
+        # shape the engine cannot render around, unlike a source that fails
+        # cleanly at render. Per-step, so it lives here rather than on
+        # CarrierDefinition - the builder's granular edit tools validate one
+        # Operation, and adding entries one at a time is exactly how a
+        # conflict arises (reviewer, PR #132).
+        for step in self.steps:
+            _validate_mapping_targets(step.request.mapping, step.name)
         return self
 
     @model_validator(mode="after")
@@ -674,28 +699,6 @@ class CarrierDefinition(BaseModel):
                     else set()
                 )
         return self
-
-    @model_validator(mode="after")
-    def _targets_never_conflict(self) -> "CarrierDefinition":
-        # Structural, so strict even on load: a mapping-target conflict is a
-        # shape the engine cannot render around, unlike a source that fails
-        # cleanly at render.
-        for op_name, operation in self.operations.items():
-            for step in operation.steps:
-                self._validate_targets(step.request.mapping, f"{op_name}.{step.name}")
-        return self
-
-    def _validate_targets(self, entries: list[MappingEntry], where: str) -> None:
-        # Dry-run the targets so structural conflicts fail at authoring
-        # time, not when the first booking renders.
-        probe: dict[str, object] = {}
-        for entry in entries:
-            try:
-                insert_at_target(probe, entry.target, None)
-            except ValueError as error:
-                raise ValueError(f"{where}: {error}") from error
-            if entry.each:
-                self._validate_targets(entry.each, where)
 
     def referenced_config_keys(self) -> set[str]:
         """The config keys a carrier must supply to book with this definition:
