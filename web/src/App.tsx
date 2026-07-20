@@ -19,6 +19,8 @@ import { BuilderPage } from '@/rulebook/BuilderPage'
 import { DraftEditorPage } from '@/rulebook/DraftEditorPage'
 import { VersionPage } from '@/rulebook/VersionPage'
 import { VersionsPage } from '@/rulebook/VersionsPage'
+import { ShippingAreaFormPage } from '@/shipping-areas/ShippingAreaFormPage'
+import { ShippingAreasPage } from '@/shipping-areas/ShippingAreasPage'
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   cn(
@@ -45,6 +47,9 @@ function Layout() {
           </NavLink>
           <NavLink to="/carriers/handoffs" className={navLinkClass}>
             Handoffs
+          </NavLink>
+          <NavLink to="/shipping-areas" className={navLinkClass}>
+            Shipping areas
           </NavLink>
         </nav>
       </header>
@@ -125,6 +130,9 @@ function App() {
         <Route path="/rulebook/builder" element={<BuilderPage />} />
         <Route path="/rulebook/versions/:version" element={<VersionPage />} />
         <Route path="/rulebook/drafts/new" element={<DraftEditorPage />} />
+        <Route path="/shipping-areas" element={<ShippingAreasPage />} />
+        <Route path="/shipping-areas/new" element={<ShippingAreaFormPage />} />
+        <Route path="/shipping-areas/:code" element={<ShippingAreaFormPage />} />
       </Route>
     </Routes>
   )

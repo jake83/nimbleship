@@ -127,3 +127,17 @@ def test_a_blank_prefix_is_rejected(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_the_code_new_is_reserved(client: TestClient) -> None:
+    # The admin surface routes /shipping-areas/new to its create form, so an area
+    # coded "new" could never be reached for editing - refuse it at creation.
+    response = client.post("/api/shipping-areas", json={**HIGHLANDS, "code": "new"})
+    assert response.status_code == 422
+    assert "reserved" in response.text
+    assert (
+        client.post(
+            "/api/shipping-areas", json={**HIGHLANDS, "code": "NEW"}
+        ).status_code
+        == 422
+    )
