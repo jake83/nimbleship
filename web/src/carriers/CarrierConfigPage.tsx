@@ -122,6 +122,14 @@ export function CarrierConfigPage() {
   function removeEntry(key: string) {
     setSaved(false)
     setEntries((current) => current?.filter((entry) => entry.key !== key) ?? null)
+    // The reveal is the row's, not the key's: a later re-add of the same key is
+    // a fresh credential and must come back masked.
+    setRevealed((current) => {
+      if (!current.has(key)) return current
+      const next = new Set(current)
+      next.delete(key)
+      return next
+    })
   }
 
   function addEntry() {

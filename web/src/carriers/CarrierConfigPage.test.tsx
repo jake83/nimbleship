@@ -148,6 +148,28 @@ describe('CarrierConfigPage', () => {
     ).toBeInTheDocument()
   })
 
+  it('does not carry a revealed flag to a re-added key of the same name', async () => {
+    // Rotating by remove-then-re-add is ordinary; the fresh value was never
+    // explicitly revealed, so it must come back masked (refuter, PR #137 round 3).
+    stubFetch({
+      'GET /api/carriers/acme/config': {
+        body: { carrier: 'acme', config: { api_key: 'K-1' }, missing: [] },
+      },
+    })
+    renderConfig('acme')
+
+    const input = await screen.findByLabelText('api_key')
+    await userEvent.click(screen.getByRole('button', { name: /show api_key/i }))
+    expect(input).toHaveAttribute('type', 'text')
+    await userEvent.click(screen.getByRole('button', { name: /remove api_key/i }))
+
+    await userEvent.type(screen.getByLabelText('New key'), 'api_key')
+    await userEvent.type(screen.getByLabelText('New value'), 'K-2-SECRET')
+    await userEvent.click(screen.getByRole('button', { name: /add/i }))
+
+    expect(screen.getByLabelText('api_key')).toHaveAttribute('type', 'password')
+  })
+
   it('masks values until revealed', async () => {
     stubFetch({
       'GET /api/carriers/acme/config': {
