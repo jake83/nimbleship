@@ -137,10 +137,9 @@ def put_operation(
         return {"error": problem}
     state.operations()[name] = operation
     result: dict[str, object] = {"operation": name}
-    # Drafting a capability is decisive evidence it applies: clear any stale N/A mark
-    # this edit contradicted, judged by the same drafted-ness rule the mark's own
-    # refusal uses - an operation merely *named* "label" without a label spec drafts
-    # nothing, so its mark must survive (refuter, PR #134).
+    # Drafting is decisive evidence a capability applies, judged by the same rule
+    # mark_not_applicable's refusal uses - so an operation named "label" with no
+    # label spec leaves the mark intact (refuter, PR #134).
     cleared = [
         capability
         for capability in list(state.not_applicable)
@@ -310,7 +309,7 @@ def _step_in(
     candidate: dict[str, object], operation_name: str, step_name: object
 ) -> dict[str, object] | str:
     if not isinstance(step_name, str):
-        return "a 'step' name is required"
+        return "a 'step_name' is required"
     index = _sole_index(_steps_of(candidate), "name", step_name, "step")
     if isinstance(index, str):
         return index
@@ -329,7 +328,7 @@ def put_mapping_entry(
     if isinstance(found, str):
         return {"error": found}
     operation_name, candidate = found
-    step = _step_in(candidate, operation_name, tool_input.get("step"))
+    step = _step_in(candidate, operation_name, tool_input.get("step_name"))
     if isinstance(step, str):
         return {"error": step}
     entry = tool_input.get("entry")
@@ -363,7 +362,7 @@ def remove_mapping_entry(
     if isinstance(found, str):
         return {"error": found}
     operation_name, candidate = found
-    step = _step_in(candidate, operation_name, tool_input.get("step"))
+    step = _step_in(candidate, operation_name, tool_input.get("step_name"))
     if isinstance(step, str):
         return {"error": step}
     target = tool_input.get("target")
@@ -547,10 +546,10 @@ TOOL_SCHEMAS: list[dict[str, object]] = [
             "type": "object",
             "properties": {
                 "operation": {"type": "string"},
-                "step": {"type": "string"},
+                "step_name": {"type": "string"},
                 "entry": {"type": "object"},
             },
-            "required": ["operation", "step", "entry"],
+            "required": ["operation", "step_name", "entry"],
         },
     ),
     _schema(
@@ -560,10 +559,10 @@ TOOL_SCHEMAS: list[dict[str, object]] = [
             "type": "object",
             "properties": {
                 "operation": {"type": "string"},
-                "step": {"type": "string"},
+                "step_name": {"type": "string"},
                 "target": {"type": "string"},
             },
-            "required": ["operation", "step", "target"],
+            "required": ["operation", "step_name", "target"],
         },
     ),
     _schema(

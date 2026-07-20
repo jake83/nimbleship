@@ -162,7 +162,7 @@ def test_put_mapping_entry_replaces_one_entry_and_keeps_the_rest() -> None:
         state,
         {
             "operation": "book",
-            "step": "book",
+            "step_name": "book",
             "entry": {"target": "channel", "const": "nimbleship"},
         },
     )
@@ -170,7 +170,7 @@ def test_put_mapping_entry_replaces_one_entry_and_keeps_the_rest() -> None:
         state,
         {
             "operation": "book",
-            "step": "book",
+            "step_name": "book",
             "entry": {"target": "order", "source": "shipment.order_number"},
         },
     )
@@ -186,7 +186,7 @@ def test_put_mapping_entry_rejects_an_invalid_entry_without_mutating() -> None:
         state,
         {
             "operation": "book",
-            "step": "book",
+            "step_name": "book",
             "entry": {
                 "target": "order",
                 "source": "shipment.order_number",
@@ -205,7 +205,7 @@ def test_put_mapping_entry_rejects_a_misspelt_field_at_depth() -> None:
         state,
         {
             "operation": "book",
-            "step": "book",
+            "step_name": "book",
             "entry": {"target": "x", "soruce": "shipment.order_number"},
         },
     )
@@ -218,16 +218,16 @@ def test_remove_mapping_entry_drops_by_target() -> None:
         state,
         {
             "operation": "book",
-            "step": "book",
+            "step_name": "book",
             "entry": {"target": "channel", "const": "nimbleship"},
         },
     )
     assert remove_mapping_entry(
-        state, {"operation": "book", "step": "book", "target": "channel"}
+        state, {"operation": "book", "step_name": "book", "target": "channel"}
     ) == {"operation": "book", "removed": "channel"}
     assert "no mapping entry" in str(
         remove_mapping_entry(
-            state, {"operation": "book", "step": "book", "target": "channel"}
+            state, {"operation": "book", "step_name": "book", "target": "channel"}
         )["error"]
     )
 
@@ -262,10 +262,42 @@ def test_remove_step_refuses_to_leave_an_invalid_operation() -> None:
 
 
 def test_granular_edits_refuse_an_ambiguous_duplicate_key() -> None:
-    # A whole-op put (or client seed) can carry two entries sharing a target; the
-    # granular tools address by that key, so the ambiguity is refused - removing all
+    # Two steps sharing a name make granular addressing ambiguous: removing all
     # matches would silently delete more than asked, editing the first would strand
-    # the duplicate.
+    # the duplicate. (Duplicate mapping targets are a structural conflict the write
+    # gate refuses outright - covered below.)
+    step = {
+        "name": "book",
+        "transport": "http",
+        "request": {
+            "method": "POST",
+            "url": "config.url",
+            "content_type": "json",
+            "mapping": [{"target": "t", "const": "one"}],
+        },
+    }
+    state = WorkingDefinition(
+        data={"operations": {"book": {"steps": [step, deepcopy(step)]}}}
+    )
+    removed = remove_step(state, {"operation": "book", "name": "book"})
+    assert "matches more than one step" in str(removed["error"])
+    replaced = put_step(state, {"operation": "book", "step": deepcopy(step)})
+    assert "matches more than one" in str(replaced["error"])
+    entry = put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step_name": "book",
+            "entry": {"target": "x", "const": "y"},
+        },
+    )
+    assert "matches more than one" in str(entry["error"])
+    assert len(state.operations()["book"]["steps"]) == 2  # type: ignore[index]
+
+
+def test_a_seed_with_duplicate_targets_is_refused_at_the_gate() -> None:
+    # Two entries fighting over one target is a structural conflict; the shared
+    # write gate refuses the base before any granular edit can touch it.
     duplicated = {
         "steps": [
             {
@@ -277,7 +309,6 @@ def test_granular_edits_refuse_an_ambiguous_duplicate_key() -> None:
                     "content_type": "json",
                     "mapping": [
                         {"target": "t", "const": "one"},
-                        {"target": "keep", "const": "kept"},
                         {"target": "t", "const": "two"},
                     ],
                 },
@@ -285,31 +316,28 @@ def test_granular_edits_refuse_an_ambiguous_duplicate_key() -> None:
         ]
     }
     state = WorkingDefinition(data={"operations": {"book": duplicated}})
-    removed = remove_mapping_entry(
-        state, {"operation": "book", "step": "book", "target": "t"}
+    result = remove_mapping_entry(
+        state, {"operation": "book", "step_name": "book", "target": "t"}
     )
-    assert "matches more than one mapping entry" in str(removed["error"])
-    replaced = put_mapping_entry(
-        state,
-        {"operation": "book", "step": "book", "entry": {"target": "t", "const": "x"}},
-    )
-    assert "matches more than one" in str(replaced["error"])
+    assert "cannot edit" in str(result["error"])
+    assert "mapping targets conflict" in str(result["error"])
     mapping = state.operations()["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
-    assert len(mapping) == 3  # nothing was deleted or edited
+    assert len(mapping) == 2  # untouched
 
 
 def test_granular_edits_reject_a_malformed_client_seeded_base() -> None:
-    # An operation can arrive straight from the client's seed without ever passing
-    # the write gate; a malformed one must be a clean tool error, not a crash (500).
+    # A client-seeded malformed base must be a clean tool error, not a crash (500).
     state = WorkingDefinition(data={"operations": {"book": {"steps": "not-a-list"}}})
     step = {"name": "x", "transport": "local_render", "request": {}}
     for result in (
         put_step(state, {"operation": "book", "step": step}),
         remove_step(state, {"operation": "book", "name": "x"}),
         put_mapping_entry(
-            state, {"operation": "book", "step": "x", "entry": {"target": "t"}}
+            state, {"operation": "book", "step_name": "x", "entry": {"target": "t"}}
         ),
-        remove_mapping_entry(state, {"operation": "book", "step": "x", "target": "t"}),
+        remove_mapping_entry(
+            state, {"operation": "book", "step_name": "x", "target": "t"}
+        ),
     ):
         assert "cannot edit" in str(result["error"])
 
@@ -321,7 +349,7 @@ def test_granular_edits_report_unknown_operation_and_step() -> None:
     )
     assert "no step" in str(
         put_mapping_entry(
-            state, {"operation": "book", "step": "nope", "entry": {"target": "x"}}
+            state, {"operation": "book", "step_name": "nope", "entry": {"target": "x"}}
         )["error"]
     )
 
@@ -663,3 +691,73 @@ def test_build_round_trips_the_not_applicable_marks(app: FastAPI) -> None:
         "manifest": "no end-of-day process",
         "label": "paperwork only",
     }
+
+
+def test_put_mapping_entry_rejects_a_target_conflict_at_edit_time() -> None:
+    # 'customer' and 'customer.name' fight over one target subtree - structural,
+    # so the shared write gate must refuse it when the entry is added, not leave
+    # it for check() to find later.
+    state = _op_with_book_step()
+    put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step_name": "book",
+            "entry": {"target": "customer", "const": "x"},
+        },
+    )
+    result = put_mapping_entry(
+        state,
+        {
+            "operation": "book",
+            "step_name": "book",
+            "entry": {"target": "customer.name", "const": "y"},
+        },
+    )
+    assert "mapping targets conflict" in str(result["error"])
+    mapping = state.operations()["book"]["steps"][0]["request"]["mapping"]  # type: ignore[index]
+    assert [e["target"] for e in mapping] == ["order", "customer"]  # unchanged
+
+
+def test_the_granular_tools_dispatch_by_name(app: FastAPI) -> None:
+    # A typo in a dispatch string would go undetected by the function-level tests,
+    # which call the tools directly.
+    state = _op_with_book_step()
+    step = {
+        "name": "extra",
+        "transport": "http",
+        "request": {
+            "method": "POST",
+            "url": "config.url",
+            "content_type": "json",
+            "mapping": [{"target": "z", "const": "1"}],
+        },
+    }
+    with app.state.session_factory() as session:
+        put = run_carrier_builder_tool(
+            session, state, "put_step", {"operation": "book", "step": step}
+        )
+        assert put == {"operation": "book", "step": "extra"}
+        entry = run_carrier_builder_tool(
+            session,
+            state,
+            "put_mapping_entry",
+            {
+                "operation": "book",
+                "step_name": "extra",
+                "entry": {"target": "y", "const": "2"},
+            },
+        )
+        assert entry == {"operation": "book", "target": "y"}
+        gone = run_carrier_builder_tool(
+            session,
+            state,
+            "remove_mapping_entry",
+            {"operation": "book", "step_name": "extra", "target": "y"},
+        )
+        assert gone == {"operation": "book", "removed": "y"}
+        removed = run_carrier_builder_tool(
+            session, state, "remove_step", {"operation": "book", "name": "extra"}
+        )
+        assert removed == {"operation": "book", "removed": "extra"}
+    assert len(state.operations()["book"]["steps"]) == 1  # type: ignore[index]
