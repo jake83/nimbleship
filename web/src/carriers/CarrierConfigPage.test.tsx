@@ -92,12 +92,60 @@ describe('CarrierConfigPage', () => {
     await userEvent.click(screen.getByLabelText('New value'))
     await userEvent.paste('{"code":"MAN1"}')
     await userEvent.click(screen.getByRole('button', { name: /add/i }))
-    await userEvent.click(screen.getByRole('button', { name: /^save/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^save configuration/i }))
     await waitFor(() =>
       expect(sentBody(mock, 'PUT /api/carriers/acme/config')).toEqual({
         depot: { code: 'MAN1' },
       }),
     )
+  })
+
+  it('saves a literal brace-wrapped value by switching the row to text', async () => {
+    // A braced GUID is not JSON but is a real credential shape; the JSON guess
+    // must be correctable per row, never a dead end (refuter, PR #137 round 2).
+    const mock = stubFetch({
+      'GET /api/carriers/acme/config': {
+        body: { carrier: 'acme', config: {}, missing: [] },
+      },
+      'PUT /api/carriers/acme/config': {
+        body: { carrier: 'acme', status: 'saved', missing: [] },
+      },
+    })
+    renderConfig('acme')
+    await screen.findByText(/nothing stored yet/i)
+
+    await userEvent.type(screen.getByLabelText('New key'), 'instance_guid')
+    await userEvent.click(screen.getByLabelText('New value'))
+    await userEvent.paste('{5F2B5A62-4B69-4B0B-88C1-8AD648713EE7}')
+    await userEvent.click(screen.getByRole('button', { name: /add/i }))
+    await userEvent.click(
+      screen.getByRole('button', { name: /save instance_guid as text/i }),
+    )
+    await userEvent.click(screen.getByRole('button', { name: /^save configuration/i }))
+    await waitFor(() =>
+      expect(sentBody(mock, 'PUT /api/carriers/acme/config')).toEqual({
+        instance_guid: '{5F2B5A62-4B69-4B0B-88C1-8AD648713EE7}',
+      }),
+    )
+  })
+
+  it('renders a stored null blank and still required, never as the text null', async () => {
+    stubFetch({
+      'GET /api/carriers/acme/config': {
+        body: {
+          carrier: 'acme',
+          config: { base_url: null },
+          missing: ['base_url'],
+        },
+      },
+    })
+    renderConfig('acme')
+
+    const input = await screen.findByLabelText('base_url')
+    expect(input).toHaveValue('')
+    expect(
+      screen.getByText(/required by the active definition/i),
+    ).toBeInTheDocument()
   })
 
   it('masks values until revealed', async () => {
@@ -158,7 +206,7 @@ describe('CarrierConfigPage', () => {
     await userEvent.type(screen.getByLabelText('New value'), 'MAN1')
     await userEvent.click(screen.getByRole('button', { name: /add/i }))
 
-    await userEvent.click(screen.getByRole('button', { name: /^save/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^save configuration/i }))
 
     expect(await screen.findByText(/saved/i)).toBeInTheDocument()
     expect(sentBody(mock, 'PUT /api/carriers/acme/config')).toEqual({
@@ -187,12 +235,12 @@ describe('CarrierConfigPage', () => {
 
     await userEvent.clear(depot)
     await userEvent.type(depot, 'not json')
-    await userEvent.click(screen.getByRole('button', { name: /^save/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^save configuration/i }))
     expect(await screen.findByText(/not valid JSON/i)).toBeInTheDocument()
 
     await userEvent.clear(depot)
     await userEvent.paste('{"code":"LDS2"}')
-    await userEvent.click(screen.getByRole('button', { name: /^save/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^save configuration/i }))
     await waitFor(() =>
       expect(sentBody(mock, 'PUT /api/carriers/acme/config')).toEqual({
         depot: { code: 'LDS2' },

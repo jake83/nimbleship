@@ -14,8 +14,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { fetchCarrierConfig, replaceCarrierConfig } from '@/carriers/api'
 
-/** One editable row. Structured (non-string) values edit as JSON text so a nested
- * config survives the round-trip instead of being flattened to a string. */
+/** One editable row. Structured values edit as JSON text so a nested config
+ * survives the round-trip instead of being flattened to a string. `structured`
+ * is operator-visible and toggleable: no heuristic can tell a nested config from
+ * a literal value that merely looks like one (a brace-wrapped GUID). */
 interface Entry {
   key: string
   text: string
@@ -32,8 +34,11 @@ function toEntries(
   // booking), so needed is judged from the server's list, never from presence.
   const stored = Object.entries(config).map(([key, value]) => ({
     key,
-    text: typeof value === 'string' ? value : JSON.stringify(value),
-    structured: typeof value !== 'string',
+    // A stored null is "not provided" (the domain's own reading): render it
+    // blank rather than as the text "null" pretending a value exists.
+    text:
+      value === null ? '' : typeof value === 'string' ? value : JSON.stringify(value),
+    structured: typeof value !== 'string' && value !== null,
     needed: missing.includes(key),
   }))
   const placeholders = missing
@@ -104,6 +109,16 @@ export function CarrierConfigPage() {
     )
   }
 
+  function toggleStructured(key: string) {
+    setSaved(false)
+    setEntries(
+      (current) =>
+        current?.map((entry) =>
+          entry.key === key ? { ...entry, structured: !entry.structured } : entry,
+        ) ?? null,
+    )
+  }
+
   function removeEntry(key: string) {
     setSaved(false)
     setEntries((current) => current?.filter((entry) => entry.key !== key) ?? null)
@@ -118,8 +133,8 @@ export function CarrierConfigPage() {
     }
     setError(null)
     setSaved(false)
-    // A value written as an object or array is JSON - the way to supply a
-    // nested config (a dotted missing path's containing key).
+    // Default from the shape, but only as a default - the toggle on the row
+    // corrects a literal value that merely looks like JSON (a braced GUID).
     const structured = /^[[{]/.test(newValue.trim())
     setEntries([...entries, { key, text: newValue, structured, needed: false }])
     setNewKey('')
@@ -132,11 +147,14 @@ export function CarrierConfigPage() {
     for (const entry of entries) {
       // A needed key left blank stays unstored rather than saving an empty string.
       if (entry.needed && entry.text === '') continue
+
       if (entry.structured) {
         try {
           payload[entry.key] = JSON.parse(entry.text)
         } catch {
-          setError(`'${entry.key}' is not valid JSON.`)
+          setError(
+            `'${entry.key}' is not valid JSON - fix it, or switch the row to text.`,
+          )
           return
         }
       } else {
@@ -148,7 +166,7 @@ export function CarrierConfigPage() {
     try {
       const result = await replaceCarrierConfig(carrier ?? '', payload)
       setMissing(result.missing)
-      setEntries(toEntries(payload as Record<string, unknown>, result.missing))
+      setEntries(toEntries(payload, result.missing))
       setSaved(true)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
@@ -198,7 +216,16 @@ export function CarrierConfigPage() {
                     required by the active definition
                   </Badge>
                 )}
-                {entry.structured && <Badge variant="outline">JSON</Badge>}
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  aria-label={`Save ${entry.key} as ${entry.structured ? 'text' : 'JSON'}`}
+                  onClick={() => toggleStructured(entry.key)}
+                >
+                  <Badge variant={entry.structured ? 'default' : 'outline'}>
+                    {entry.structured ? 'JSON' : 'text'}
+                  </Badge>
+                </Button>
               </div>
               <div className="flex items-center gap-2">
                 <Input
