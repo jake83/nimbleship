@@ -2,10 +2,12 @@
 config surface drives. Writes stay on the existing PUT/PATCH config routes."""
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from nimbleship.domain.carrier_definition import CarrierDefinition
+from nimbleship.models import CarrierDefinitionVersion
 
 DEFINITION = {
     "carrier": "acme",
@@ -115,3 +117,25 @@ def test_a_carrier_code_is_constrained_to_url_safe_characters(
     assert client.get("/api/carriers").json() == [
         {"carrier": "dropout", "active_version": 1}
     ]
+
+
+def test_publishing_a_draft_that_predates_a_tightened_rule_refuses_cleanly(
+    app: FastAPI, client: TestClient
+) -> None:
+    # A stored draft can carry a carrier code the authoring rules no longer
+    # accept; publish refuses like its other gates rather than 500ing.
+    with app.state.session_factory() as session:
+        session.add(
+            CarrierDefinitionVersion(
+                carrier="bad.name",
+                version=1,
+                status="draft",
+                author="jake",
+                data={**DEFINITION, "carrier": "bad.name"},
+            )
+        )
+        session.commit()
+
+    published = client.post("/api/carriers/bad.name/definitions/versions/1/publish")
+    assert published.status_code == 409
+    assert "no longer validates" in published.text

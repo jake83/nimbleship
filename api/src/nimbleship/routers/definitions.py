@@ -288,7 +288,14 @@ def publish_version(carrier: str, version: int, session: SessionDep) -> VersionO
     row = get_version(session, carrier, version)
     if row is None:
         raise HTTPException(404, "no such definition version")
-    definition = definition_for(row)
+    try:
+        definition = definition_for(row)
+    except ValidationError as error:
+        # A stored draft can predate a since-tightened authoring rule; the
+        # publish gate refuses it cleanly like its other checks, never a 500.
+        raise HTTPException(
+            409, f"publish refused: the draft no longer validates: {error}"
+        ) from error
     # An open Handoff blocker means an engineer still owes this carrier a plugin or a
     # decision (ADR 0018) - the definition may validate yet not express what the
     # carrier actually needs, so publishing would look complete while shipping the gap.
