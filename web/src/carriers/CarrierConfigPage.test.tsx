@@ -52,6 +52,68 @@ describe('CarriersPage', () => {
 })
 
 describe('CarrierConfigPage', () => {
+  it('flags a stored-but-null key as still required', async () => {
+    stubFetch({
+      'GET /api/carriers/acme/config': {
+        body: {
+          carrier: 'acme',
+          config: { api_key: 'K-1', base_url: null },
+          missing: ['base_url'],
+        },
+      },
+    })
+    renderConfig('acme')
+
+    expect(await screen.findByLabelText('base_url')).toBeInTheDocument()
+    // Stored null renders as nothing at booking: the badge must survive presence.
+    expect(
+      screen.getByText(/required by the active definition/i),
+    ).toBeInTheDocument()
+  })
+
+  it('routes a nested missing path to its containing key, never a flat input', async () => {
+    const mock = stubFetch({
+      'GET /api/carriers/acme/config': {
+        body: { carrier: 'acme', config: {}, missing: ['depot.code'] },
+      },
+      'PUT /api/carriers/acme/config': {
+        body: { carrier: 'acme', status: 'saved', missing: [] },
+      },
+    })
+    renderConfig('acme')
+
+    expect(await screen.findByText(/nested values/i)).toBeInTheDocument()
+    expect(screen.getByText('depot.code')).toBeInTheDocument()
+    // No fillable flat input for the dotted path - it would save a junk key.
+    expect(screen.queryByLabelText('depot.code')).not.toBeInTheDocument()
+
+    // The containing key is added as JSON and saves structured.
+    await userEvent.type(screen.getByLabelText('New key'), 'depot')
+    await userEvent.click(screen.getByLabelText('New value'))
+    await userEvent.paste('{"code":"MAN1"}')
+    await userEvent.click(screen.getByRole('button', { name: /add/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^save/i }))
+    await waitFor(() =>
+      expect(sentBody(mock, 'PUT /api/carriers/acme/config')).toEqual({
+        depot: { code: 'MAN1' },
+      }),
+    )
+  })
+
+  it('masks values until revealed', async () => {
+    stubFetch({
+      'GET /api/carriers/acme/config': {
+        body: { carrier: 'acme', config: { api_key: 'K-1' }, missing: [] },
+      },
+    })
+    renderConfig('acme')
+
+    const input = await screen.findByLabelText('api_key')
+    expect(input).toHaveAttribute('type', 'password')
+    await userEvent.click(screen.getByRole('button', { name: /show api_key/i }))
+    expect(input).toHaveAttribute('type', 'text')
+  })
+
   it('shows stored entries and the keys the definition still needs', async () => {
     stubFetch({
       'GET /api/carriers/acme/config': {

@@ -28,16 +28,25 @@ function toEntries(
   config: Record<string, unknown>,
   missing: string[],
 ): Entry[] {
+  // A stored key can still be missing (e.g. a null value renders as nothing at
+  // booking), so needed is judged from the server's list, never from presence.
   const stored = Object.entries(config).map(([key, value]) => ({
     key,
     text: typeof value === 'string' ? value : JSON.stringify(value),
     structured: typeof value !== 'string',
-    needed: false,
+    needed: missing.includes(key),
   }))
-  const needed = missing
-    .filter((key) => !(key in config))
+  const placeholders = missing
+    .filter((key) => !(key in config) && !key.includes('.'))
     .map((key) => ({ key, text: '', structured: false, needed: true }))
-  return [...stored, ...needed]
+  return [...stored, ...placeholders]
+}
+
+/** Dotted missing paths (config.depot.code, config.hosts.0) live inside a
+ * containing key's JSON - a flat input would save a junk top-level key with a
+ * literal dot that the renderer never reads. */
+function nestedMissing(missing: string[]): string[] {
+  return missing.filter((key) => key.includes('.'))
 }
 
 /** The carrier config surface: credentials and per-install settings, straight to
@@ -52,6 +61,8 @@ export function CarrierConfigPage() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Values are credentials: masked by default, revealed per row on demand.
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set())
 
   useEffect(() => {
     if (carrier === undefined) return
@@ -107,10 +118,10 @@ export function CarrierConfigPage() {
     }
     setError(null)
     setSaved(false)
-    setEntries([
-      ...entries,
-      { key, text: newValue, structured: false, needed: false },
-    ])
+    // A value written as an object or array is JSON - the way to supply a
+    // nested config (a dotted missing path's containing key).
+    const structured = /^[[{]/.test(newValue.trim())
+    setEntries([...entries, { key, text: newValue, structured, needed: false }])
     setNewKey('')
     setNewValue('')
   }
@@ -192,9 +203,25 @@ export function CarrierConfigPage() {
               <div className="flex items-center gap-2">
                 <Input
                   id={`config-${entry.key}`}
+                  type={revealed.has(entry.key) ? 'text' : 'password'}
                   value={entry.text}
                   onChange={(event) => setText(entry.key, event.target.value)}
                 />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`${revealed.has(entry.key) ? 'Hide' : 'Show'} ${entry.key}`}
+                  onClick={() =>
+                    setRevealed((current) => {
+                      const next = new Set(current)
+                      if (next.has(entry.key)) next.delete(entry.key)
+                      else next.add(entry.key)
+                      return next
+                    })
+                  }
+                >
+                  {revealed.has(entry.key) ? 'Hide' : 'Show'}
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -206,6 +233,17 @@ export function CarrierConfigPage() {
               </div>
             </div>
           ))}
+
+          {nestedMissing(missing).length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              The active definition also needs nested values:{' '}
+              <span className="font-mono text-xs">
+                {nestedMissing(missing).join(', ')}
+              </span>{' '}
+              - edit the containing key&apos;s JSON (add it below as{' '}
+              <span className="font-mono text-xs">{'{...}'}</span> if absent).
+            </p>
+          )}
 
           <div className="flex items-end gap-2 border-t pt-4">
             <div className="grid flex-1 gap-1.5">
