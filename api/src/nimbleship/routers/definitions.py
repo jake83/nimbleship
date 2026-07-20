@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -41,6 +42,16 @@ from nimbleship.models import (
 )
 
 router = APIRouter(prefix="/carriers/{carrier}", tags=["definitions"])
+
+
+def _url_safe_carrier(carrier: str) -> str:
+    # Config is the one write path that can mint a carrier with no definition
+    # (the onboarding order), so it enforces the same charset the definition
+    # schema does - a code outside it breaks routing and referencing.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", carrier):
+        raise HTTPException(422, "a carrier code uses letters, digits, '_' or '-' only")
+    return carrier
+
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
@@ -277,7 +288,14 @@ def publish_version(carrier: str, version: int, session: SessionDep) -> VersionO
     row = get_version(session, carrier, version)
     if row is None:
         raise HTTPException(404, "no such definition version")
-    definition = definition_for(row)
+    try:
+        definition = definition_for(row)
+    except ValidationError as error:
+        # A stored draft can predate a since-tightened authoring rule; the
+        # publish gate refuses it cleanly like its other checks, never a 500.
+        raise HTTPException(
+            409, f"publish refused: the draft no longer validates: {error}"
+        ) from error
     # An open Handoff blocker means an engineer still owes this carrier a plugin or a
     # decision (ADR 0018) - the definition may validate yet not express what the
     # carrier actually needs, so publishing would look complete while shipping the gap.
@@ -447,6 +465,24 @@ def golden_replay(
     )
 
 
+class ConfigReadOut(BaseModel):
+    carrier: str
+    config: dict[str, object]
+    # config.* keys the active definition references but the stored config lacks.
+    missing: list[str]
+
+
+@router.get("/config")
+def get_config(carrier: str, session: SessionDep) -> ConfigReadOut:
+    """The stored config and what the active definition still lacks - the config
+    surface's read. An unknown carrier reads empty rather than 404: config may
+    precede everything else (the onboarding order)."""
+    config = carrier_config(session, carrier)
+    active = active_definition(session, carrier)
+    missing = missing_config_keys(active, config) if active is not None else []
+    return ConfigReadOut(carrier=carrier, config=config, missing=missing)
+
+
 class ConfigSaveOut(BaseModel):
     carrier: str
     status: str
@@ -460,6 +496,7 @@ class ConfigSaveOut(BaseModel):
 def put_config(
     carrier: str, payload: dict[str, object], session: SessionDep
 ) -> ConfigSaveOut:
+    _url_safe_carrier(carrier)
     upsert_carrier_config(session, carrier, payload)
     active = active_definition(session, carrier)
     missing = missing_config_keys(active, payload) if active is not None else []
@@ -470,6 +507,7 @@ def put_config(
 def patch_config(
     carrier: str, payload: dict[str, object], session: SessionDep
 ) -> ConfigSaveOut:
+    _url_safe_carrier(carrier)
     # Merge, so rotating one value keeps the rest - a PUT replaces the whole row.
     merged = merge_carrier_config(session, carrier, payload)
     active = active_definition(session, carrier)

@@ -24,7 +24,11 @@ from nimbleship.domain.allocation import (
 )
 from nimbleship.domain.barcodes import parcel_barcodes
 from nimbleship.domain.carrier_definition import AllocationSpec, CarrierDefinition
-from nimbleship.domain.definitions import active_definition, carrier_config
+from nimbleship.domain.definitions import (
+    active_definition,
+    carrier_config,
+    resolve_config_path,
+)
 from nimbleship.domain.facts import shipment_facts, warehouse_facts
 from nimbleship.domain.geography import resolve_shipping_areas
 from nimbleship.domain.rulebook import active_rulebook
@@ -200,9 +204,9 @@ def _base64_pdf_label(
     return pdf
 
 
-def _config_key(source: str) -> str:
-    # An allocate prefix is a schema-enforced config.* source; the bare key
-    # follows the first dot.
+def _config_path(source: str) -> str:
+    # An allocate prefix is a schema-enforced config.* source; the path follows
+    # the root and resolves nested, like every other config read.
     return source.split(".", 1)[1]
 
 
@@ -226,7 +230,7 @@ def _mint_parcel_allocations(
     carrier = consignment.carrier or ""
     with Session(session.get_bind()) as mint_session:
         for spec in specs:
-            prefix = config.get(_config_key(spec.prefix))
+            prefix = resolve_config_path(config, _config_path(spec.prefix))
             if not isinstance(prefix, str):
                 raise ConsignmentError(
                     500,

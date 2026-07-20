@@ -182,36 +182,63 @@ def publish(
     return row
 
 
+def carrier_catalog(session: Session) -> list[tuple[str, int | None]]:
+    """Every known carrier - any definition version or a stored config - with its
+    active (highest published) version, None when nothing is published. Config-only
+    carriers are real: credentials may be stored before a definition exists (the
+    onboarding order)."""
+    _seed_dropout_if_fresh(session)
+    catalog: dict[str, int | None] = {
+        carrier: version
+        for carrier, version in session.execute(
+            select(
+                CarrierDefinitionVersion.carrier,
+                func.max(CarrierDefinitionVersion.version),
+            )
+            .where(CarrierDefinitionVersion.status == "published")
+            .group_by(CarrierDefinitionVersion.carrier)
+        )
+    }
+    for (carrier,) in session.execute(
+        select(CarrierDefinitionVersion.carrier).distinct()
+    ):
+        catalog.setdefault(carrier, None)
+    for (carrier,) in session.execute(select(CarrierConfig.carrier)):
+        catalog.setdefault(carrier, None)
+    return sorted(catalog.items())
+
+
 def carrier_config(session: Session, carrier: str) -> dict[str, object]:
     row = session.get(CarrierConfig, carrier)
     return row.data if row is not None else {}
 
 
+def resolve_config_path(config_data: dict[str, object], path: str) -> object | None:
+    """Read a config.* path the way the render engine does: dots nest, an
+    all-digit segment indexes a list. None when unresolved - the one path
+    semantics every consumer (completeness, render, allocate mint) shares, so
+    a config the completeness check calls complete cannot fail at dispatch."""
+    node: object = config_data
+    for segment in path.split("."):
+        if isinstance(node, dict) and segment in node:
+            node = node[segment]
+        elif isinstance(node, list) and segment.isdigit() and int(segment) < len(node):
+            node = node[int(segment)]
+        else:
+            return None
+    return node
+
+
 def missing_config_keys(
     definition: CarrierDefinition, config_data: dict[str, object]
 ) -> list[str]:
-    """The config.* keys a definition references that config lacks, resolved by
-    path like the render engine reads it. Sorted for a stable message;
-    history-independent unlike the render gate."""
+    """The config.* keys a definition references that config lacks. Sorted for
+    a stable message; history-independent unlike the render gate."""
     missing: list[str] = []
     for path in definition.referenced_config_keys():
-        node: object = config_data
-        resolved = True
-        for segment in path.split("."):
-            if isinstance(node, dict) and segment in node:
-                node = node[segment]
-            elif (
-                isinstance(node, list)
-                and segment.isdigit()
-                and int(segment) < len(node)
-            ):
-                node = node[int(segment)]
-            else:
-                resolved = False
-                break
         # A null value is present but renders as the literal "None", so it is
         # not a provided key - treat it as absent, like a missing one.
-        if not resolved or node is None:
+        if resolve_config_path(config_data, path) is None:
             missing.append(path)
     return sorted(missing)
 
