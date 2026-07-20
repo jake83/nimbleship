@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -41,6 +42,16 @@ from nimbleship.models import (
 )
 
 router = APIRouter(prefix="/carriers/{carrier}", tags=["definitions"])
+
+
+def _url_safe_carrier(carrier: str) -> str:
+    # Config is the one write path that can mint a carrier with no definition
+    # (the onboarding order), so it enforces the same charset the definition
+    # schema does - a code outside it breaks routing and referencing.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", carrier):
+        raise HTTPException(422, "a carrier code uses letters, digits, '_' or '-' only")
+    return carrier
+
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
@@ -478,6 +489,7 @@ class ConfigSaveOut(BaseModel):
 def put_config(
     carrier: str, payload: dict[str, object], session: SessionDep
 ) -> ConfigSaveOut:
+    _url_safe_carrier(carrier)
     upsert_carrier_config(session, carrier, payload)
     active = active_definition(session, carrier)
     missing = missing_config_keys(active, payload) if active is not None else []
@@ -488,6 +500,7 @@ def put_config(
 def patch_config(
     carrier: str, payload: dict[str, object], session: SessionDep
 ) -> ConfigSaveOut:
+    _url_safe_carrier(carrier)
     # Merge, so rotating one value keeps the rest - a PUT replaces the whole row.
     merged = merge_carrier_config(session, carrier, payload)
     active = active_definition(session, carrier)

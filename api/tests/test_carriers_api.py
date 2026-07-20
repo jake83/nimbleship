@@ -1,7 +1,11 @@
 """The carriers admin edge: the carrier list and per-carrier config read that the
 config surface drives. Writes stay on the existing PUT/PATCH config routes."""
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from nimbleship.domain.carrier_definition import CarrierDefinition
 
 DEFINITION = {
     "carrier": "acme",
@@ -88,3 +92,26 @@ def test_config_read_is_empty_for_an_unknown_carrier(client: TestClient) -> None
     response = client.get("/api/carriers/nonesuch/config")
     assert response.status_code == 200
     assert response.json() == {"carrier": "nonesuch", "config": {}, "missing": []}
+
+
+def test_a_carrier_code_is_constrained_to_url_safe_characters(
+    client: TestClient,
+) -> None:
+    # Carrier codes are referenced identifiers (rulebook services, URL
+    # segments, config rows) like shipping-area codes, and get the same
+    # charset. Authoring refuses; a stored definition still loads leniently
+    # so tightening never strands a live carrier.
+    with pytest.raises(ValidationError, match="letters, digits"):
+        CarrierDefinition.model_validate({**DEFINITION, "carrier": "a%2Fb"})
+    assert CarrierDefinition.load({**DEFINITION, "carrier": "a%2Fb"}).carrier == "a%2Fb"
+
+    # Config is the one write path that can mint a carrier with no definition;
+    # it refuses the same charset, so no unroutable carrier can exist.
+    config = client.put("/api/carriers/a%20b/config", json={"api_key": "K"})
+    assert config.status_code == 422
+    assert "letters, digits" in config.text
+    patched = client.patch("/api/carriers/a%20b/config", json={"api_key": "K"})
+    assert patched.status_code == 422
+    assert client.get("/api/carriers").json() == [
+        {"carrier": "dropout", "active_version": 1}
+    ]

@@ -570,6 +570,18 @@ class CarrierDefinition(BaseModel):
             raise ValueError("carrier and name must not be blank")
         return self
 
+    @model_validator(mode="after")
+    def _carrier_is_url_safe(self, info: ValidationInfo) -> "CarrierDefinition":
+        # A carrier code is a referenced identifier (rulebook services, URL
+        # segments, config rows) like a shipping-area code, and gets the same
+        # charset. Authoring policy: skipped on load so tightening it never
+        # strands a stored carrier.
+        if _is_lenient(info):
+            return self
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", self.carrier):
+            raise ValueError("a carrier code uses letters, digits, '_' or '-' only")
+        return self
+
     @classmethod
     def load(cls, data: object) -> "CarrierDefinition":
         # Validate a published definition for booking: authoring-policy rules
