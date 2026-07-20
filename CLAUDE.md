@@ -288,3 +288,7 @@ Standing rules that survive the amendment:
   piping a gate into tail/grep/head swallows its exit code, and this has
   let red commits through twice. Filter output only AFTER the bare run
   has passed.
+- When the working tree carries a known local-only override (a dev proxy
+  port, a scratch config), stage commits by EXPLICIT path - never
+  `git add -A`/`-a`. A bulk add swept a vite proxy override into PR #138
+  and both AI jobs had to catch it.

@@ -16,6 +16,7 @@ import { EngineerPage } from '@/carrier-builder/EngineerPage'
 import { CarrierConfigPage } from '@/carriers/CarrierConfigPage'
 import { CarriersPage } from '@/carriers/CarriersPage'
 import { Button } from '@/components/ui/button'
+import { ShippingActivity } from '@/dashboard/ShippingActivity'
 import { cn } from '@/lib/utils'
 import { BuilderPage } from '@/rulebook/BuilderPage'
 import { DraftEditorPage } from '@/rulebook/DraftEditorPage'
@@ -118,6 +119,9 @@ function Home() {
         >
           API documentation
         </Button>
+      </div>
+      <div className="pt-6">
+        <ShippingActivity />
       </div>
     </div>
   )
